@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from . import (aftermath, arcs, atlas, auth, authority, awareness, betrayal, budget,
-               canon, combat, legibility, research, uploads,
+               canon, combat, durable, legibility, research, uploads,
                config, db,
                death, engine, fastforward, identity, mana, memory, modes, narrgraph,
                party, payments, persona, precommit, relationships, rt, runs, sessions,
@@ -39,7 +39,27 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup():
+    # MUST run before db.init(): sqlite3.connect() creates an empty file the
+    # instant it is called, so this is the only moment a fresh container can
+    # still be told "there is no local database yet, restore one."
+    durable.restore_if_needed()
     db.init()
+
+
+@app.on_event("startup")
+async def _start_durable_backup():
+    # A SEPARATE async handler, deliberately: asyncio.create_task needs a
+    # running event loop, and the sync handler above runs off-loop in a
+    # threadpool. Starlette runs startup handlers in registration order, so
+    # restore + db.init() above are guaranteed complete before this fires.
+    durable.start_background_backup()
+
+
+@app.on_event("shutdown")
+async def _stop_durable_backup():
+    # Render sends SIGTERM before killing a spun-down free instance; this is
+    # the one chance to flush anything that changed since the last timer tick.
+    await durable.stop_background_backup()
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +267,7 @@ def health():
             "llm": "live" if config.live_llm() else "offline-stub",
             "models": config.MODELS, "realtime": rt.health(),
             "voice": voice.available(), "payments": payments.status(),
+            "durable": {"enabled": durable.enabled()},
             "starters": [w.id for w in world_registry.starters()]}
 
 
@@ -1266,9 +1287,47 @@ async def ws_session(ws: WebSocket, session_id: str, player: str = Query(default
 app.mount("/assets", StaticFiles(directory=FRONTEND / "assets"), name="assets")
 
 
+_ASSET_TAGS: dict = {}
+
+
+def _asset_version(name: str) -> str:
+    """A content hash for an asset, recomputed only when the file's mtime moves.
+
+    There is no build step here, so nothing else stamps a version onto the
+    asset URLs - which means a browser happily serves a cached stylesheet from
+    before a deploy and the app renders with the OLD CSS. That is not a
+    theoretical risk: it is exactly how a fixed layout bug appears to survive
+    a fix. Hashing the content means the URL changes when (and only when) the
+    file does, so caches are correct rather than merely long."""
+    path = FRONTEND / "assets" / name
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return "0"
+    cached = _ASSET_TAGS.get(name)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    import hashlib
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    _ASSET_TAGS[name] = (stamp, digest)
+    return digest
+
+
 @app.get("/")
 def index():
-    return FileResponse(FRONTEND / "index.html")
+    """Serve the player with content-hashed asset URLs.
+
+    The HTML itself is sent no-store: it is tiny, and it is the one document
+    that has to be re-read for a client to learn about new asset hashes at
+    all. The assets it points at are immutable per hash and cached hard by
+    StaticFiles."""
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    html = html.replace("/assets/styles.css",
+                        f"/assets/styles.css?v={_asset_version('styles.css')}")
+    html = html.replace("/assets/app.js",
+                        f"/assets/app.js?v={_asset_version('app.js')}")
+    return Response(html, media_type="text/html",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)

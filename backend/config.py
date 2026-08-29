@@ -35,6 +35,20 @@ RESEARCH_CONTACT = os.getenv("STORYLIVER_RESEARCH_CONTACT",
                              "https://github.com/storyliver")
 RESEARCH_TIMEOUT = float(os.getenv("STORYLIVER_RESEARCH_TIMEOUT", "8"))
 
+# --- Durable storage (MongoDB backup/restore) -------------------------------
+# Free hosts (Render's free web service, most trial tiers) give the app no
+# persistent disk: every spin-down or redeploy hands it an empty filesystem.
+# SQLite stays the ONLY database the app reads and writes while running; when
+# MONGODB_URI is set, backend/durable.py periodically snapshots it into
+# MongoDB and restores that snapshot the moment a fresh container boots with
+# no local file. Off by default, and off in the test suite's mock mode even
+# if a stray URI is present, so nothing here ever needs a real cluster to run
+# offline and free.
+MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
+MONGODB_DB = os.getenv("MONGODB_DB", "storyliver")
+MONGODB_BACKUP_INTERVAL = float(os.getenv("STORYLIVER_BACKUP_INTERVAL", "300"))
+
+
 
 
 def is_claude_model(model: str) -> bool:

@@ -3246,23 +3246,39 @@ function renderAwareness() {
       ${s.eta !== undefined ? `<div class="sig-eta">${s.eta}<small>turns</small></div>` : ''}
     </div>`).join('');
 
+  // "Unknown" is the internal band name and reads as an error next to a faction
+  // that simply has not met you. Every band gets a phrase a person would say.
+  const BAND_LABEL = {
+    hunted: 'wants you gone', hated: 'would turn you in', disliked: 'wary of you',
+    unknown: 'no opinion yet', tolerated: 'will hear you out',
+    trusted: 'trusts you', beloved: 'stands with you',
+  };
   const factions = (a.factions || []).map((f) => `
     <div class="fac-chip band-${esc(f.band)}"${tip('standing')} title="${esc(f.blurb)}">
       <span class="fac-name">${esc(f.name)}</span>
-      <span class="fac-band">${esc(f.band)}</span>
+      <span class="fac-band">${esc(BAND_LABEL[f.band] || f.band)}</span>
       ${f.fear ? `<span class="fac-fear">${esc(f.fear)}</span>` : ''}
       ${S.prefs.power ? `<span class="fac-num">${f.standing}</span>` : ''}
     </div>`).join('');
 
+  // A face card has to answer "how does this person feel about me, and do they
+  // know anything?" at a glance. Two rows of identical unlabelled pips answered
+  // neither - the bars are labelled, fear only appears when there IS fear, and
+  // the disposition sits on the name line where the eye already is.
   const faces = (a.faces || []).filter((f) => f.alive).map((f) => `
     <div class="face"${tip('faces')}>
-      <div class="face-name">${esc(f.name)}</div>
-      <div class="face-bars">
-        <span class="pipset" title="Trust ${f.trust}">${pips(f.trust_pips, 'trust')}</span>
-        <span class="pipset" title="Fear ${f.fear}">${pips(f.fear_pips, 'fear')}</span>
+      <div class="face-top">
+        <span class="face-name">${esc(f.name)}</span>
+        <span class="face-disp">${esc(f.disposition)}</span>
       </div>
-      <div class="face-note">${esc(f.disposition)}${f.knows_about_you
-        ? ` · knows ${f.knows_about_you}` : ''}</div>
+      <div class="face-bar">
+        <em>trust</em>${pips(f.trust_pips, 'trust')}
+      </div>
+      ${f.fear_pips > 0 ? `<div class="face-bar">
+        <em>fear</em>${pips(f.fear_pips, 'fear')}
+      </div>` : ''}
+      ${f.knows_about_you ? `<div class="face-knows">knows ${f.knows_about_you}
+        thing${f.knows_about_you === 1 ? '' : 's'} about you</div>` : ''}
     </div>`).join('');
 
   host.innerHTML = `

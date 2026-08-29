@@ -1,0 +1,169 @@
+"""Layout invariants the test suite could not see.
+
+Every one of these was a REAL bug that shipped past 391 passing assertions,
+because the suite only ever asked the DOM questions ("is `hidden` set?", "does
+this element exist?") and never asked the BROWSER what it actually painted.
+An element can carry `hidden` and still be fully visible; a panel can exist and
+still be 800px taller than the box meant to contain it.
+
+These are static checks over the real stylesheet - no browser needed - chosen
+because each one maps to a specific failure that was visible on screen:
+
+  [hidden]      Nine of thirteen hidden elements were still rendering, so the
+                landing page, the game shell, the modal and the command
+                palette all painted on top of one another. The browser's own
+                `[hidden] { display: none }` is the weakest rule there is, and
+                any author rule setting `display` beats it.
+
+  min-height:0  `.table` grew to its content (1088px) inside a 292px stage,
+                because grid and flex items default to `min-height: auto` and
+                refuse to shrink below their content. The feed painted over
+                the composer.
+
+  cascade order An override with the same specificity only wins if it comes
+                LATER in the file. A mobile rule hiding the world clock sat in
+                an earlier media block than the base `.worldclock` definition,
+                so it silently lost and the clock printed through the Mana
+                chip on every phone.
+
+Run:  python -m tests.test_ui_contract
+"""
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CSS = (ROOT / "frontend" / "assets" / "styles.css").read_text(encoding="utf-8")
+HTML = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+
+FAILS, NOTES = [], []
+
+
+def ok(cond, msg):
+    (NOTES if cond else FAILS).append(msg)
+
+
+def section(t):
+    NOTES.append("\n  " + t)
+
+
+def _rule_line(pattern):
+    """Line number of the first rule matching `pattern`, or -1."""
+    for i, line in enumerate(CSS.split("\n"), 1):
+        if re.search(pattern, line):
+            return i
+    return -1
+
+
+def test_hidden_actually_hides():
+    section("[hidden] — the attribute the whole app toggles screens with")
+    ok(re.search(r"\[hidden\]\s*\{[^}]*display:\s*none\s*!important", CSS),
+       "a global [hidden] { display: none !important } rule exists — without it, "
+       "any class that sets `display` outranks the browser's own hidden handling")
+
+    # It has to come before the layout rules it is protecting against, or at
+    # least carry !important (it does). Being early is how it stays readable.
+    line = _rule_line(r"^\[hidden\]")
+    ok(0 < line < 60,
+       f"and it is declared up top as a base rule (line {line}), not buried")
+
+    used = len(re.findall(r"\shidden(?=[\s>=])", HTML))
+    ok(used >= 5,
+       f"the markup genuinely relies on it ({used} elements ship with `hidden`)")
+
+
+def test_scroll_containers_can_shrink():
+    section("min-height:0 — so a scroll region scrolls instead of overflowing")
+    for sel in (r"\.table\s*\{", r"\.rail\s*\{"):
+        name = sel.split("\\")[1].split("\\")[0]
+        m = re.search(sel + r"([^}]*)\}", CSS, re.S)
+        ok(m and "min-height: 0" in m.group(1),
+           f".{name} sets min-height: 0 — a grid/flex item defaults to "
+           f"min-height:auto and will not shrink below its content")
+
+    m = re.search(r"\.stage\s*\{([^}]*)\}", CSS, re.S)
+    ok(m and "min-height: 0" in m.group(1),
+       ".stage sets min-height: 0")
+    ok(m and "overflow: hidden" in m.group(1),
+       ".stage clips — a hard backstop so a future child that forgets "
+       "min-height:0 cannot paint over the composer again")
+
+    m2 = re.search(r"\.feed\s*\{([^}]*)\}", CSS, re.S)
+    ok(m2 and "overflow-y: auto" in m2.group(1),
+       ".feed is the element that actually scrolls")
+
+
+def test_mobile_overrides_come_after_base_rules():
+    section("cascade — an override must come LATER than what it overrides")
+    base = _rule_line(r"^\.worldclock\s*\{")
+    override = _rule_line(r"^\s*\.topbar \.worldclock\s*\{\s*display:\s*none")
+    ok(base > 0 and override > 0,
+       f"both the base .worldclock rule (line {base}) and the mobile "
+       f"override (line {override}) are present")
+    ok(override > base,
+       f"the mobile override at line {override} comes AFTER the base rule at "
+       f"line {base} — this is the exact ordering that was wrong, and the "
+       f"clock printed through the Mana chip on every phone because of it")
+
+    # There are several 640px blocks; the topbar rules live in the LATE one,
+    # which is the whole point of this test - so check them all, not the first.
+    blocks = re.findall(r"@media \(max-width: 640px\)[^{]*\{(.*?)\n\}", CSS, re.S)
+    ok(any(".topbar {" in b and "overflow: hidden" in b for b in blocks),
+       f"the mobile topbar clips as a backstop rather than letting content "
+       f"bleed (checked {len(blocks)} media blocks)")
+
+
+def test_responsive_panels_stay_reachable():
+    section("responsive — narrow screens must not lose the rails for good")
+    ok(".mobile-tabs" in CSS and 'class="mobile-tabs"' in HTML,
+       "a mobile tab bar exists in BOTH the stylesheet and the markup — the "
+       "rails are display:none below 1040px, so without it the awareness "
+       "panel would be permanently unreachable on a laptop")
+    ok(re.search(r"\.app\.pane-(left|right)\s+\.rail-", CSS),
+       "the pane classes that reveal a rail are defined")
+    ok(re.search(r"\.app\.pane-(left|right)\s+\.composer\s*\{[^}]*display:\s*none", CSS),
+       "the composer yields while a panel is open — it otherwise claims a "
+       "third of a phone screen and clips the panel mid-row")
+
+
+def test_assets_are_cache_busted():
+    section("deploy — a stale stylesheet must not survive a deploy")
+    main = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+    ok("_asset_version" in main,
+       "asset URLs carry a content hash, so a browser cannot serve a "
+       "pre-deploy stylesheet against post-deploy markup")
+    ok(re.search(r'Cache-Control["\']?\s*:\s*["\']no-store', main),
+       "the HTML itself is no-store — it is the one document that has to be "
+       "re-read for a client to learn the new asset hashes at all")
+
+
+def _all():
+    return (test_hidden_actually_hides, test_scroll_containers_can_shrink,
+            test_mobile_overrides_come_after_base_rules,
+            test_responsive_panels_stay_reachable, test_assets_are_cache_busted)
+
+
+def main():
+    print("StoryLiver — layout invariants")
+    print("  static checks over the real stylesheet, no browser needed\n")
+    for fn in _all():
+        fn()
+    passed = 0
+    for n in NOTES:
+        if n.startswith("\n"):
+            print(n)
+        else:
+            print("  PASS  " + n); passed += 1
+    for f in FAILS:
+        print("  FAIL  " + f)
+    print(f"\n  {passed} passed, {len(FAILS)} failed")
+    return 1 if FAILS else 0
+
+
+def test_all_ui_contract():
+    for fn in _all():
+        fn()
+    assert not FAILS, "\n".join(FAILS)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

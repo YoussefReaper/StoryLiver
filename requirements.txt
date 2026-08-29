@@ -9,3 +9,5 @@ anthropic>=0.40
 python-multipart>=0.0.9
 # Argon2id password hashing for accounts (OWASP first recommendation).
 argon2-cffi>=23.1
+# Optional durable-storage backup/restore on free hosts with no disk.
+pymongo>=4.6

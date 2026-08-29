@@ -14,12 +14,13 @@ services:
       - key: OPENAI_API_KEY
         sync: false            # set this in the Render dashboard
       - key: REDIS_URL
-        sync: false            # Upstash connection string (rediss://…)
-      - key: STORYLIVER_DATA_DIR
-        value: /var/data
+        sync: false            # Upstash connection string (rediss://…) - optional, single instance only
+      - key: MONGODB_URI
+        sync: false            # MongoDB Atlas free M0 - makes data survive spin-down/redeploy on this plan
       - key: STORYLIVER_CORS
         sync: false            # e.g. https://storyliver.pages.dev
-    disk:
-      name: storyliver-data
-      mountPath: /var/data
-      sizeGB: 1
+    # NOTE: Render's free web services do not support a persistent disk at
+    # all - that is a paid-plan feature. Local storage here is wiped on every
+    # spin-down and redeploy. Set MONGODB_URI above (a free Atlas M0 cluster)
+    # so nothing is actually lost when that happens; without it, this plan is
+    # fine for a single sitting but will not remember anything across days.

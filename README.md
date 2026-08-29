@@ -76,7 +76,15 @@ python -m tests.test_workstreams
 python -m tests.test_research
 ```
 
-**28 + 39 + 88 + 71 + 35 + 55 + 58 = 374 assertions, all offline, no key, no spend.**
+```bash
+python -m tests.test_durable
+```
+
+```bash
+python -m tests.test_ui_contract
+```
+
+**28 + 39 + 88 + 71 + 35 + 55 + 58 + 17 + 16 = 407 assertions, all offline, no key, no spend.**
 
 ```
 anti-collapse   persona anchors byte-identical after 59 turns
@@ -613,6 +621,44 @@ stakes, and where the table's lines are — because the failure mode that loses
 players is not complexity, it is a cursor blinking in an empty box after a wall
 of setup. Each control it touches is one they will use again in the same place
 later. Returning players never see it again.
+
+---
+
+## Surviving a free host with no disk
+
+Render's free web service - and most free trial tiers elsewhere - gives the
+app **no persistent disk**. Every spin-down (15 minutes idle) or redeploy hands
+it a brand new, empty filesystem. Without anything to counter that, a friends
+test loses every story, account and Mana balance the moment nobody's played
+for a quarter hour.
+
+Set `MONGODB_URI` (a free MongoDB Atlas M0 cluster - no card needed) and
+[`durable.py`](backend/durable.py) closes that gap:
+
+```
+timer fires, every 5 min ─┐
+graceful shutdown ────────┴──► consistent SQLite snapshot ──► MongoDB (GridFS)
+
+fresh container boots, no local file ──► pull the latest snapshot down first
+```
+
+**SQLite stays the only database.** This is not a second data store or a
+migration - every one of the 40+ modules that call `db.run`/`db.row`/`db.rows`,
+and all 391 tests, are untouched. Two things happen around the edges: the live
+database is backed up, and it is restored the moment a fresh container finds no
+local file waiting for it.
+
+"Consistent" is load-bearing. The database runs in WAL mode, so a raw copy of
+the `.db` file can miss commits still sitting in the `-wal` sidecar - a stale
+snapshot, silently. This uses SQLite's own **online backup API**
+(`Connection.backup()`), which is what its docs recommend for backing up a
+database that is actively being written to.
+
+Off by default, checked the same two ways `research.py` is: no `MONGODB_URI`
+set, or the test suite's mock mode, and nothing here ever touches a network.
+Every failure mode degrades rather than blocks - a Mongo outage on boot still
+lets the app come up with a fresh database, exactly like it does today; a
+misconfigured URI fails within a few seconds rather than hanging.
 
 ---
 

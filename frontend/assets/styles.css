@@ -3,6 +3,14 @@
    Ink and ember. A book that is warm to the touch and breathing slightly.
    ========================================================================== */
 
+/* The browser's own [hidden] { display: none } is the WEAKEST possible rule -
+   any author rule that sets `display` beats it, including a plain class like
+   `.app { display: flex }`. Every screen in this app is toggled with the
+   `hidden` property, so without this the landing page, the game shell, the
+   modal and the command palette all render stacked on top of one another.
+   This has to outrank the layout rules, hence !important. */
+[hidden] { display: none !important; }
+
 :root {
   /* ink (default) */
   --void:        #06080C;
@@ -240,12 +248,13 @@ button { background: none; border: 0; cursor: pointer; }
 .chip-btn.is-ember .ico { opacity: .5; }
 
 .stage {
-  flex: 1; min-height: 0; display: grid;
+  flex: 1; min-height: 0; display: grid; overflow: hidden;
   grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
 }
 
 /* ---------------------------------------------------------------- rails -- */
-.rail { overflow-y: auto; padding: 16px; display: grid; gap: 14px; align-content: start; }
+.rail { overflow-y: auto; min-height: 0; padding: 16px; display: grid; gap: 14px;
+        align-content: start; }
 .rail-left { border-right: 1px solid var(--line); background: var(--panel); }
 .rail-right { border-left: 1px solid var(--line); background: var(--panel); }
 .rail::-webkit-scrollbar, .feed::-webkit-scrollbar, .modal-card::-webkit-scrollbar,
@@ -600,6 +609,12 @@ button { background: none; border: 0; cursor: pointer; }
   .app.pane-left .rail-left,
   .app.pane-right .rail-right { display: grid; }
   .app.pane-left .reader, .app.pane-right .reader { visibility: hidden; }
+  /* Browsing a panel is not the same activity as typing a turn. On a narrow
+     screen the composer plus its suggestion chips claim ~210px of ~600px,
+     which left the panel clipped mid-row and unreadable. Tapping "Table"
+     brings it straight back - the standard mobile pattern. */
+  .app.pane-left .composer,
+  .app.pane-right .composer { display: none; }
   .stage { position: relative; }
   .mobile-tabs {
     display: grid; grid-template-columns: repeat(3,1fr); flex: none;
@@ -962,7 +977,13 @@ button { background: none; border: 0; cursor: pointer; }
 .pip-wary i { background: var(--muted); }
 
 /* ------------------------------------------------------------ the table */
-.table { display: flex; flex-direction: column; min-width: 0; background: var(--ink); position: relative; }
+/* min-height:0 is load-bearing, not tidiness. A grid/flex item defaults to
+   min-height:auto, which refuses to shrink below its content - so the feed's
+   full height (1000px+ of prose) forced .table past the stage and painted
+   over the composer instead of scrolling inside its own region. The rails
+   have overflow-y:auto for the same reason and need the same release. */
+.table { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+         background: var(--ink); position: relative; }
 .table-tabs {
   display: flex; gap: 2px; padding: 7px 12px 0; border-bottom: 1px solid var(--line);
   background: var(--panel); flex: none; overflow-x: auto; scrollbar-width: none;
@@ -1276,6 +1297,22 @@ button { background: none; border: 0; cursor: pointer; }
   .zone[data-zone="back_a"], .zone[data-zone="back_b"] { grid-column: span 1; }
 }
 @media (max-width: 640px) {
+  /* Placed AFTER the base .worldclock rule on purpose: an override with the
+     same specificity only wins if it comes later in the file, and the first
+     attempt at this sat in an earlier media block where the base definition
+     silently beat it.
+
+     The topbar packs a brand, a world clock, an account chip and six icon
+     buttons; below ~640px they stop fitting and print through each other.
+     The clock yields first because it is the one genuinely redundant item -
+     the same day, phase and weather lead every passage in the story - and
+     the bar clips as a hard backstop so nothing can bleed again. */
+  .topbar { gap: 8px; padding: 0 10px; overflow: hidden; }
+  .topbar .worldclock { display: none; }
+  .topbar-right { gap: 2px; }
+  .topbar-right .icon-btn { padding: 5px; }
+  .brand-sm .brand-text { display: none; }
+
   .table-tabs { padding: 6px 8px 0; }
   .table-tabs button { padding: 8px 10px; font-size: 11.5px; }
   .table-tabs button span { display: none; }
@@ -1531,7 +1568,7 @@ button { background: none; border: 0; cursor: pointer; }
   border: 1px solid var(--line); background: var(--panel-2);
 }
 .fac-name { font-weight: 500; }
-.fac-band { color: var(--muted); text-transform: capitalize; }
+.fac-band { color: var(--muted); }
 .fac-fear { color: var(--crimson); font-style: italic; }
 .fac-num  { color: var(--faint); font-variant-numeric: tabular-nums; }
 .band-hunted, .band-hated     { border-color: var(--crimson); }
@@ -1540,15 +1577,22 @@ button { background: none; border: 0; cursor: pointer; }
 
 /* --- relationship faces ------------------------------------------------- */
 .face-row { display: grid; gap: 7px; margin-top: 10px; }
-.face { padding: 7px 9px; border-radius: 8px; background: var(--panel-2);
+.face { padding: 8px 10px; border-radius: 8px; background: var(--panel-2);
         border: 1px solid var(--line); }
+.face-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .face-name { font-size: 12.5px; font-weight: 500; }
-.face-bars { display: flex; gap: 10px; margin: 4px 0 3px; }
-.pipset { display: inline-flex; gap: 2px; }
-.pip { width: 7px; height: 7px; border-radius: 2px; background: var(--line); display: block; }
+.face-disp { font-size: 10.5px; color: var(--muted); text-transform: lowercase;
+             white-space: nowrap; }
+.face-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.face-bar em {
+  font-style: normal; font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--faint); width: 34px; flex: none;
+}
+.pip { width: 14px; height: 4px; border-radius: 2px; background: var(--line-soft);
+       display: inline-block; margin-right: 2px; }
 .pip-trust.on { background: var(--verdigris); }
 .pip-fear.on  { background: var(--crimson); }
-.face-note { font-size: 11px; color: var(--muted); }
+.face-knows { margin-top: 5px; font-size: 10.5px; color: var(--ember); }
 
 /* --- intelligence board (hardcore) -------------------------------------- */
 .int-board { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
