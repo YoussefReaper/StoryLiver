@@ -529,7 +529,23 @@ CATEGORY_SETS = {
                    "Category:Female Characters"),
     "places": ("Category:Locations", "Category:Places", "Category:Locations by type"),
     "factions": ("Category:Organizations", "Category:Factions", "Category:Groups"),
+    # THE POWER SYSTEM is what actually limits a canon world. Power-scaling
+    # research is explicit that SYSTEMIC scaling - breaking a series' own
+    # system down (cursed energy, Haki, breathing styles) and placing everyone
+    # inside it - is what works, and that the failure mode of canon RPGs is a
+    # protagonist whose power is undefined relative to the cast.
+    "powers": ("Category:Abilities", "Category:Powers", "Category:Techniques",
+               "Category:Magic", "Category:Combat Styles", "Category:Cursed Techniques"),
+    # THE TIMELINE decides WHEN you are, which decides who is alive, what has
+    # happened, and what the player is allowed to already know.
+    "arcs": ("Category:Arcs", "Category:Story Arcs", "Category:Sagas",
+             "Category:Seasons", "Category:Events"),
 }
+
+# How many of each bucket to keep. Characters carry the world; a power list of
+# 40 techniques is noise the player will never read.
+BUCKET_KEEP = {"characters": 16, "places": 12, "factions": 12,
+               "powers": 10, "arcs": 12}
 
 
 def category_members(host: str, category: str, budget: _Budget, limit=40) -> list:
@@ -656,7 +672,7 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
                 # Rank before truncating: the top 18 alphabetically is noise,
                 # the top 18 by article size is the cast.
                 names = by_importance(host, _dedupe(names), budget,
-                                      keep=16 if bucket == "characters" else 12)
+                                      keep=BUCKET_KEEP.get(bucket, 12))
                 notes = describe(host, names, budget) if bucket == "characters" else {}
                 out[bucket] = [{"name": n, "note": notes.get(n, "")} for n in names]
                 if budget.left <= 1:
@@ -700,8 +716,8 @@ def _dedupe(names):
 def _empty(setting, note):
     return {"setting": setting, "canonical_name": "", "found": False,
             "summary": "", "wiki": "", "characters": [], "places": [],
-            "factions": [], "sources": [], "note": note, "cached": False,
-            "depth": "full", "fetched_at": ""}
+            "factions": [], "powers": [], "arcs": [], "sources": [],
+            "note": note, "cached": False, "depth": "full", "fetched_at": ""}
 
 
 # ---------------------------------------------------------------------------

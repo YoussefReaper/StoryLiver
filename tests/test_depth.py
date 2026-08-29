@@ -1,0 +1,234 @@
+"""Roleplay depth - the fixes for why AI roleplay goes flat.
+
+Each test here maps to a documented cause, not a guess:
+
+  CALLBACKS      Reincorporation is the single most cited thing that makes a
+                 long campaign feel alive. The engine already retrieved old
+                 events but handed them over labelled MUST NOT CONTRADICT - a
+                 constraint, never an invitation. A world with a memory that
+                 never refers to it reads exactly like one without.
+
+  BANTER         Companion-to-companion talk is what makes a room feel
+                 inhabited rather than staged. `npc_edges` existed in the world
+                 files and was silently DROPPED by worldkit.normalise, so the
+                 narrator never knew two characters despised each other.
+
+  INITIATIVE     NPCs that only make statements are furniture. Research on NPC
+                 conversation is explicit that they should open with questions,
+                 requests or offers - something that leaves the player with a
+                 decision.
+
+  SESSION ZERO   Canon RPGs fail on undefined player power: anime power scaling
+                 makes some characters canonically untouchable, so a
+                 protagonist with no stated place becomes a god or a bystander.
+                 Entry point + power placement + a limit are asked BEFORE the
+                 world is built.
+
+  FLAT CONTEXT   All of the above is additive prompt text, and the whole
+                 architecture rests on a 4-player prompt not exceeding the
+                 single-player ceiling. That guarantee is re-checked here.
+
+Run:  python -m tests.test_depth
+"""
+import os
+import shutil
+import tempfile
+
+os.environ["STORYLIVER_LLM_MODE"] = "mock"
+_TMP = tempfile.mkdtemp(prefix="storyliver-depth-")
+os.environ["STORYLIVER_DATA_DIR"] = _TMP
+
+from backend import (callbacks, db, engine, memory, sessionzero,  # noqa: E402
+                     worldkit, worldforge)
+
+FAILS, NOTES = [], []
+
+
+def ok(cond, msg):
+    (NOTES if cond else FAILS).append(msg)
+
+
+def section(t):
+    NOTES.append("\n  " + t)
+
+
+# ------------------------------------------------------------------ callbacks
+def test_callbacks():
+    section("callbacks — the world reaches back to something small")
+    db.init()
+    pt = engine.create_playthrough("depth-cb")
+
+    engine.take_turn(pt, "I promise Nessa I will come back for her before the fire.",
+                     player=memory.SOLO)
+    kinds = {e["kind"] for e in memory.timeline(pt)}
+    ok("promise" in kinds,
+       "a promise is filed as its OWN kind, not as an ordinary action — otherwise "
+       "the highest-value callback there is scores like any other sentence")
+
+    # Nothing to call back to yet: the story is too young, and inviting a
+    # callback to something that just happened produces the opposite effect.
+    ok(callbacks.block(pt, 2) == "",
+       f"nothing is offered inside the {callbacks.MIN_AGE}-turn window — a callback "
+       "to something that just happened is not a callback")
+
+    db.run("UPDATE playthroughs SET current_turn=20 WHERE id=?", (pt,))
+    picks = callbacks.candidates(pt, 20, present=["nessa"])
+    ok(picks and picks[0]["kind"] == "promise",
+       "once it is old enough, the PROMISE outranks everything else")
+
+    blk = callbacks.block(pt, 20, present=["nessa"])
+    ok("MAY REMEMBER" in blk and "optional" in blk,
+       "it reaches the narrator as an INVITATION, not a constraint")
+    ok("come back for her" in blk,
+       "carrying the player's own words, so the callback can be specific")
+
+    # Fate is the plot, not a callback.
+    ok(callbacks.CALLBACK_WEIGHT["fate"] == 0,
+       "a fated cataclysm is never offered as a callback — that is the plot")
+    ok(callbacks.CALLBACK_WEIGHT["promise"] > callbacks.CALLBACK_WEIGHT["discovery"],
+       "a promise is worth more to reach back to than a place being found")
+
+
+# --------------------------------------------------------------------- banter
+def test_banter():
+    section("banter — characters who have opinions about each other")
+    db.init()
+    pt = engine.create_playthrough("depth-banter")
+    world = engine.world_for(engine._pt(pt))
+
+    ok(bool(world.get("npc_edges")),
+       "npc_edges survives worldkit.normalise() — it was silently dropped, so a "
+       "world could declare a feud and the engine seeded nothing")
+
+    rows = db.rows("SELECT 1 FROM relationships WHERE playthrough_id=?"
+                   " AND src!=? AND dst!=?", (pt, memory.SOLO, memory.SOLO))
+    ok(len(rows) >= 6, f"they are seeded into the relationship table ({len(rows)} edges)")
+
+    blk = memory.between_block(pt, world, ["nessa", "corvin", "yeva", "adrahel"])
+    ok("BETWEEN THEM" in blk, "the narrator is told who resents whom")
+    ok("Nessa Quill does not trust Corvin Pell." in blk,
+       "with the actual named feud, in plain words")
+    ok("speak to each other" in blk,
+       "and invited to let them talk to EACH OTHER, not only to the player")
+
+    ok(memory.between_block(pt, world, ["nessa"]) == "",
+       "one character alone produces nothing — there is no room to overhear")
+
+
+# ----------------------------------------------------------------- initiative
+def test_npc_initiative():
+    section("initiative — NPCs put something TO you")
+    from backend import npc_sim
+    sysmsg = npc_sim.ACT_SYSTEM
+    ok("furniture" in sysmsg,
+       "the prompt names the failure mode: a character who only makes statements")
+    all_forms = all(w in sysmsg for w in ("question", "request", "condition", "refuse"))
+    ok(all_forms,
+       "and asks for a question, a request, a condition or a refusal — the forms "
+       "that leave the player with a decision they did not have")
+    ok("NOT here to be agreeable" in sysmsg,
+       "plus explicit anti-agreeableness — sycophancy is the documented root "
+       "cause of flat AI roleplay, and it worsens over long conversations")
+
+
+# --------------------------------------------------------------- session zero
+def test_session_zero():
+    section("Session Zero — the player has a defined place before play")
+    general = sessionzero.questions({"found": False, "setting": "a drowned city"})
+    ids = [q["id"] for q in general["questions"]]
+    ok(ids == ["role", "power", "limit"],
+       f"an original world is still asked who/how strong/what limits ({ids})")
+
+    canon = {"found": True, "canonical_name": "Jujutsu Kaisen",
+             "arcs": [{"name": "Shibuya Incident", "note": "the city is sealed"}],
+             "powers": [{"name": "Cursed Technique", "note": "innate ability"}]}
+    q = sessionzero.questions(canon)
+    ids = [x["id"] for x in q["questions"]]
+    ok("entry" in ids and "system" in ids,
+       "a canon world additionally asks WHERE on the timeline and WHAT power")
+
+    entry = next(x for x in q["questions"] if x["id"] == "entry")
+    labels = [o["label"] for o in entry["options"]]
+    ok("Shibuya Incident" in labels,
+       "the options are the world's REAL arcs, from research — not free text "
+       "the model has to recognise")
+    ok(labels[0] == "The very beginning" and labels[-1] == "After it all",
+       "bracketed by before-it-all and after-it-all, so any point is reachable")
+
+    sysq = next(x for x in q["questions"] if x["id"] == "system")
+    ok(sysq["options"][0]["id"] == "none",
+       "having NO power is offered first — the harder, better story")
+    ok(any(o["label"] == "Cursed Technique" for o in sysq["options"]),
+       "and the world's own system is what you pick from")
+
+    brief = sessionzero.brief(
+        {"entry": "shibuya_incident", "system": "cursed_technique", "power": "novice",
+         "role": "a first-year", "limit": "it burns through me"}, canon)
+    ok("ENTRY POINT" in brief and "Do not replay earlier events" in brief,
+       "the brief tells the builder to seed the world as it stands THEN")
+    ok("POWER LEVEL" in brief and "fails at the worst moment" in brief,
+       "power is placed inside the world rather than left undefined")
+    ok("Press on this" in brief,
+       "and the limit is something the world is told to press on, not decoration")
+    ok("reason to care that this specific person is here" in brief,
+       "with named characters given a reason to care — the fix for a good "
+       "setting in which the protagonist has no place")
+
+    ok(sessionzero.brief({}, canon) == "",
+       "answering nothing changes nothing — Session Zero is never mandatory")
+
+
+# ------------------------------------------------------------------ scale
+def test_world_scale():
+    section("scale — a world can be as big as it was asked to be")
+    db.init()
+    sizes = {}
+    for scale in ("town", "city", "region", "world"):
+        w = worldforge.bootstrap("the shattered archipelago", user_id="depth-s",
+                                 mode="original", scale=scale)
+        sizes[scale] = (len(w["locations"]), len(w["npcs"]))
+    ok(sizes["town"][1] >= 10, f"a town is ~10 characters {sizes['town']}")
+    ok(sizes["world"][1] >= 40,
+       f"a whole world is {sizes['world'][1]} characters, not 10 — built in "
+       f"several passes because one call truncates {sizes['world']}")
+    ok(sizes["town"][0] < sizes["city"][0] < sizes["region"][0] < sizes["world"][0],
+       "and each step up is genuinely larger than the last")
+
+    plan = worldforge.scale_plan("world")
+    ok(plan["model_calls"] >= 9,
+       f"the cost is stated up front ({plan['model_calls']} model calls) — a whole "
+       f"world is not one call and the player should know before pressing the button")
+
+
+def _all():
+    return (test_callbacks, test_banter, test_npc_initiative,
+            test_session_zero, test_world_scale)
+
+
+def main():
+    print("StoryLiver — roleplay depth")
+    print("  offline stub, no API key, no spend\n")
+    for fn in _all():
+        fn()
+    passed = 0
+    for n in NOTES:
+        if n.startswith("\n"):
+            print(n)
+        else:
+            print("  PASS  " + n); passed += 1
+    for f in FAILS:
+        print("  FAIL  " + f)
+    print(f"\n  {passed} passed, {len(FAILS)} failed")
+    return 1 if FAILS else 0
+
+
+def test_all_depth():
+    for fn in _all():
+        fn()
+    assert not FAILS, "\n".join(FAILS)
+
+
+if __name__ == "__main__":
+    code = main()
+    shutil.rmtree(_TMP, ignore_errors=True)
+    raise SystemExit(code)

@@ -137,6 +137,25 @@ def _factions(raw: dict, npc_ids: set, loc_ids: set) -> list:
     return out[:8]
 
 
+def _npc_edges(raw: dict, npc_ids: set) -> list:
+    """Directed feelings between characters: (src, dst, (aff, trust, fear, obl)).
+
+    Filtered to characters that exist and clamped to the range the relationship
+    engine uses, so a malformed world seeds nothing rather than poisoning the
+    table."""
+    out = []
+    for edge in raw.get("npc_edges") or []:
+        try:
+            src, dst, vals = edge[0], edge[1], list(edge[2])
+        except (TypeError, IndexError, KeyError):
+            continue
+        if src not in npc_ids or dst not in npc_ids or src == dst:
+            continue
+        vals = [max(-100.0, min(100.0, float(v))) for v in (vals + [0, 0, 0, 0])[:4]]
+        out.append((src, dst, tuple(vals)))
+    return out[:60]
+
+
 def normalise(raw: dict, *, strict: bool = True) -> dict:
     """Coerce a world dict (hand-authored, imported, or model-generated) into the
     engine's shape. Raises WorldError on anything the engine cannot run."""
@@ -274,6 +293,11 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         "inspired_by": str(raw.get("inspired_by") or ""),
         "factions": _factions(raw, {n["id"] for n in npcs},
                               {l["id"] for l in locations}),
+        # How the CHARACTERS feel about each other, not just about the player.
+        # Dropped here until now, so a world could declare that Nessa distrusts
+        # Corvin and the engine seeded nothing - two people who cannot stand
+        # each other stood in a room being uniformly pleasant.
+        "npc_edges": _npc_edges(raw, {n["id"] for n in npcs}),
         # Where a bootstrapped world was researched from. Kept on the world so
         # attribution survives export, and so a player can see their sources.
         "sources": [

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from . import (aftermath, arcs, atlas, auth, authority, awareness, betrayal, budget,
-               canon, combat, durable, legibility, research, uploads,
+               canon, combat, durable, legibility, research, sessionzero, uploads,
                config, db,
                death, engine, fastforward, identity, mana, memory, modes, narrgraph,
                party, payments, persona, precommit, relationships, rt, runs, sessions,
@@ -121,6 +121,13 @@ class Bootstrap(BaseModel):
     # "original" builds from imagination, "canon" reads the real setting and
     # continues it, "auto" looks first and decides. The player's choice.
     mode: str = Field(default="auto", pattern="^(auto|original|canon)$")
+    # How big a world to build. A single model call can only carry so much
+    # before it starts truncating, so anything past "town" is generated in
+    # several passes and stitched - see worldforge.SCALES.
+    scale: str = Field(default="town", pattern="^(town|city|region|world)$")
+    # Session Zero: entry point on the timeline, where the player sits in the
+    # world's power system, and what limits them.
+    answers: dict = Field(default_factory=dict)
 
 
 class SaveWorld(BaseModel):
@@ -575,9 +582,15 @@ def forge_bootstrap(body: Bootstrap):
     engine.ensure_user(body.user_id)
     try:
         world = worldforge.bootstrap(body.setting, user_id=body.user_id,
-                                tone=body.tone, mode=body.mode)
+                                tone=body.tone, mode=body.mode, scale=body.scale,
+                                answers=body.answers)
     except (ValueError, worldkit.WorldError) as e:
         raise HTTPException(400, str(e))
+    except llm.LLMError as e:
+        # LLMError is a RuntimeError, so it used to escape as a bare 500 with
+        # nothing the player could act on. Surface what actually went wrong -
+        # a bad key, a rate limit and a timeout need different responses.
+        raise HTTPException(502, f"the model could not build that world: {e}")
     payload = {"world": world, "personal_only": bool(world.get("personal_only")),
                "notice": None}
     if world.get("personal_only"):
@@ -2019,6 +2032,96 @@ def forge_research(setting: str = Query(min_length=2, max_length=120),
         "sources": research.attribution(d),
         "note": d["note"], "enabled": research.enabled(),
     }
+
+
+# ---------------------------------------------------------------------------
+# The Mana wallet - account-scoped, not story-scoped
+# ---------------------------------------------------------------------------
+# Mana belongs to the person. A host who buys a pack spends it in every world
+# and every room they run, and can buy BEFORE they have a story at all - which
+# the old per-story routes could not do (the client posted to
+# /playthroughs/null/purchase and got a 404).
+
+@app.get("/api/mana/wallet")
+def mana_wallet(user_id: str = Query(min_length=4)):
+    w = mana.wallet(user_id)
+    mana.absorb_playthrough_balances(user_id)
+    w = mana.wallet(user_id)
+    return {"balance": int(w["balance"]), "purchased": int(w["purchased"]),
+            "spent": int(w["spent"]),
+            "status": mana.status(user_id),
+            "packs": config.MANA_PACKS,
+            "guest": auth.is_guest(user_id)}
+
+
+@app.post("/api/mana/purchase")
+def mana_purchase(body: Purchase, user_id: str = Query(min_length=4)):
+    """Dev-only instant grant, mirroring the per-story route this replaces.
+    Refuses once real payments are configured."""
+    if payments.configured():
+        raise HTTPException(409, "real payments are configured - use /api/mana/paypal/create-order")
+    pack = next((p for p in config.MANA_PACKS if p["id"] == body.pack_id), None)
+    if not pack:
+        raise HTTPException(400, "unknown pack")
+    mana.credit(user_id, pack["mana"])
+    return {"granted": pack["mana"], "pack": pack,
+            "balance": mana.balance(user_id), "stubbed": True}
+
+
+@app.post("/api/mana/paypal/create-order")
+def mana_paypal_create(body: Purchase, request: Request,
+                       user_id: str = Query(min_length=4)):
+    user_id = _require_paying_account(request, user_id)
+    if not payments.configured():
+        raise HTTPException(503, "PayPal is not configured on this deployment")
+    try:
+        # The order is opened against the ACCOUNT, not a story. payments.py
+        # still wants a playthrough_id for its own record, so it gets a
+        # stable wallet marker instead of a real one.
+        return payments.create_order(user_id=user_id, playthrough_id=f"wallet:{user_id}",
+                                     pack_id=body.pack_id)
+    except payments.PaymentError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/mana/paypal/capture")
+def mana_paypal_capture(request: Request, order_id: str = Query(min_length=1),
+                        user_id: str = Query(min_length=4)):
+    user_id = _require_paying_account(request, user_id)
+    if not payments.configured():
+        raise HTTPException(503, "PayPal is not configured on this deployment")
+    try:
+        result = payments.capture_order(order_id, expected_user_id=user_id)
+    except payments.PaymentError as e:
+        raise HTTPException(402, str(e))
+    if not result["already_captured"]:
+        mana.credit(user_id, result["mana"])
+    return {"granted": result["mana"], "pack_id": result["pack_id"],
+            "already_captured": result["already_captured"],
+            "balance": mana.balance(user_id)}
+
+
+@app.get("/api/forge/scales")
+def forge_scales():
+    """What each world size actually costs and produces, BEFORE committing.
+
+    A "whole world" is nine model calls, not one - the player should know
+    that before pressing the button, not discover it on their bill."""
+    return {"scales": [worldforge.scale_plan(k) for k in worldforge.SCALES]}
+
+
+@app.get("/api/forge/session-zero")
+def forge_session_zero(setting: str = Query(min_length=2, max_length=160),
+                       mode: str = Query(default="auto")):
+    """The questions to ask BEFORE building a world.
+
+    For a canon setting these are grounded in what was actually researched -
+    the world's real arcs and its real power system - so the player picks
+    "start at the Mugen Train arc" instead of typing a guess. Research is
+    cached, so opening this and then building costs one lookup, not two."""
+    found = (research.dossier(setting) if mode != "original"
+             else {"found": False, "setting": setting})
+    return sessionzero.questions(found)
 
 
 @app.get("/{path:path}")

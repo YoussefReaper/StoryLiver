@@ -17,7 +17,7 @@ import hashlib
 import json
 import uuid
 
-from . import arcs, db, llm, research, worldkit
+from . import arcs, db, llm, research, sessionzero, worldkit
 from . import worlds as world_registry
 
 # Settings that read as an existing IP get the personal-only treatment. This is
@@ -35,6 +35,95 @@ IP_MARKERS = (
     "resident evil", "silent hill", "bioshock", "skyrim", "elder scrolls",
     "minecraft", "roblox", "fortnite", "genshin", "honkai", "arcane", "league of legends",
 )
+
+# ---------------------------------------------------------------------------
+# How big a world is
+# ---------------------------------------------------------------------------
+# One model call can only carry so much before it starts truncating mid-JSON,
+# which is why the original prompt asked for "exactly 9-11 locations and 10-12
+# characters" and why every world came out the same small size no matter how
+# large the setting actually was.
+#
+# Anything past a town is therefore built in SEVERAL passes and stitched:
+# a first pass lays out the districts, then one pass per district fills in its
+# places and people. Each pass is small enough to come back whole, and the
+# world as a whole can be as large as the player asked for.
+#
+# Cost scales honestly with size, and the player is told the number of passes
+# before they commit - a "world" is roughly seven model calls, not one.
+SCALES = {
+    "town":   {"districts": 1, "locs": (9, 11),  "npcs": (10, 12),
+               "label": "A town", "blurb": "One dense, playable place. ~1 model call."},
+    "city":   {"districts": 3, "locs": (7, 9),   "npcs": (7, 9),
+               "label": "A city", "blurb": "Three districts, each with its own people. ~4 calls."},
+    "region": {"districts": 5, "locs": (6, 8),   "npcs": (6, 8),
+               "label": "A region", "blurb": "Five settlements, connected by road. ~6 calls."},
+    "world":  {"districts": 8, "locs": (6, 8),   "npcs": (6, 8),
+               "label": "A whole world", "blurb": "Eight regions, a continent's worth. ~9 calls."},
+}
+
+
+def scale_plan(scale: str) -> dict:
+    """What a given scale will actually produce, before anything is built.
+
+    Surfaced to the player so "a whole world" is a known quantity - roughly
+    how many places, how many characters, and how many model calls it costs -
+    rather than a promise the system might quietly not keep."""
+    spec = SCALES.get(scale) or SCALES["town"]
+    d = spec["districts"]
+    return {
+        "scale": scale if scale in SCALES else "town",
+        "label": spec["label"], "blurb": spec["blurb"],
+        "districts": d,
+        "locations": [d * spec["locs"][0], d * spec["locs"][1]],
+        "characters": [d * spec["npcs"][0], d * spec["npcs"][1]],
+        # one districts pass (when d > 1) + one per district + one laws pass
+        "model_calls": (1 if d > 1 else 0) + d + 1,
+    }
+
+
+DISTRICT_SYSTEM = """You are a world architect for a turn-based text RPG engine. You output data, never prose commentary.
+
+You are given a setting and a target size. Lay out the world's DISTRICTS - the distinct places a story could happen in. A district is a town, a quarter, a stronghold, a station: somewhere with its own character, its own problems, and its own people.
+
+Districts must differ from each other in kind, not just in name. If two could swap names without anyone noticing, merge them and invent a different one.
+
+Return ONLY JSON:
+{
+  "name": "the world or the region, not the franchise",
+  "tagline": "one line, under 60 characters",
+  "premise": "120-180 words, second person, addressed to the player arriving",
+  "arrival": "one sentence: how the player got here",
+  "default_protagonist": "who the player is by default",
+  "districts": [{"id":"snake_case","name":"The Name","kind":"town|quarter|stronghold|wilds|sacred|industry",
+                 "premise":"25-40 words: what this place is and what is wrong here",
+                 "connects":["other_district_id"]}]
+}
+
+Every connects[] id must exist. The map must be connected - no district cut off from the rest."""
+
+
+DISTRICT_FILL_SYSTEM = """You are a world architect for a turn-based text RPG engine. You output data, never prose commentary.
+
+You are given ONE district of a larger world, and the other districts around it. Populate THIS district only.
+
+Characters must be people, not archetypes. Each one needs a VOICE another writer could imitate, hard CONSTRAINTS that limit what they can do, WANTS that conflict with someone else's, and TABOOS they will not cross. At least one pair here must want incompatible things.
+
+Return ONLY JSON:
+{
+  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory","connects":["other_id"]}],
+  "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"place_id",
+            "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
+                       "constraints":["hard limit","hard limit"],
+                       "goals":["what they want","what they want"],
+                       "taboos":["what they never do","what they never do"]},
+            "schedule":{"morning":"place_id","midday":"place_id","evening":"place_id","night":"place_id"},
+            "seed_memories":["something they already know, first person","another"],
+            "initial_relationship":{"affinity":-30..30,"trust":-30..30,"fear":0..30,"obligation":0..30}}]
+}
+
+Every id you invent must be unique across the WHOLE world, so prefix them with the district id. Every connects[] and start_location id must be one you defined here, except a single threshold location that may connect to a neighbouring district."""
+
 
 STRUCTURE_SYSTEM = """You are a world architect for a turn-based text RPG engine. You output data, never prose commentary.
 
@@ -259,8 +348,153 @@ def _empty_dossier(setting):
             "cached": False, "depth": "none", "fetched_at": ""}
 
 
+def _build_districts(brief, *, user_id, spec, setting, personal):
+    """Pass 1: lay out the districts. Only runs for multi-district scales."""
+    plan = llm.complete(
+        "narrator", DISTRICT_SYSTEM,
+        brief + f"\n\nLay out EXACTLY {spec['districts']} districts. JSON only.",
+        user_id=user_id, json_mode=True, max_tokens=2600, temperature=0.9,
+        stub=lambda: _stub_districts(setting, spec["districts"]))
+    districts = [d for d in (plan.get("districts") or []) if d.get("id")]
+    return plan, districts[:spec["districts"]]
+
+
+def _fill_district(district, others, brief, *, user_id, spec, setting):
+    """One pass per district. Small enough to always come back whole."""
+    lo, hi = spec["locs"]
+    nlo, nhi = spec["npcs"]
+    ask = (
+        f"{brief}\n\n"
+        f"THIS DISTRICT: {district['id']} - {district.get('name', '')}\n"
+        f"{district.get('premise', '')}\n"
+        f"NEIGHBOURING DISTRICTS: {', '.join(o['id'] for o in others) or 'none'}\n\n"
+        f"Give it {lo}-{hi} locations and {nlo}-{nhi} characters. "
+        f"Prefix every id with '{district['id']}_'. JSON only."
+    )
+    out = llm.complete(
+        "narrator", DISTRICT_FILL_SYSTEM, ask, user_id=user_id, json_mode=True,
+        max_tokens=3600, temperature=0.9,
+        stub=lambda: _stub_fill(district, spec))
+    return out.get("locations") or [], out.get("npcs") or []
+
+
+def _stitch(plan, districts, filled) -> dict:
+    """Weld the passes into one world.
+
+    Two things have to be true afterwards or the world is not playable: every
+    id is unique, and the map is connected. Passes are generated independently
+    and cannot guarantee either on their own, so both are enforced here rather
+    than hoped for in a prompt."""
+    locations, npcs = [], []
+    seen_loc, seen_npc = set(), set()
+
+    for d, (locs, people) in zip(districts, filled):
+        first_here = None
+        for l in locs:
+            lid = str(l.get("id") or "").strip()
+            if not lid or lid in seen_loc:
+                continue
+            seen_loc.add(lid)
+            l["district"] = d["id"]
+            locations.append(l)
+            first_here = first_here or lid
+        d["_entry"] = first_here
+        for n in people:
+            nid = str(n.get("id") or "").strip()
+            if not nid or nid in seen_npc:
+                continue
+            seen_npc.add(nid)
+            n["district"] = d["id"]
+            npcs.append(n)
+
+    # Drop connects that point at nothing, then wire the districts together
+    # through their entry locations so the whole map is reachable.
+    for l in locations:
+        l["connects"] = [c for c in (l.get("connects") or []) if c in seen_loc and c != l["id"]]
+
+    by_id = {l["id"]: l for l in locations}
+    for d in districts:
+        entry = d.get("_entry")
+        if not entry:
+            continue
+        for other_id in (d.get("connects") or []):
+            other = next((x for x in districts if x["id"] == other_id), None)
+            if not other or not other.get("_entry"):
+                continue
+            a, b = by_id[entry], by_id[other["_entry"]]
+            if b["id"] not in a["connects"]:
+                a["connects"].append(b["id"])
+            if a["id"] not in b["connects"]:
+                b["connects"].append(a["id"])
+
+    # A district the model forgot to connect still has to be reachable, or a
+    # player can be permanently stranded away from most of the world.
+    entries = [d["_entry"] for d in districts if d.get("_entry")]
+    for i in range(1, len(entries)):
+        a, b = by_id[entries[i - 1]], by_id[entries[i]]
+        if b["id"] not in a["connects"]:
+            a["connects"].append(b["id"])
+        if a["id"] not in b["connects"]:
+            b["connects"].append(a["id"])
+
+    return {
+        "name": plan.get("name") or "A world",
+        "tagline": plan.get("tagline") or "",
+        "premise": plan.get("premise") or "",
+        "arrival": plan.get("arrival") or "",
+        "default_protagonist": plan.get("default_protagonist") or "",
+        "districts": [{k: v for k, v in d.items() if not k.startswith("_")}
+                      for d in districts],
+        "locations": locations,
+        "npcs": npcs,
+    }
+
+
+def _stub_districts(setting: str, n: int) -> dict:
+    """Offline stub, so the multi-pass path is exercised by the test suite at
+    every scale without a key or a cent."""
+    base = worldkit.slug(setting, "world")
+    kinds = ["town", "quarter", "stronghold", "wilds", "sacred", "industry",
+             "town", "quarter"]
+    return {
+        "name": setting.title()[:40] or "A World",
+        "tagline": "Built offline, deterministically.",
+        "premise": f"You arrive in {setting}. Nobody here knows your name yet.",
+        "arrival": "You came in on the road, with the dust still on you.",
+        "default_protagonist": "a traveller nobody here has heard of",
+        "districts": [
+            {"id": f"{base}_d{i}", "name": f"District {i + 1}",
+             "kind": kinds[i % len(kinds)],
+             "premise": "A place with its own trouble.",
+             "connects": [f"{base}_d{j}" for j in range(n) if j != i][:2]}
+            for i in range(n)
+        ],
+    }
+
+
+def _stub_fill(district: dict, spec: dict) -> dict:
+    did = district["id"]
+    nlocs, nnpcs = spec["locs"][0], spec["npcs"][0]
+    locs = [{"id": f"{did}_p{i}", "name": f"Place {i + 1}", "kind": "open",
+             "desc": "A place that exists, plainly, and waits.",
+             "connects": [f"{did}_p{(i + 1) % nlocs}"]} for i in range(nlocs)]
+    npcs = [{"id": f"{did}_n{i}", "name": f"Person {i + 1}", "role": "someone here",
+             "start_location": f"{did}_p{i % nlocs}",
+             "anchors": {"voice": "Plain, short sentences. Says the thing.",
+                         "constraints": ["cannot leave the district"],
+                         "goals": ["get through the week"],
+                         "taboos": ["will not lie outright"]},
+             "schedule": {p: f"{did}_p{i % nlocs}"
+                          for p in ("morning", "midday", "evening", "night")},
+             "seed_memories": ["I have been here a long time."],
+             "initial_relationship": {"affinity": 0, "trust": 0, "fear": 0, "obligation": 0}}
+            for i in range(nnpcs)]
+    return {"locations": locs, "npcs": npcs}
+
+
 def bootstrap(setting: str, *, user_id: str, tone: str = "",
-              mode: str = "auto") -> dict:
+              mode: str = "auto", scale: str = "town",
+              answers: dict | None = None) -> dict:
     """Build a playable world from a named setting. Returns a world dict; the
     caller decides whether to save it."""
     setting = (setting or "").strip()
@@ -323,10 +557,33 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if grounding:
         brief += "\n\n" + grounding
 
-    structure = llm.complete(
-        "narrator", STRUCTURE_SYSTEM, brief + "\n\nBuild the places and the people. JSON only.",
-        user_id=user_id, json_mode=True, max_tokens=3600, temperature=0.9,
-        stub=lambda: _stub_structure(setting, personal))
+    # Session Zero: where the player enters the timeline, where they sit in
+    # the world's own power system, and what limits them. Without this the
+    # builder produces a good setting in which the protagonist has no defined
+    # place - the specific failure that makes canon worlds feel generic.
+    sz = sessionzero.brief(answers or {}, found)
+    if sz:
+        brief += "\n\n" + sz
+
+    # A town is one call. Anything larger is built district by district, so
+    # the world can actually be as big as the player asked for instead of
+    # being silently capped at whatever fits in a single response.
+    spec = SCALES.get(scale) or SCALES["town"]
+    if spec["districts"] <= 1:
+        structure = llm.complete(
+            "narrator", STRUCTURE_SYSTEM,
+            brief + "\n\nBuild the places and the people. JSON only.",
+            user_id=user_id, json_mode=True, max_tokens=3600, temperature=0.9,
+            stub=lambda: _stub_structure(setting, personal))
+    else:
+        plan, districts = _build_districts(brief, user_id=user_id, spec=spec,
+                                           setting=setting, personal=personal)
+        filled = [
+            _fill_district(d, [o for o in districts if o["id"] != d["id"]],
+                           brief, user_id=user_id, spec=spec, setting=setting)
+            for d in districts
+        ]
+        structure = _stitch(plan, districts, filled)
 
     laws_brief = (
         f"WORLD: {structure.get('name')}\n"
@@ -348,6 +605,7 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     raw["personal_only"] = personal
     raw["inspired_by"] = found.get("canonical_name") or (setting if personal else "")
     raw["mode"] = "canon" if canon else "original"
+    raw["scale"] = scale if scale in SCALES else "town"
     if personal:
         raw["name"] = _strip_ip_name(str(raw.get("name") or ""), setting)
     raw.setdefault("opening", raw.get("premise", ""))

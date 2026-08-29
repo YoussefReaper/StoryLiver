@@ -259,6 +259,51 @@ def relationship_block(pt_id, world, npc_ids=None, player=SOLO) -> str:
     return "\n".join(lines) if lines else "  (no one has an opinion of you yet)"
 
 
+def between_block(pt_id, world, npc_ids) -> str:
+    """What the people in this room think OF EACH OTHER.
+
+    The world seeds npc_edges (Nessa distrusts Corvin, Tamsin resents her
+    mother) and then only ever used them to prime the relationship table. The
+    narrator was never told, so two characters who cannot stand each other
+    stood in the same room being uniformly pleasant.
+
+    Companion banter is repeatedly cited as what makes a party feel populated
+    rather than staged - it costs nothing here, because the feelings already
+    exist and only had to be shown."""
+    ids = set(npc_ids or [])
+    if len(ids) < 2:
+        return ""
+    rows = db.rows(
+        "SELECT src, dst, affinity, trust, fear FROM relationships"
+        " WHERE playthrough_id=? AND src!=? AND dst!=?", (pt_id, SOLO, SOLO))
+    lines = []
+    for r in rows:
+        if r["src"] not in ids or r["dst"] not in ids or r["src"] == r["dst"]:
+            continue
+        # Only tensions worth writing. Mild mutual indifference is not a scene.
+        strength = abs(r["affinity"]) + abs(r["trust"]) + abs(r["fear"])
+        if strength < 35:
+            continue
+        if r["affinity"] <= -20 or r["trust"] <= -25:
+            feel = "cannot stand" if r["affinity"] <= -35 else "does not trust"
+        elif r["affinity"] >= 35:
+            feel = "is close to"
+        elif r["fear"] >= 25:
+            feel = "is wary of"
+        else:
+            continue
+        lines.append((strength, f"  {world.npc_name(r['src'])} {feel} "
+                                f"{world.npc_name(r['dst'])}."))
+    if not lines:
+        return ""
+    lines.sort(key=lambda x: -x[0])
+    # Terse on purpose: this is additive context, and the flat-context
+    # guarantee (a 4-player prompt must not exceed the single-player ceiling)
+    # matters more than a well-phrased instruction.
+    return ("\nBETWEEN THEM:\n" + "\n".join(t for _, t in lines[:3])
+            + "\n  They may speak to each other, not only to you.")
+
+
 # --------------------------------------------------------------------------
 # NPC minds - memory stream, retrieval, reflections, plans
 # --------------------------------------------------------------------------

@@ -586,6 +586,35 @@ CREATE TABLE IF NOT EXISTS bounties (
   PRIMARY KEY (playthrough_id, faction_id, player_id)
 );
 
+-- ===================================================== canon Session Zero
+-- What the player answered about their own place in a canon world: entry
+-- point on the timeline, where they sit in the power system, what limits
+-- them. Kept on the WORLD so re-entering it does not ask again.
+CREATE TABLE IF NOT EXISTS session_zero (
+  world_id TEXT PRIMARY KEY,
+  answers TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+
+-- ============================================================ the Mana wallet
+-- Mana belongs to the PERSON, not to one story. A host who buys a pack can
+-- spend it in any world and any room they play in - which is what a wallet
+-- means, and what players expect. It also fixes a real bug: buying from the
+-- threshold, where no playthrough exists yet, used to POST to
+-- /playthroughs/null/purchase and 404.
+--
+-- playthroughs.mana_balance stays as a legacy column and is folded into the
+-- owner's wallet once, on first boot after this change, so nobody loses Mana
+-- they already had.
+CREATE TABLE IF NOT EXISTS wallets (
+  user_id TEXT PRIMARY KEY,
+  balance INTEGER NOT NULL DEFAULT 0,
+  purchased INTEGER NOT NULL DEFAULT 0,
+  spent INTEGER NOT NULL DEFAULT 0,
+  migrated INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+
 -- ===================================================== accounts (Workstream D)
 -- A real account, replacing the client-supplied id that anyone could spoof.
 -- The password hash is Argon2id; there is no column that could hold a

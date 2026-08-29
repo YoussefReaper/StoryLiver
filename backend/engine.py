@@ -15,7 +15,8 @@ from __future__ import annotations
 import json
 import uuid
 
-from . import (arcs, atlas, authority, awareness, betrayal, budget, canon, config,
+from . import (arcs, atlas, authority, awareness, betrayal, budget, callbacks, canon,
+               config,
                db, director,
                fastforward, identity, mana, memory, modes, narrator, narrgraph,
                npc_sim, precommit, relationships, rt, runs, streaks, world_master,
@@ -162,6 +163,13 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
                           place_id=moved_to, weight=3)
             atlas.echo(pt["id"], turn, f"You found {world.loc_name(moved_to)}.",
                        place_id=moved_to, kind="discovery", magnitude=2)
+
+    # A promise is the single highest-value thing a world can remember you for,
+    # and the timeline had no way to mark one - it filed "I swear I'll come back"
+    # as an ordinary action and scored it like one. Recorded as its own kind so
+    # it stays reachable long after the moment.
+    if callbacks.looks_like_promise(action):
+        callbacks.note_promise(pt["id"], turn, player, action, location=pt["current_location"])
 
     # Relationships move from a deterministic read of what was done, TO WHOM.
     event = relationships.classify(action)

@@ -6,7 +6,7 @@ Anti-repetition (Pain #4) is enforced two ways: a hard ban list of the
 therapy-speak and purple-prose tics players complain about, and a rolling list
 of the openings already used in this playthrough that must not recur.
 """
-from . import arcs, db, llm, memory, modes
+from . import arcs, callbacks, db, llm, memory, modes
 
 BANNED = (
     "I understand your frustration; I hear you; a mix of X and Y; a testament to; "
@@ -79,6 +79,11 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         f"\nCHARACTERS PRESENT (obey these exactly):\n{anchors}",
         f"\nWHAT THEY FEEL ABOUT THE PLAYER:\n{memory.relationship_block(pt['id'], world, present, player)}",
         f"\nESTABLISHED FACTS YOU MUST NOT CONTRADICT:\n{memory.compact_timeline(events)}",
+        # The line above is a CONSTRAINT. This one is an INVITATION - the
+        # difference between a world that HAS a memory and one that ever
+        # refers to it, which is what a player actually feels.
+        memory.between_block(pt["id"], world, present),
+        callbacks.block(pt["id"], state["turn"], present=present),
         fate_line,
     ]
     if npc_action:
