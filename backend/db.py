@@ -913,6 +913,17 @@ MIGRATIONS = [
     # A SOLO world has no session, so there was nowhere to record which of the
     # six solo modes it is - and every solo world silently played as Story.
     ("playthroughs", "session_type", "TEXT NOT NULL DEFAULT ''"),
+    # The other half of the arc. cause_node records the act that turned
+    # somebody AGAINST you; nothing recorded the act that made somebody
+    # yours, so a loyal ally had no receipt while a villain had one.
+    ("relationships", "bond_node", "INTEGER NOT NULL DEFAULT 0"),
+    ("relationships", "bond_turn", "INTEGER NOT NULL DEFAULT -1"),
+    # An organisation founded by the WORLD rather than by a player - the
+    # higher-ups that rise when a power dies.
+    ("orgs", "origin", "TEXT NOT NULL DEFAULT 'player'"),
+    ("orgs", "doctrine", "TEXT NOT NULL DEFAULT ''"),
+    # Somebody of yours placed inside somebody else's house.
+    ("org_members", "planted_by", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

@@ -696,9 +696,13 @@ def test_k_every_endpoint_is_actually_reachable():
     pt_id, pt, world = _fresh("api")
     client = TestClient(main.app)
     q = "?user_id=legacy-api"
+    # The client renders every one of these from the bundled /legacy payload;
+    # the granular reads exist for anything that wants one slice without the
+    # rest. Exercised here so none of them is silently dead.
     routes = [("GET", "/legacy"), ("GET", "/chronicle"), ("POST", "/chronicle/read"),
               ("GET", "/drift"), ("GET", "/successions"), ("GET", "/power"),
-              ("GET", "/traitor"), ("POST", "/traitor/reveal"), ("POST", "/catch-up")]
+              ("GET", "/traitor"), ("POST", "/traitor/reveal"), ("POST", "/catch-up"),
+              ("GET", "/rivals"), ("GET", "/monuments")]
     bad = []
     for method, path in routes:
         r = client.request(method, f"/api/playthroughs/{pt_id}{path}{q}")
@@ -722,15 +726,192 @@ def test_m_the_client_calls_what_the_server_serves():
     for path in ("/legacy", "/chronicle", "/power", "/orgs", "/traitor", "/catch-up"):
         ok(path in app_js, f"the client actually calls {path}")
 
+    for fn in ("alertAllies", "alertMonuments", "showInfiltrate", "doInfiltrate"):
+        ok(fn in app_js, f"{fn} renders one of the §1 scenarios in the client")
     for hook in ("chronFeed", "powerWrap", "chronicleBadge", "powerBadge"):
         ok(f'id="{hook}"' in html and hook in app_js,
            f"#{hook} exists in the markup AND something writes to it")
 
     for handler in ("data-found-org", "data-recruit-npc", "data-order-send",
-                    "data-traitor", "data-reveal", "data-dissolve-org"):
+                    "data-traitor", "data-reveal", "data-dissolve-org",
+                    "data-doctrine", "data-infiltrate", "data-infil-npc"):
         ok(app_js.count(handler) >= 2,
            f"[{handler}] is both rendered and handled — a control that is drawn "
            f"and never wired is worse than no control")
+
+
+# ============================================================ §1 SCENARIOS
+# The spec's Narrative Scenario Bank, each walked end to end. These are the
+# experiences the engine has to make possible, so they are tested as
+# experiences rather than as functions.
+
+def test_s11_reverse_an_ally_you_made():
+    section("§1.1 reverse - the NPC you protected becomes yours, with a receipt")
+    pt_id, pt, world = _fresh("s11")
+    for _ in range(4):
+        engine.take_turn(pt_id, "I stand up for Nessa Quill in front of everyone "
+                                "and vouch for her.")
+    mine = legacy.allies(pt_id, world)
+    nessa = next((a for a in mine if a["npc_id"] == "nessa"), None)
+    ok(nessa is not None,
+       f"somebody you went out of your way for is now yours "
+       f"({', '.join(a['name'] for a in mine) or 'nobody'})")
+    ok(nessa and nessa["stage"] in ("loyal", "sworn"),
+       f"far enough up the ladder to mean it ({nessa['stage_label'] if nessa else '-'})")
+    ok(nessa and nessa["bond"] is not None,
+       "and it is TRACEABLE the same way a betrayal is - the villain arc had a "
+       "receipt and the hero arc had nothing, which remembers only the bad half "
+       "of what a player did")
+    ok(nessa and nessa["bond"] and nessa["bond"]["turn"] >= 1,
+       f"pointing at the act ({nessa['bond']['label'][:44]!r})")
+
+    hostile = next(n["id"] for n in world.npcs if n["id"] != "nessa")
+    engine.take_turn(pt_id, f"I betray {world.npc_name(hostile)} and take what they held.")
+    both = {d["npc_id"]: d for d in legacy.drift(pt_id, world)}
+    ok(both["nessa"]["bond"] and not both["nessa"]["turned"],
+       "and the two halves do not overwrite each other - a character can be "
+       "somebody you saved and somebody you wronged at once, and usually is")
+
+
+def test_s14_the_assassin_actually_acts():
+    section("§1.4 - 'keeps destroying everything you build', not a progress bar")
+    pt_id, pt, world = _fresh("s14")
+    quiet = next(n["id"] for n in world.npcs)
+    for _ in range(2):
+        relationships.apply_event(pt_id, quiet, memory.SOLO, "secret_leaked", turn=1)
+
+    org = legacy.found_org(pt_id, world, player=memory.SOLO, name="Ash Crew",
+                           kind="cell", doctrine="wrath", turn=1)
+    mate = next(n["id"] for n in world.npcs if n["id"] != quiet)
+    for _ in range(14):
+        relationships.apply_event(pt_id, mate, memory.SOLO, "helped_at_cost", turn=1)
+    legacy.recruit(pt_id, world, org_id=org["id"], npc_id=mate, player=memory.SOLO, turn=1)
+
+    act = legacy.grudge_act(pt_id, world, 2)
+    ok(act is not None,
+       f"whoever is turning DOES something before the reveal ({act and act['kind']}) - "
+       f"a grudge ledger that only ticks is a progress bar with a name at the end")
+    ok(act and act.get("org") == "Ash Crew",
+       "and it costs the player something they actually built")
+
+    sig = legacy.traitor_signal(pt_id, world, memory.SOLO, turn=2)
+    ok("name" not in sig and "npc_id" not in sig,
+       "while the tease still names nobody - the player sees the damage and "
+       "not the hand, which is the entire shape of the scenario")
+
+    again = legacy.grudge_act(pt_id, world, 2)
+    ok(again is None, "and it does not fire twice in one turn")
+
+
+def test_s15_the_world_reorganises():
+    section("§1.5 - kill the king and a new house rises, not just a new king")
+    pt_id, pt, world = _fresh("s15")
+    dead = next(n for n in world.npcs if n.get("role"))
+    memory.kill_npc(pt_id, dead["id"])
+    succ = death.world_event(pt_id, who=dead["id"], killer=memory.SOLO,
+                             world=world)["succession"]
+    ok(succ["opened"] and len(succ["claimants"]) >= 2, "the seat is contested")
+
+    settled = legacy.unrest_tick(pt_id, world, succ["unrest_until"] + 1)
+    ok(settled and settled[0]["winner_name"], "somebody takes it")
+    risen = settled[0].get("risen")
+    ok(risen and risen["name"],
+       f"and the ones who did not go home ({risen['name'] if risen else 'nobody'}) - "
+       f"the world reorganises around a death rather than swapping one name for "
+       f"another")
+    ok(risen and risen["members"] >= 2,
+       "with the beaten claimants actually in it")
+
+    houses = legacy.rival_orgs(pt_id, world, memory.SOLO)
+    ok(any(h["origin"] == "world" for h in houses),
+       "founded by the WORLD, not by a player - and it shows up as a rival "
+       "house the player can now do something about")
+
+
+def test_s17_doctrines_and_infiltration():
+    section("§1.7 - cells with a doctrine, and somebody of yours inside theirs")
+    pt_id, pt, world = _fresh("s17")
+    ok(len(legacy.DOCTRINES) == 7,
+       f"seven doctrines to found a cell on ({', '.join(legacy.DOCTRINES)})")
+    org = legacy.found_org(pt_id, world, player=memory.SOLO, name="The Seventh Door",
+                           kind="cell", doctrine="envy", turn=1)
+    ok(org["doctrine_name"] == "Envy" and org["doctrine_blurb"],
+       "a house says what it is for, which is what makes one cell different "
+       "from another when both are five people in a room")
+    try:
+        legacy.found_org(pt_id, world, player=memory.SOLO, name="X", doctrine="nope")
+        ok(False, "an unknown doctrine was accepted")
+    except legacy.OrgError:
+        ok(True, "and an invented one is refused")
+
+    # A rival house to point somebody at.
+    dead = next(n for n in world.npcs if n.get("role"))
+    memory.kill_npc(pt_id, dead["id"])
+    v = death.world_event(pt_id, who=dead["id"], killer="", world=world)["succession"]
+    legacy.unrest_tick(pt_id, world, v["unrest_until"] + 1)
+    rival = next(h for h in legacy.rival_orgs(pt_id, world, memory.SOLO)
+                 if h["origin"] == "world")
+
+    spy = next(n["id"] for n in world.npcs
+               if (memory.npc_state(pt_id, n["id"]) or {}).get("alive", 1)
+               and n["id"] not in [x["id"] for x in rival["members"]])
+    cold = legacy.infiltrate(pt_id, world, org_id=rival["id"], npc_id=spy,
+                             player=memory.SOLO, turn=5)
+    ok(not cold["placed"],
+       f"somebody who is merely fond of you will not do this ({cold['reason']!r})")
+
+    for _ in range(20):
+        relationships.apply_event(pt_id, spy, memory.SOLO, "helped_at_cost", turn=5)
+    warm = legacy.infiltrate(pt_id, world, org_id=rival["id"], npc_id=spy,
+                             player=memory.SOLO, turn=6)
+    ok(warm["placed"], "somebody who is really yours will")
+
+    inside = rival["members"][0]["id"]
+    awareness.learn(pt_id, "npc", inside, key="k-bridge",
+                    summary="They mean to take the bridge", turn=6,
+                    confidence=0.9, source="witnessed", severity=4)
+    report = legacy.spy_report(pt_id, world, memory.SOLO, turn=7)
+    ok(report and report[0]["summary"] == "They mean to take the bridge",
+       "and what comes back is what the HOUSE knows - reading your own "
+       "person's knowledge back would make infiltration an expensive way to "
+       "learn nothing")
+    ok(not legacy.spy_report(pt_id, world, memory.SOLO, turn=8),
+       "each thing is passed back once")
+
+
+def test_s18_the_dead_leave_something_standing():
+    section("§1.8 - death is not a reset, and the inheritance is visible")
+    pt_id, pt, world = _fresh("s18")
+    dead = next(n for n in world.npcs if n.get("role"))
+    memory.kill_npc(pt_id, dead["id"])
+    death.world_event(pt_id, who=dead["id"], killer=memory.SOLO, world=world)
+
+    stones = legacy.monuments(pt_id, world)
+    mine = next((m for m in stones if m["npc_id"] == dead["id"]), None)
+    ok(mine is not None, f"the dead leave a mark ({len(stones)} standing)")
+    ok(mine and mine["line"],
+       f"said in one line: {mine['line'] if mine else ''!r}")
+    ok(mine and (mine["seat"] or mine["built"] or mine["mourners"]),
+       "made of what actually outlived them - a seat that passed on, a house "
+       "still running, or people who still miss them")
+    ok(all(m["line"] for m in stones),
+       "and nothing is listed that has nothing to say about itself")
+
+
+def test_s12_and_s13_still_hold():
+    section("§1.2 / §1.3 - the two that were already built, re-walked")
+    pt_id, pt, world = _fresh("s1213")
+    far = next(l["id"] for l in world.locations if l["id"] != pt["current_location"])
+    legacy.record_world_event(
+        pt_id, world, turn=0, kind="death",
+        label="Layla did not come back", detail="It happened while you were elsewhere.",
+        actor="", place_id=far, present=[], severity=4)
+    ok(not any(e["label"] == "Layla did not come back"
+               for e in legacy.chronicle(pt_id, world, memory.SOLO)["entries"]),
+       "§1.2 the Chronicle does not leak what nobody told you")
+    got = legacy.surface_reveal(pt_id, world, memory.SOLO, turn=8)
+    ok(got and got["label"] == "Layla did not come back",
+       "§1.3 and the reveal lands later BECAUSE it was withheld at the time")
 
 
 # --------------------------------------------------------------- $0 budget
@@ -753,6 +934,12 @@ def _all():
             test_e_the_narrator_hears_the_world_move,
             test_f_export_includes_the_layer,
             test_l_unrest_is_a_contest_not_a_countdown,
+            test_s11_reverse_an_ally_you_made,
+            test_s14_the_assassin_actually_acts,
+            test_s15_the_world_reorganises,
+            test_s17_doctrines_and_infiltration,
+            test_s18_the_dead_leave_something_standing,
+            test_s12_and_s13_still_hold,
             test_i_a_player_sees_what_happens_in_front_of_them,
             test_j_an_order_you_gave_is_something_you_know,
             test_k_every_endpoint_is_actually_reachable,

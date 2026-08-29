@@ -236,9 +236,11 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
         # be shown the exact moment rather than a number. Written before the
         # deltas so the ledger has something real to point at.
         cause_node = 0
-        if relationships.is_harmful(event):
+        if relationships.is_harmful(event) or relationships.is_bonding(event):
             cause_node = narrgraph.add(
-                pt["id"], turn, "rupture", f"{actor_name or 'You'}: {action[:80]}",
+                pt["id"], turn,
+                "rupture" if relationships.is_harmful(event) else "bond",
+                f"{actor_name or 'You'}: {action[:80]}",
                 detail=verdict.get("consequence", "")[:200],
                 place_id=pt["current_location"], actor=player, weight=4)
         for npc_id in aimed_at[:3]:

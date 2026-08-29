@@ -2617,6 +2617,8 @@ class OrgNew(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     kind: str = Field(default="cell", max_length=20)
     charter: str = Field(default="", max_length=400)
+    # One of the seven, or none. A doctrine is what the house says it is for.
+    doctrine: str = Field(default="", max_length=20)
 
 
 @app.post("/api/playthroughs/{pt_id}/orgs")
@@ -2625,7 +2627,8 @@ def found_org(pt_id: str, body: OrgNew, user_id: str = Query(default=""),
     pt, world, turn = _pt_world(pt_id, user_id)
     try:
         out = legacy.found_org(pt_id, world, player=player, name=body.name,
-                               kind=body.kind, charter=body.charter, turn=turn)
+                               kind=body.kind, charter=body.charter, turn=turn,
+                               doctrine=body.doctrine)
     except legacy.OrgError as e:
         raise HTTPException(400, str(e))
     _publish(pt["session_id"], {"type": "org", "event": "founded", "org": out})
@@ -2680,6 +2683,43 @@ def org_dissolve(pt_id: str, org_id: str, user_id: str = Query(default=""),
         return legacy.dissolve(pt_id, org_id, player)
     except legacy.OrgError as e:
         raise HTTPException(400, str(e))
+
+
+class Infiltration(BaseModel):
+    npc_id: str = Field(min_length=1, max_length=60)
+
+
+@app.get("/api/playthroughs/{pt_id}/rivals")
+def rival_houses(pt_id: str, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    """Organisations you do not lead - including the ones the WORLD founded
+    when a succession left people behind."""
+    pt = _own(pt_id, user_id)
+    return {"rivals": legacy.rival_orgs(pt_id, engine.world_for(pt), player)}
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs/{org_id}/infiltrate")
+def org_infiltrate(pt_id: str, org_id: str, body: Infiltration,
+                   user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO)):
+    """Place one of yours inside somebody else's house. Never published - an
+    infiltration that announced itself would defeat its own purpose."""
+    pt = _own(pt_id, user_id)
+    try:
+        return legacy.infiltrate(pt_id, engine.world_for(pt), org_id=org_id,
+                                 npc_id=body.npc_id, player=player,
+                                 turn=pt["current_turn"])
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/playthroughs/{pt_id}/monuments")
+def monuments(pt_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    """What the dead left standing. Death is not a reset, and an heir told
+    nothing about what the last life built has inherited a number."""
+    pt = _own(pt_id, user_id)
+    return {"monuments": legacy.monuments(pt_id, engine.world_for(pt), player)}
 
 
 @app.get("/api/playthroughs/{pt_id}/traitor")

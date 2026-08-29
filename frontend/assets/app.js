@@ -872,6 +872,12 @@ async function submitAction(text) {
     // The climax reveal fires inside the turn. Solo has no socket, so without
     // this the biggest beat in the campaign would exist only in the prose.
     const fired = (r.tick && r.tick.legacy) || {};
+    if (fired.sabotage) {
+      // Damage without a name on it. That gap is the whole mechanic.
+      toast('Something you built came apart. Nobody will say who.', 'warn');
+    }
+    (fired.intel || []).forEach((i) => toast(
+      `${i.name}, inside ${i.inside}: ${i.summary}`));
     if (fired.reveal) showTraitorReveal(fired.reveal);
     if (r.ending) showEnding(r.ending);
   } catch (err) {
@@ -2915,7 +2921,8 @@ function renderChronicle() {
   const L = S.legacy || {};
 
   alerts.innerHTML = [alertTraitor(L.traitor), alertVacuums(L.vacuums), alertOwed(L.owed),
-    alertDrift(L.drift)].filter(Boolean).join('');
+    alertDrift(L.drift), alertAllies(L.allies), alertMonuments(L.monuments),
+  ].filter(Boolean).join('');
 
   const entries = (L.chronicle && L.chronicle.entries) || [];
   if (!entries.length) {
@@ -2983,6 +2990,33 @@ function alertOwed(n) {
     <div class="alert-s">Ask around, or let time pass — a skip is where news catches up.</div>
     <div class="alert-act"><button class="btn btn-ghost" data-reveal="one">Ask around</button></div>
   </div>`;
+}
+
+function alertAllies(list) {
+  // The mirror of the villain board. An engine that renders only the people
+  // you wronged is an engine that remembers only the bad half of what you did.
+  const yours = (list || []).filter((d) => d.toward_you && d.alive);
+  if (!yours.length) return '';
+  return `<div class="alert" style="border-left-color:var(--verdigris)">
+    <div class="alert-t">Who is yours, and why</div>
+    ${yours.map((d) => `<div class="drift-row">
+      <b class="sub-name">${esc(d.name)}</b>
+      <span class="sub-stage" data-stage="${esc(d.stage)}">${esc(d.stage_label)}</span>
+      <span class="cl-num">loyalty ${Math.round(d.loyalty)}</span>
+      ${d.bond ? `<div class="drift-why">T${d.bond.turn} — ${esc(d.bond.label)}</div>`
+    : '<div class="drift-why">They came to you on their own.</div>'}
+    </div>`).join('')}</div>`;
+}
+
+function alertMonuments(list) {
+  if (!(list || []).length) return '';
+  return `<div class="alert owed">
+    <div class="alert-t">What the dead left standing</div>
+    ${list.map((m) => `<div class="drift-row">
+      <b class="sub-name">${esc(m.name)}</b>
+      ${m.built.length ? `<span class="cl-num">${m.built.length} still running</span>` : ''}
+      <div class="drift-why">${esc(m.line)}</div></div>`).join('')}
+    <div class="alert-s">Death is not a reset. This is what carried.</div></div>`;
 }
 
 function alertDrift(list) {
@@ -3056,6 +3090,18 @@ function renderPower() {
       ${p.orgs.length ? '<div class="alert-act"><button class="btn btn-ghost" data-found-org="1">Found another</button></div>' : ''}
     </section>
     <section>
+      <div class="power-head"><h3>Other houses</h3>
+        <span class="ph-n">${(S.legacy?.rivals || []).length} you do not lead</span></div>
+      ${(S.legacy?.rivals || []).length ? (S.legacy.rivals).map((o) => `<div class="sub-row">
+          <div><div class="sub-name">${esc(o.name)}</div>
+            <div class="sub-meta">${esc(o.kind_name)}${o.origin === 'world'
+    ? ' · rose on its own' : ''} · ${o.reach} inside${
+  o.doctrine_name ? ` · ${esc(o.doctrine_name)}` : ''}</div></div>
+          <button class="btn btn-ghost sm" data-infiltrate="${esc(o.id)}">Place someone inside</button>
+        </div>`).join('')
+    : '<p class="fineprint">Nobody else has built anything yet. When a seat is contested and lost, the losers tend to.</p>'}
+    </section>
+    <section>
       <div class="power-head"><h3>Who owns your name</h3><span class="ph-n">${p.standing.length} watching</span></div>
       ${p.standing.length ? p.standing.map((f) => `<div class="stand-row">
           <b>${esc(f.name)}</b>
@@ -3088,6 +3134,19 @@ function showFoundOrg(prefill = '') {
             <b>${name}</b><small>${blurb}</small></button>`).join('')}</div>
       </div>
       <div class="mode-axis">
+        <div class="mode-axis-name">Doctrine <em style="color:var(--faint)">optional</em></div>
+        <div class="mode-opts">
+          ${[['pride', 'Pride', 'We will be seen. That is the point.'],
+    ['greed', 'Greed', 'Everything has a price and we set it.'],
+    ['wrath', 'Wrath', 'Somebody is going to answer for it.'],
+    ['envy', 'Envy', 'What they have was ours first.'],
+    ['gluttony', 'Gluttony', 'More. Of everything. Now.'],
+    ['sloth', 'Sloth', 'Let it rot. We will be here after.'],
+    ['lust', 'Lust', 'Wanting is the whole engine.']].map(([id, n, b]) => `
+            <button class="mode-chip" data-doctrine="${id}"><b>${n}</b><small>${b}</small></button>`).join('')}
+        </div>
+      </div>
+      <div class="mode-axis">
         <div class="mode-axis-name">Charter <em style="color:var(--faint)">optional</em></div>
         <input class="input" id="org-charter" maxlength="400" placeholder="Debts, collected quietly.">
       </div>
@@ -3102,12 +3161,41 @@ async function doFoundOrg() {
   if (!name) return toast('It needs a name.', 'warn');
   const kind = $('.mode-chip.on[data-orgkind]')?.dataset.orgkind || 'cell';
   try {
+    const doctrine = $('.mode-chip.on[data-doctrine]')?.dataset.doctrine || '';
     const o = await api(`/playthroughs/${S.ptId}/orgs?player=${encodeURIComponent(S.playerId)}`, {
-      method: 'POST', body: { name, kind, charter: $('#org-charter')?.value || '' },
+      method: 'POST',
+      body: { name, kind, doctrine, charter: $('#org-charter')?.value || '' },
     });
     closeOverlays();
     toast(`${o.name} exists now.`);
     setView('power'); await loadPower();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function showInfiltrate(orgId) {
+  const mine = (S.legacy?.power?.subordinates || []);
+  showModal(`${head('Place someone inside',
+    'They pass back what that house knows. Only somebody who is really yours will go.')}
+    <div class="modal-body">
+      ${mine.length ? mine.map((sub) => `<div class="sub-row">
+        <div><div class="sub-name">${esc(sub.name)}</div>
+          <div class="sub-meta">loyalty ${Math.round(sub.loyalty)} · ${esc(sub.org)}</div></div>
+        <button class="btn btn-ghost sm" data-infil-npc="${esc(sub.id)}"
+                data-infil-org="${esc(orgId)}">Send</button></div>`).join('')
+    : '<p class="fineprint">You have nobody loyal enough to ask this of.</p>'}
+      <p class="fineprint">Nothing is announced. An infiltration that published
+        itself would be the one act here that defeats its own purpose.</p>
+    </div>`);
+}
+
+async function doInfiltrate(orgId, npcId) {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/orgs/${orgId}/infiltrate`
+      + `?player=${encodeURIComponent(S.playerId)}`,
+    { method: 'POST', body: { npc_id: npcId } });
+    toast(r.placed ? `${r.name} is inside ${r.org}. ${r.note}` : `${r.name}: ${r.reason}`,
+      r.placed ? '' : 'warn');
+    if (r.placed) { closeOverlays(); await loadPower(); }
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3708,6 +3796,20 @@ document.addEventListener('click', async (ev) => {
   }
   if (pick('[data-found-go]')) return doFoundOrg();
   if (pick('[data-found-org]')) { closeOverlays(); return showFoundOrg(); }
+  const doc = pick('[data-doctrine]');
+  if (doc) {
+    const was = doc.classList.contains('on');
+    document.querySelectorAll('[data-doctrine]').forEach((b) => b.classList.remove('on'));
+    // Clicking the chosen doctrine again clears it - a doctrine is optional,
+    // and a picker with no way back is a picker that lies about that.
+    if (!was) doc.classList.add('on');
+    return;
+  }
+  const inf = pick('[data-infiltrate]');
+  if (inf) return showInfiltrate(inf.dataset.infiltrate);
+  const infNpc = pick('[data-infil-npc]');
+  if (infNpc) return doInfiltrate(infNpc.dataset.infilOrg, infNpc.dataset.infilNpc);
+
   const recruitOrg = pick('[data-recruit-org]');
   if (recruitOrg) return showRecruit(recruitOrg.dataset.recruitOrg);
   const recruitNpc = pick('[data-recruit-npc]');

@@ -64,6 +64,13 @@ BETRAYAL_EVENTS = {"betrayed", "broke_promise", "secret_leaked", "abandoned",
 _STANDING = ("affinity", "trust", "loyalty", "respect", "love")
 
 
+def is_bonding(event) -> bool:
+    """The mirror of is_harmful, derived from the same table for the same
+    reason: a hand-kept second list is a list that falls out of date."""
+    spec = EVENTS.get(event)
+    return bool(spec) and sum(float(spec.get(k, 0)) for k in _STANDING) > 0
+
+
 def is_harmful(event) -> bool:
     """Derived from the event table rather than kept as a second hand-written
     list, so adding an event to EVENTS cannot leave it silently unclassified."""
@@ -163,6 +170,13 @@ def apply_event(pt_id, npc_id, player, event, *, turn=0, weight=1.0, note="",
     # the grievance that is still driving them.
     if cause_node and is_harmful(event):
         db.run("UPDATE relationships SET cause_node=?, cause_turn=?"
+               " WHERE playthrough_id=? AND src=? AND dst=?",
+               (int(cause_node), turn, pt_id, player, npc_id))
+    # ...and the same for the act that made somebody YOURS. An engine that
+    # can show why a character turned on you and cannot show why one stood by
+    # you is an engine that only remembers the bad half.
+    elif cause_node and is_bonding(event):
+        db.run("UPDATE relationships SET bond_node=?, bond_turn=?"
                " WHERE playthrough_id=? AND src=? AND dst=?",
                (int(cause_node), turn, pt_id, player, npc_id))
     rt.cache_drop(f"sl:pt:{pt_id}:rels", f"sl:pt:{pt_id}:snapshot")
