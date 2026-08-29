@@ -134,6 +134,14 @@ def apply(pt_id, world, *, kind="training", turns=None, with_whom=None,
                      _consequence_line(spec, changes), kind="fastforward",
                      importance=3, location=pt["current_location"])
 
+    # 5. What you missed. A skip is the honest moment to hand back something
+    #    the engine genuinely withheld at the time - you were not there, so
+    #    nobody told you, and now somebody has. This only lands because the
+    #    witness gate was real: if the Chronicle had shown it live, there would
+    #    be nothing left to reveal.
+    from . import legacy
+    changes["reveal"] = legacy.surface_reveal(pt_id, world, player, turn=end_turn)
+
     changes["from_turn"] = start_turn
     changes["to_turn"] = end_turn
     return changes
@@ -178,6 +186,11 @@ def recap_prompt(changes, *, kind, with_whom) -> str:
                      f"now reads as '{r['now']}'.")
     if with_whom:
         lines.append(f"Spent alongside: {', '.join(with_whom)}.")
+    rev = changes.get("reveal")
+    if rev:
+        lines.append(f"While they were away they learned something old: {rev['label']} "
+                     f"- it happened on turn {rev['turn']}, and nobody had told them. "
+                     f"Land this as news arriving late, not as a flashback.")
     return "\n".join(lines)
 
 

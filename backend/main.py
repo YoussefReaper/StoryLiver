@@ -14,9 +14,11 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from . import (aftermath, arcs, atlas, auth, authority, awareness, betrayal, budget,
-               canon, combat, durable, legibility, research, sessionzero, uploads,
+               canon, combat, durable, legacy, legibility, modetree, ooc,
+               research, sessionzero, uploads,
                config, db,
-               death, engine, fastforward, identity, mana, memory, modes, narrgraph,
+               death, engine, fastforward, identity, llm, mana, memory, modes,
+               narrgraph,
                party, payments, persona, precommit, relationships, rt, runs, sessions,
                narrator, sharecard, streaks, trust, voice, world_master, worldforge,
                worldkit, worldstate)
@@ -89,6 +91,9 @@ class NewSession(BaseModel):
     host_name: str = "Host"
     protagonist: str | None = None
     title: str | None = None
+    # Which of the nineteen sub-modes. Empty maps to the nearest match for the
+    # room mode, so a client that predates the tree still opens a playable room.
+    session_type: str = ""
 
 
 class JoinSession(BaseModel):
@@ -667,8 +672,8 @@ def create_session(body: NewSession):
     try:
         s = sessions.create(body.user_id, world_id=body.world_id, mode=body.mode,
                             host_name=body.host_name, protagonist=body.protagonist,
-                            title=body.title)
-    except ValueError as e:
+                            title=body.title, session_type=body.session_type)
+    except (ValueError, modetree.ModeError) as e:
         raise HTTPException(400, str(e))
     return {"session": sessions.public(s), "player_id": "host",
             "state": engine.snapshot(s["playthrough_id"], "host"),
@@ -1255,6 +1260,14 @@ async def ws_session(ws: WebSocket, session_id: str, player: str = Query(default
                     "by": player, "by_name": me["name"],
                     "turn": result["state"]["turn"], "note": result.get("note", ""),
                 })
+                # The climax reveal fires inside the deterministic tick and is
+                # the whole table's beat, not just the acting player's. Sent as
+                # its own message so it lands as a reveal rather than as one
+                # more line in a turn nobody re-reads.
+                fired = (result.get("tick") or {}).get("legacy") or {}
+                if fired.get("reveal"):
+                    await rt.publish(session_id, {"type": "traitor",
+                                                  "reveal": fired["reveal"]})
                 continue
 
             if kind == "whisper":
@@ -2122,6 +2135,278 @@ def forge_session_zero(setting: str = Query(min_length=2, max_length=160),
     found = (research.dossier(setting) if mode != "original"
              else {"found": False, "setting": setting})
     return sessionzero.questions(found)
+
+
+# ---------------------------------------------------------------------------
+# OOC - the table talking about the story, kept out of the story
+# ---------------------------------------------------------------------------
+
+class OocPost(BaseModel):
+    text: str = Field(min_length=1, max_length=600)
+    name: str = Field(default="", max_length=40)
+    to_wm: bool = False
+
+
+@app.get("/api/playthroughs/{pt_id}/ooc")
+def ooc_history(pt_id: str, user_id: str = Query(default="")):
+    pt = _own(pt_id, user_id)
+    return {"messages": ooc.history(pt["session_id"], pt_id)}
+
+
+@app.post("/api/playthroughs/{pt_id}/ooc")
+def ooc_post(pt_id: str, body: OocPost, user_id: str = Query(default=""),
+             player: str = Query(default=memory.SOLO)):
+    """Free between players. A question to the World Master costs one short,
+    hard-capped model call - the only recurring cost on this channel."""
+    pt = _own(pt_id, user_id)
+    try:
+        msg = ooc.post(pt["session_id"], pt_id, player=player,
+                       name=body.name or player, text=body.text, to_wm=body.to_wm)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    if body.to_wm:
+        world = engine.world_for(pt)
+        try:
+            with budget.turn(f"ooc:{pt_id}", limit=1):
+                reply = ooc.ask_world_master(pt, world, body.text,
+                                             user_id=pt["user_id"], player=player)
+            msg = ooc.answer_and_record(msg["id"], reply)
+        except llm.LLMError as e:
+            msg["reply"] = f"(the World Master could not answer: {e})"
+
+    _publish(pt["session_id"], {"type": "ooc", "message": msg})
+    return msg
+
+
+class DomainPatch(BaseModel):
+    levels: dict = Field(default_factory=dict)
+    severity: Optional[str] = None
+
+
+@app.get("/api/playthroughs/{pt_id}/canon-spectrum")
+def canon_spectrum(pt_id: str, user_id: str = Query(default="")):
+    _own(pt_id, user_id)
+    return modes.domain_public(pt_id)
+
+
+@app.post("/api/playthroughs/{pt_id}/canon-spectrum")
+def set_canon_spectrum(pt_id: str, body: DomainPatch, user_id: str = Query(default="")):
+    """Strictness per domain, plus how hard consequences land. 'Who characters
+    are' is deliberately not settable below strict - a character breaking their
+    own persona is a product failure, not a freedom a table opted into."""
+    _own(pt_id, user_id)
+    try:
+        return modes.set_domains(pt_id, levels=body.levels or None, sev=body.severity)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------------------------------------------------------------------------
+# The mode tree - what kind of game this is
+# ---------------------------------------------------------------------------
+
+@app.get("/api/modes/tree")
+def mode_tree():
+    """The whole tree, grouped by family. The first question a host answers is
+    which of the three they want, so it is served in that shape."""
+    return modetree.catalogue()
+
+
+@app.get("/api/modes/tree/{mode_id}")
+def mode_tree_one(mode_id: str):
+    try:
+        return modetree.public(mode_id)
+    except modetree.ModeError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/sessions/{session_id}/turn-order")
+def turn_order(session_id: str, player: str = Query(default="")):
+    """Whose turn it is, under this mode's policy. Deterministic from the seat
+    list and the turn number, so a client can render the queue without asking
+    on every tick - and a disconnect cannot lose the order."""
+    s = db.row("SELECT playthrough_id FROM sessions WHERE id=?", (session_id,))
+    if not s:
+        raise HTTPException(404, "no such room")
+    pt = db.row("SELECT current_turn FROM playthroughs WHERE id=?", (s["playthrough_id"],))
+    turn = pt["current_turn"] if pt else 0
+    mode_id = sessions.type_of(session_id)
+    seats = sessions.seats(session_id)
+    return {
+        "mode": modetree.public(mode_id),
+        "seats": seats,
+        "turn": turn,
+        "whose": (seats[turn % len(seats)] if seats
+                  and modetree.turn_policy(mode_id) == "round_robin" else None),
+        "you": modetree.may_act(mode_id, seats=seats, player_id=player, turn=turn)
+        if player else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Layer 6 - legacy, the world chronicle, succession, orgs, the traitor
+# ---------------------------------------------------------------------------
+
+def _pt_world(pt_id, user_id):
+    pt = _own(pt_id, user_id)
+    return pt, engine.world_for(pt), pt["current_turn"]
+
+
+@app.get("/api/playthroughs/{pt_id}/legacy")
+def legacy_all(pt_id: str, user_id: str = Query(default=""),
+               player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    return legacy.public(pt_id, world, player, turn=turn)
+
+
+@app.get("/api/playthroughs/{pt_id}/chronicle")
+def chronicle(pt_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO),
+              limit: int = Query(default=60, ge=1, le=200)):
+    """The world feed, witness-gated. It can only return events this player
+    actually learned - there is no flag that widens it."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    out = legacy.chronicle(pt_id, world, player, limit=limit)
+    out["unseen"] = legacy.unseen_count(pt_id, world, player)
+    return out
+
+
+@app.post("/api/playthroughs/{pt_id}/chronicle/read")
+def chronicle_read(pt_id: str, user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO)):
+    pt, world, _ = _pt_world(pt_id, user_id)
+    return legacy.mark_read(pt_id, world, player)
+
+
+@app.get("/api/playthroughs/{pt_id}/drift")
+def drift(pt_id: str, user_id: str = Query(default=""),
+          player: str = Query(default=memory.SOLO),
+          turned_only: bool = Query(default=False)):
+    """Who has turned, how far, and the event that did it."""
+    pt, world, _ = _pt_world(pt_id, user_id)
+    return {"drift": legacy.drift(pt_id, world, player, only_turned=turned_only)}
+
+
+@app.get("/api/playthroughs/{pt_id}/successions")
+def successions(pt_id: str, user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    pt, world, _ = _pt_world(pt_id, user_id)
+    return {"vacuums": legacy.vacuums(pt_id, world, player)}
+
+
+@app.get("/api/playthroughs/{pt_id}/power")
+def power(pt_id: str, user_id: str = Query(default=""),
+          player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    return legacy.power_panel(pt_id, world, player, turn=turn)
+
+
+class OrgNew(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    kind: str = Field(default="cell", max_length=20)
+    charter: str = Field(default="", max_length=400)
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs")
+def found_org(pt_id: str, body: OrgNew, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    try:
+        out = legacy.found_org(pt_id, world, player=player, name=body.name,
+                               kind=body.kind, charter=body.charter, turn=turn)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+    _publish(pt["session_id"], {"type": "org", "event": "founded", "org": out})
+    return out
+
+
+class OrgRecruit(BaseModel):
+    npc_id: str = Field(min_length=1, max_length=60)
+    rank: str = Field(default="member", max_length=20)
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs/{org_id}/recruit")
+def org_recruit(pt_id: str, org_id: str, body: OrgRecruit,
+                user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    try:
+        return legacy.recruit(pt_id, world, org_id=org_id, npc_id=body.npc_id,
+                              player=player, turn=turn, rank=body.rank)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+
+
+class OrgOrder(BaseModel):
+    npc_id: str = Field(min_length=1, max_length=60)
+    order: str = Field(min_length=1, max_length=300)
+    severity: int = Field(default=3, ge=1, le=5)
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs/{org_id}/command")
+def org_command(pt_id: str, org_id: str, body: OrgOrder,
+                user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    """Give an order through a subordinate. The world witnesses THEM."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    try:
+        out = legacy.command(pt_id, world, org_id=org_id, npc_id=body.npc_id,
+                             player=player, order=body.order, turn=turn,
+                             severity=body.severity)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+    if out.get("carried"):
+        _publish(pt["session_id"], {"type": "org", "event": "order", "result": out})
+    return out
+
+
+@app.delete("/api/playthroughs/{pt_id}/orgs/{org_id}")
+def org_dissolve(pt_id: str, org_id: str, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    _own(pt_id, user_id)
+    try:
+        return legacy.dissolve(pt_id, org_id, player)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/playthroughs/{pt_id}/traitor")
+def traitor(pt_id: str, user_id: str = Query(default=""),
+            player: str = Query(default=memory.SOLO)):
+    """The tease. Never carries a name - that is the entire contract."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    return legacy.traitor_signal(pt_id, world, player, turn=turn,
+                                 session_id=pt["session_id"])
+
+
+@app.post("/api/playthroughs/{pt_id}/traitor/reveal")
+def traitor_reveal(pt_id: str, user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO),
+                   force: bool = Query(default=False)):
+    """Name them. Refuses below the threshold unless a climax forces it."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    out = legacy.reveal_traitor(pt_id, world, player, turn=turn, force=force)
+    if out.get("revealed"):
+        _publish(pt["session_id"], {"type": "traitor", "reveal": out})
+    return out
+
+
+@app.post("/api/playthroughs/{pt_id}/catch-up")
+def surface_reveal(pt_id: str, user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO)):
+    """Hand back one thing that happened while nobody told them.
+
+    Not /reveal: that path is already taken by the simultaneous split reveal,
+    and FastAPI matches the first route it registered - this one was shadowed
+    and unreachable, which is a route the client would have called forever
+    while quietly getting somebody else's answer."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    out = legacy.surface_reveal(pt_id, world, player, turn=turn)
+    if not out:
+        return {"revealed": False, "note": "Nothing is owed to you right now."}
+    _publish(pt["session_id"], {"type": "chronicle", "reveal": out})
+    return {"revealed": True, **out}
 
 
 @app.get("/{path:path}")

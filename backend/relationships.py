@@ -58,6 +58,18 @@ EVENTS = {
 BETRAYAL_EVENTS = {"betrayed", "broke_promise", "secret_leaked", "abandoned",
                    "killed_ally_of", "sided_against"}
 
+# Which keys decide whether an event was a HARM. Fear is deliberately absent:
+# frightening someone raises fear, and counting that as a gain would read
+# terrifying a friend as a good turn for the friendship.
+_STANDING = ("affinity", "trust", "loyalty", "respect", "love")
+
+
+def is_harmful(event) -> bool:
+    """Derived from the event table rather than kept as a second hand-written
+    list, so adding an event to EVENTS cannot leave it silently unclassified."""
+    spec = EVENTS.get(event)
+    return bool(spec) and sum(float(spec.get(k, 0)) for k in _STANDING) < 0
+
 # What a character drifts back toward when you stop tending the relationship.
 DECAY_PER_TURN = {
     "affinity": 0.985, "trust": 0.99, "fear": 0.94,
@@ -93,7 +105,8 @@ def _diminishing(current, delta):
     return delta * (0.35 + 0.65 * depth)
 
 
-def apply_event(pt_id, npc_id, player, event, *, turn=0, weight=1.0, note=""):
+def apply_event(pt_id, npc_id, player, event, *, turn=0, weight=1.0, note="",
+                cause_node=0):
     """The single entry point every other system uses. Returns the new vector
     and the deltas actually applied, for the UI to show."""
     spec = EVENTS.get(event)
@@ -143,6 +156,15 @@ def apply_event(pt_id, npc_id, player, event, *, turn=0, weight=1.0, note=""):
         (new["affinity"], new["trust"], new["fear"], new["obligation"], new["love"],
          new["loyalty"], new["respect"], turn, counters["interactions"],
          counters["betrayals"], counters["kept_promises"], pt_id, player, npc_id))
+    # Remember WHICH event did the damage, not just that damage was done. An
+    # NPC drifting toward villain has to be traceable to one thing the player
+    # can be shown; a drift with no cause node is a mood meter with a story
+    # pasted over it. Only harms overwrite it - a later kindness does not erase
+    # the grievance that is still driving them.
+    if cause_node and is_harmful(event):
+        db.run("UPDATE relationships SET cause_node=?, cause_turn=?"
+               " WHERE playthrough_id=? AND src=? AND dst=?",
+               (int(cause_node), turn, pt_id, player, npc_id))
     rt.cache_drop(f"sl:pt:{pt_id}:rels", f"sl:pt:{pt_id}:snapshot")
     return {"npc": npc_id, "player": player, "event": event, "note": note,
             "deltas": applied, "values": {k: round(v, 1) for k, v in new.items()}}

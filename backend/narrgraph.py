@@ -20,11 +20,19 @@ KIND_TONE = {
 }
 
 
-def add(pt_id, turn, kind, label, *, detail="", place_id="", actor="", weight=2, after=None):
+def add(pt_id, turn, kind, label, *, detail="", place_id="", actor="", weight=2, after=None,
+        fact_key=""):
+    """`fact_key` is what gates the node. A node written during the player's own
+    turn leaves it empty - the player was there, by construction. A node the
+    WORLD wrote while nobody was watching carries the key of the fact it came
+    from, and the Chronicle then shows it only to whoever learned that fact.
+    Without the key there is no way to tell "you did this" from "this happened
+    somewhere you have never been", and the graph leaks the whole world."""
     node_id = db.run(
-        "INSERT INTO graph_nodes (playthrough_id,turn,kind,label,detail,place_id,actor,weight,created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?)",
-        (pt_id, turn, kind, label[:120], detail[:400], place_id, actor, int(weight), db.now()))
+        "INSERT INTO graph_nodes (playthrough_id,turn,kind,label,detail,place_id,actor,weight,"
+        "fact_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (pt_id, turn, kind, label[:120], detail[:400], place_id, actor, int(weight),
+         fact_key, db.now()))
     prev = after if after is not None else last_id(pt_id, exclude=node_id)
     if prev:
         db.run("INSERT INTO graph_edges (playthrough_id,src,dst,kind) VALUES (?,?,?,?)",
@@ -93,3 +101,18 @@ def view(pt_id, world, turn, *, extra_futures=None, limit=80):
         "futures": _futures(pt_id, world, turn, extra_futures),
         "turn": turn,
     }
+
+
+def node(pt_id, node_id):
+    return db.row("SELECT * FROM graph_nodes WHERE playthrough_id=? AND id=?", (pt_id, node_id))
+
+
+def by_fact(pt_id, fact_key):
+    if not fact_key:
+        return None
+    return db.row("SELECT * FROM graph_nodes WHERE playthrough_id=? AND fact_key=?"
+                  " ORDER BY id DESC LIMIT 1", (pt_id, fact_key))
+
+
+def tone_of(kind: str) -> str:
+    return KIND_TONE.get(kind, "calm")

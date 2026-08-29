@@ -66,11 +66,26 @@ def recent(pt_id, limit=40):
 # Safety tools - Lines outrank canon, always
 # ---------------------------------------------------------------------------
 
+# Session Zero starts with these already drawn, not with an empty list. A
+# safety tool nobody sets up protects nobody, and the default boundary the
+# halal spec requires - no shirk, no indecency, no promotion of sin - is one
+# a table should have to REMOVE deliberately rather than remember to add.
+# Every one stays editable: this is a starting position, not a policy.
+DEFAULT_LINES = [
+    "Sexual content",
+    "Harm to children",
+    "Mockery of God or of any faith",
+    "Real-world hatred of a real group",
+    "Graphic torture",
+]
+
+
 def safety(pt_id):
     row = db.row("SELECT * FROM safety WHERE playthrough_id=?", (pt_id,))
     if not row:
-        db.run("INSERT OR IGNORE INTO safety (playthrough_id, updated_at) VALUES (?,?)",
-               (pt_id, db.now()))
+        db.run("INSERT OR IGNORE INTO safety (playthrough_id, lines, updated_at)"
+               " VALUES (?,?,?)",
+               (pt_id, json.dumps(DEFAULT_LINES), db.now()))
         row = db.row("SELECT * FROM safety WHERE playthrough_id=?", (pt_id,))
     return {"lines": db.jload(row["lines"], []) or [],
             "veils": db.jload(row["veils"], []) or [],

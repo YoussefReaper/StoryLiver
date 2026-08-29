@@ -132,7 +132,7 @@ def world_event(pt_id, *, who, killer="", world=None) -> dict:
     where they held standing, and the killer is now someone the world has an
     opinion about. This is the Relationship Economy and World Awareness
     reacting - not prose about them reacting."""
-    out = {"mourned_by": [], "killer_cost": [], "vacuum": ""}
+    out = {"mourned_by": [], "killer_cost": [], "vacuum": "", "succession": None}
     npcs = list(getattr(world, "npcs", []) or [])
     turn = _turn(pt_id)
 
@@ -166,6 +166,15 @@ def world_event(pt_id, *, who, killer="", world=None) -> dict:
                          f"{dead['role']} stands empty",
                          f"With {dead.get('name', who)} gone, nobody holds it.",
                          kind="vacuum", importance=4)
+        # An empty seat used to be a note in the timeline and nothing else -
+        # or, worse, would have needed an auto-appointed successor, which is
+        # the least interesting thing that can happen when a power dies. It
+        # opens a CONTEST instead: everyone with a real claim, an unrest
+        # window while it is undecided, and losers who remember losing.
+        if world is not None:
+            from . import legacy
+            out["succession"] = legacy.open_vacuum(
+                pt_id, world, dead_id=who, role=dead["role"], turn=turn, killer=killer)
 
     # A death is a public disturbance whether or not anyone mourned.
     worldstate.set_flag(pt_id, f"death:{who}", True)

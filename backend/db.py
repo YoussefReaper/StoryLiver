@@ -586,6 +586,78 @@ CREATE TABLE IF NOT EXISTS bounties (
   PRIMARY KEY (playthrough_id, faction_id, player_id)
 );
 
+-- ======================================================= legacy & world events
+-- Player-founded organisations. Power in this engine is not an inventory of
+-- objects; it is people who will do what you ask. An org is the structure that
+-- makes that addressable: you command THROUGH members, and the world attributes
+-- the act to the member who carried it out, not to you.
+CREATE TABLE IF NOT EXISTS orgs (
+  id TEXT PRIMARY KEY,
+  playthrough_id TEXT NOT NULL,
+  founder TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'cell',
+  charter TEXT NOT NULL DEFAULT '',
+  seat TEXT NOT NULL DEFAULT '',
+  founded_turn INTEGER NOT NULL DEFAULT 0,
+  dissolved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_orgs ON orgs(playthrough_id, dissolved);
+
+CREATE TABLE IF NOT EXISTS org_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playthrough_id TEXT NOT NULL,
+  org_id TEXT NOT NULL,
+  member_kind TEXT NOT NULL DEFAULT 'npc',
+  member_id TEXT NOT NULL,
+  rank TEXT NOT NULL DEFAULT 'member',
+  seniority REAL NOT NULL DEFAULT 1,
+  orders_carried INTEGER NOT NULL DEFAULT 0,
+  orders_refused INTEGER NOT NULL DEFAULT 0,
+  joined_turn INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (org_id, member_id)
+);
+CREATE INDEX IF NOT EXISTS ix_org_members ON org_members(playthrough_id, org_id);
+
+-- A named death does not hand the seat to one obvious heir. It opens a
+-- CONTEST: several people with a real claim, an unrest window while it is
+-- undecided, and a winner decided by what the world actually is.
+CREATE TABLE IF NOT EXISTS claimants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playthrough_id TEXT NOT NULL,
+  vacuum_key TEXT NOT NULL,
+  role TEXT NOT NULL,
+  seat TEXT NOT NULL DEFAULT '',
+  dead_id TEXT NOT NULL DEFAULT '',
+  claimant_id TEXT NOT NULL,
+  claim REAL NOT NULL DEFAULT 0,
+  basis TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'claiming',
+  opened_turn INTEGER NOT NULL DEFAULT 0,
+  unrest_until INTEGER NOT NULL DEFAULT 0,
+  fact_key TEXT NOT NULL DEFAULT '',
+  UNIQUE (playthrough_id, vacuum_key, claimant_id)
+);
+CREATE INDEX IF NOT EXISTS ix_claimants ON claimants(playthrough_id, vacuum_key);
+
+-- ============================================================== OOC channel
+-- The table talking ABOUT the story, kept out of the story. Nothing here
+-- enters the timeline, moves a relationship, or is witnessed - so asking
+-- "is the gate still barred?" does not become a scene the world reacts to.
+CREATE TABLE IF NOT EXISTS ooc_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL DEFAULT '',
+  playthrough_id TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL,
+  to_wm INTEGER NOT NULL DEFAULT 0,
+  reply TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ooc ON ooc_messages(playthrough_id, id);
+
 -- ===================================================== canon Session Zero
 -- What the player answered about their own place in a canon world: entry
 -- point on the timeline, where they sit in the power system, what limits
@@ -701,6 +773,30 @@ MIGRATIONS = [
     # A kicked player is marked, never row-deleted: their seat has to stay
     # addressable so a re-invite can restore the archive against it.
     ("session_players", "left_at", "TEXT NOT NULL DEFAULT ''"),
+    # --- legacy layer. A graph node carries the fact it is gated by, so the
+    # Chronicle can be witness-gated with a join instead of a guess: a node
+    # with no key is the player's own trail, a node with one is only visible
+    # to whoever actually learned that fact.
+    ("graph_nodes", "fact_key", "TEXT NOT NULL DEFAULT ''"),
+    # A fact an NPC holds is turned into a FEELING exactly once. Without this
+    # flag the gossip tick would re-apply the same rumour every turn and a
+    # single overheard killing would end a friendship by attrition.
+    ("knowledge", "applied", "INTEGER NOT NULL DEFAULT 0"),
+    # The event that broke it. Moral drift has to be traceable to a specific
+    # thing the player did, or it is a mood meter with a story pasted on.
+    ("relationships", "cause_node", "INTEGER NOT NULL DEFAULT 0"),
+    ("relationships", "cause_turn", "INTEGER NOT NULL DEFAULT -1"),
+    # --- the mode tree. `mode` already existed and means something narrower
+    # (how the table treats each other); this is what KIND of game it is, and
+    # it decides whether the world survives the session at all.
+    ("sessions", "session_type", "TEXT NOT NULL DEFAULT ''"),
+    ("sessions", "seed", "INTEGER NOT NULL DEFAULT 0"),
+    # A disposable world that has been settled. Kept as a column rather than a
+    # row deletion so the result stays readable after the world is gone.
+    ("sessions", "outcome", "TEXT NOT NULL DEFAULT ''"),
+    ("sessions", "ended_at", "TEXT NOT NULL DEFAULT ''"),
+    ("session_players", "team", "TEXT NOT NULL DEFAULT ''"),
+    ("session_players", "seat_role", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

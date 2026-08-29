@@ -1011,6 +1011,189 @@ button { background: none; border: 0; cursor: pointer; }
 .view-atlas { flex-direction: row; }
 .view-graph { flex-direction: column; position: relative; }
 .view-known, .view-combat { flex-direction: column; overflow-y: auto; }
+.view-ooc { flex-direction: column; }
+.view-chronicle, .view-power { flex-direction: column; }
+
+/* ------------------------------------------------- the mode tree picker */
+.mode-tree-pick { margin: 16px 0 4px; }
+.big-label {
+  display: block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px;
+}
+.mode-fams { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.mode-meta { color: var(--faint) !important; margin-top: 4px; font-size: 10.5px !important; }
+
+/* ------------------------------------------------- chronicle (world feed)
+   Tone is carried on a left rule rather than in the text colour: the feed has
+   to stay readable first and legible-at-a-glance second, and a page of
+   coloured prose achieves neither. */
+.chron-scroll, .power-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 32px;
+}
+.chron-alerts { display: grid; gap: 10px; margin-bottom: 18px; }
+.alert {
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px;
+  background: var(--panel-2); padding: 11px 14px;
+}
+.alert-t {
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 4px;
+}
+.alert-b { font-size: 14px; line-height: 1.55; color: var(--vellum); }
+.alert-s { font-size: 12.5px; color: var(--vellum-dim); margin-top: 5px; line-height: 1.5; }
+.alert.traitor { border-left-color: var(--rose); }
+.alert.vacuum  { border-left-color: var(--crimson); }
+.alert.owed    { border-left-color: var(--ember); }
+.alert-act {
+  margin-top: 9px; display: flex; gap: 8px; flex-wrap: wrap;
+}
+.heat-track {
+  height: 4px; border-radius: 999px; background: var(--panel-3);
+  margin-top: 8px; overflow: hidden;
+}
+.heat-fill { height: 100%; background: var(--rose); border-radius: 999px; }
+
+.claimants { display: grid; gap: 6px; margin-top: 9px; }
+.claimant {
+  display: flex; align-items: baseline; gap: 8px; font-size: 12.5px;
+  color: var(--vellum-dim);
+}
+.claimant b { color: var(--vellum); font-weight: 600; }
+.claimant .cl-why { color: var(--muted); font-size: 11.5px; }
+.claimant .cl-num { margin-left: auto; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.chron-feed { display: grid; gap: 2px; max-width: 74ch; }
+.chron-day {
+  font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--faint); margin: 16px 0 6px;
+}
+.chron-row {
+  display: grid; grid-template-columns: 46px 1fr; gap: 12px;
+  padding: 9px 12px 9px 0; border-left: 2px solid var(--line-soft);
+  padding-left: 14px;
+}
+.chron-row.tone-fate { border-left-color: var(--ember); }
+.chron-row.tone-tension { border-left-color: var(--rose); }
+.chron-row.tone-danger { border-left-color: var(--crimson); }
+.chron-row.tone-hope { border-left-color: var(--verdigris); }
+.chron-row.tone-unknown { border-left-color: var(--violet); }
+.chron-t { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; padding-top: 2px; }
+.chron-l { font-size: 14.5px; line-height: 1.5; color: var(--vellum); }
+.chron-d { font-size: 12.5px; line-height: 1.55; color: var(--vellum-dim); margin-top: 3px; }
+.chron-m { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+.chron-src {
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 7px;
+  font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+}
+.chron-src[data-s="heard"], .chron-src[data-s="overheard"] { color: var(--violet); border-color: var(--violet); }
+.chron-src[data-s="learned-late"] { color: var(--ember); border-color: var(--ember-deep); }
+
+/* --------------------------------------------------------------- power */
+.power-grid { display: grid; gap: 20px; max-width: 78ch; }
+.power-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 4px;
+}
+.power-head h3 { margin: 0; font-size: 13px; letter-spacing: .07em; text-transform: uppercase; color: var(--vellum-dim); font-weight: 600; }
+.power-head .ph-n { margin-left: auto; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.skill-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13.5px; color: var(--vellum-dim); }
+.skill-bar { flex: 1; height: 5px; border-radius: 999px; background: var(--panel-3); overflow: hidden; }
+.skill-fill { height: 100%; background: var(--ember); }
+.skill-v { color: var(--vellum); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+
+.sub-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 8px 12px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel-2); margin-bottom: 8px;
+}
+.sub-name { font-size: 14px; color: var(--vellum); font-weight: 600; }
+.sub-meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.sub-stage {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+  color: var(--muted); align-self: start;
+}
+.sub-stage[data-stage="resentful"], .sub-stage[data-stage="plotting"] { color: var(--rose); border-color: var(--rose); }
+.sub-stage[data-stage="villain"] { color: var(--crimson); border-color: var(--crimson); }
+.sub-stage[data-stage="sworn"], .sub-stage[data-stage="loyal"] { color: var(--verdigris); border-color: var(--verdigris); }
+.sub-cmd { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
+.sub-cmd input {
+  flex: 1; min-width: 160px; background: var(--panel); color: var(--vellum);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px;
+  font: inherit; font-size: 13px;
+}
+.sub-cmd input:focus { outline: none; border-color: var(--ember); }
+
+.stand-row {
+  display: flex; align-items: baseline; gap: 10px; padding: 7px 0;
+  font-size: 13.5px; color: var(--vellum-dim); border-bottom: 1px solid var(--line-soft);
+}
+.stand-row b { color: var(--vellum); font-weight: 600; }
+.stand-tier {
+  margin-left: auto; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted);
+}
+.stand-tier[data-tier="wanted"] { color: var(--ember); border-color: var(--ember-deep); }
+.stand-tier[data-tier="warrant"], .stand-tier[data-tier="hunt"] { color: var(--crimson); border-color: var(--crimson); }
+
+.drift-row {
+  display: flex; align-items: baseline; gap: 10px; padding: 9px 0;
+  border-bottom: 1px solid var(--line-soft); flex-wrap: wrap;
+}
+.drift-why {
+  flex-basis: 100%; font-size: 12px; color: var(--muted); margin-top: 2px;
+  border-left: 2px solid var(--line); padding-left: 9px; line-height: 1.5;
+}
+
+/* ------------------------------------------------------- table talk (OOC)
+   Reads as a chat, not as prose, and that difference is load-bearing: the
+   moment this looks like the story feed, players stop trusting that what
+   they type here stays out of the story. */
+.ooc-list {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 8px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.ooc-empty {
+  margin: auto; max-width: 46ch; text-align: center; color: var(--muted);
+  font-size: 13px; line-height: 1.6;
+}
+.ooc-empty b { display: block; color: var(--vellum-dim); margin-bottom: 6px; }
+.ooc-msg { max-width: 62ch; }
+.ooc-who {
+  font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 3px;
+}
+.ooc-text {
+  font-size: 14px; line-height: 1.55; color: var(--vellum-dim);
+  background: var(--panel-2); border: 1px solid var(--line-soft);
+  border-radius: 10px; padding: 8px 11px;
+}
+.ooc-msg.mine .ooc-text { border-color: var(--line); color: var(--vellum); }
+.ooc-msg.wm .ooc-who { color: var(--ember-deep); }
+.ooc-reply {
+  margin-top: 6px; font-size: 13.5px; line-height: 1.5; color: var(--vellum);
+  border-left: 2px solid var(--ember); padding: 4px 0 4px 10px;
+}
+.ooc-reply em { color: var(--muted); font-style: normal; font-size: 11px; display: block; }
+.ooc-pending { color: var(--muted); font-style: italic; }
+.ooc-composer {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 20px 16px; border-top: 1px solid var(--line);
+}
+.ooc-composer input[type=text], .ooc-composer #oocInput {
+  flex: 1; min-width: 180px; background: var(--panel-2); color: var(--vellum);
+  border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px;
+  font: inherit; font-size: 14px;
+}
+.ooc-composer #oocInput:focus { outline: none; border-color: var(--ember); }
+.ooc-ask {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.ooc-ask input { accent-color: var(--ember); }
+.ooc-note {
+  flex-basis: 100%; font-size: 11px; color: var(--faint); margin: 0;
+}
 
 /* ------------------------------------------------------------ atlas map */
 .atlas-wrap { flex: 1; min-width: 0; position: relative; display: flex; }
@@ -1344,11 +1527,19 @@ button { background: none; border: 0; cursor: pointer; }
 .mode-chip {
   flex: 1 1 150px; text-align: left; padding: 10px 12px;
   border: 1px solid var(--line); border-radius: 10px;
-  background: var(--panel); color: var(--ink); cursor: pointer;
+  /* --ink is a BACKGROUND token, and this chip's background is --panel: one
+     shade off it in ink, one shade off it in parchment. So every unselected
+     chip painted its label in near-enough its own background and the name of
+     the option was invisible in both themes - only the blurb showed, because
+     `small` sets --muted explicitly. Readable foreground, not a ground. */
+  background: var(--panel); color: var(--vellum); cursor: pointer;
   transition: border-color .15s, background .15s, transform .1s;
 }
 .mode-chip:hover { border-color: var(--ember); transform: translateY(-1px); }
-.mode-chip.on { border-color: var(--ember); background: var(--ember-soft); }
+/* Light chip, so the text flips to the darkest ground token. */
+.mode-chip.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
+.mode-chip[disabled] { opacity: .45; cursor: default; }
+.mode-chip[disabled]:hover { border-color: var(--line); transform: none; }
 .mode-chip b { display: block; font-size: 14px; margin-bottom: 2px; }
 .mode-chip small { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
 
@@ -1363,7 +1554,7 @@ button { background: none; border: 0; cursor: pointer; }
 .run-echo {
   margin-top: 14px; padding: 12px 14px; border-left: 3px solid var(--ember);
   background: var(--panel); border-radius: 0 8px 8px 0;
-  font-style: italic; color: var(--ink);
+  font-style: italic; color: var(--vellum);
 }
 .run-unlocks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 
@@ -1377,11 +1568,11 @@ button { background: none; border: 0; cursor: pointer; }
 .death-opt {
   text-align: left; padding: 12px 14px; cursor: pointer;
   border: 1px solid var(--line); border-radius: 10px;
-  background: var(--panel); color: var(--ink);
+  background: var(--panel); color: var(--vellum);
   transition: border-color .15s, transform .1s;
 }
 .death-opt:hover { border-color: var(--ember); transform: translateY(-1px); }
-.death-opt.preset { border-color: var(--ember); background: var(--ember-soft); }
+.death-opt.preset { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .death-opt b { display: block; margin-bottom: 3px; }
 .death-opt small { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
 .death-caps {
@@ -1394,9 +1585,9 @@ button { background: none; border: 0; cursor: pointer; }
 .ff-kind {
   flex: 1 1 130px; text-align: left; padding: 10px 12px; cursor: pointer;
   border: 1px solid var(--line); border-radius: 10px;
-  background: var(--panel); color: var(--ink);
+  background: var(--panel); color: var(--vellum);
 }
-.ff-kind.on { border-color: var(--ember); background: var(--ember-soft); }
+.ff-kind.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .ff-kind b { display: block; font-size: 13.5px; }
 .ff-kind small { display: block; color: var(--muted); font-size: 11px; }
 .ff-with { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1436,9 +1627,9 @@ button { background: none; border: 0; cursor: pointer; }
 .report-reason {
   text-align: left; padding: 10px 12px; cursor: pointer;
   border: 1px solid var(--line); border-radius: 10px;
-  background: var(--panel); color: var(--ink);
+  background: var(--panel); color: var(--vellum);
 }
-.report-reason.on { border-color: var(--ember); background: var(--ember-soft); }
+.report-reason.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .report-reason b { display: block; text-transform: capitalize; }
 .report-reason small { display: block; color: var(--muted); font-size: 11.5px; }
 
@@ -1465,10 +1656,10 @@ button { background: none; border: 0; cursor: pointer; }
 .onb-opt {
   text-align: left; padding: 14px 16px; cursor: pointer;
   border: 1px solid var(--line); border-radius: 12px;
-  background: var(--panel); color: var(--ink);
+  background: var(--panel); color: var(--vellum);
   transition: border-color .15s, transform .1s, background .15s;
 }
-.onb-opt:hover { border-color: var(--ember); transform: translateY(-1px); background: var(--ember-soft); }
+.onb-opt:hover { border-color: var(--ember); transform: translateY(-1px); background: var(--ember-soft); color: var(--void); }
 .onb-opt b { display: block; font-size: 15px; margin-bottom: 3px; }
 .onb-opt small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .onb-skip { width: 100%; margin-top: 14px; }
@@ -1492,11 +1683,11 @@ button { background: none; border: 0; cursor: pointer; }
 .arc-list { display: grid; gap: 8px; }
 .arc {
   display: flex; align-items: center; gap: 12px; text-align: left;
-  padding: 12px 14px; cursor: pointer; color: var(--ink);
+  padding: 12px 14px; cursor: pointer; color: var(--vellum);
   border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
 }
 .arc:hover { border-color: var(--ember); }
-.arc.on { border-color: var(--ember); background: var(--ember-soft); }
+.arc.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .arc-n {
   width: 26px; height: 26px; flex: none; border-radius: 50%;
   display: grid; place-items: center; font-size: 12px; font-weight: 600;
@@ -1627,7 +1818,7 @@ button { background: none; border: 0; cursor: pointer; }
 .settle-state b { display: block; }
 .settle-state span { font-size: 12px; color: var(--muted); }
 .settle-opts { display: grid; gap: 10px; }
-.settle-opt { text-align: left; padding: 12px 14px; cursor: pointer; color: var(--ink);
+.settle-opt { text-align: left; padding: 12px 14px; cursor: pointer; color: var(--vellum);
               border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .settle-opt:hover { border-color: var(--ember); }
 .settle-opt b { display: block; margin-bottom: 3px; }
@@ -1672,9 +1863,9 @@ button { background: none; border: 0; cursor: pointer; }
 .ex-try-head { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
                color: var(--muted); margin-bottom: 10px; }
 .ex-try-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.ex-try-opt { text-align: left; padding: 10px 12px; cursor: pointer; color: var(--ink);
+.ex-try-opt { text-align: left; padding: 10px 12px; cursor: pointer; color: var(--vellum);
               border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
-.ex-try-opt.on { border-color: var(--ember); background: var(--ember-soft); }
+.ex-try-opt.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .ex-try-opt b { display: block; font-size: 13px; }
 .ex-try-opt small { color: var(--muted); font-size: 11px; }
 .ex-try-out:empty { display: none; }
@@ -1688,7 +1879,7 @@ button { background: none; border: 0; cursor: pointer; }
 /* --- accounts ----------------------------------------------------------- */
 .acct-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
              border-radius: 999px; border: 1px solid var(--line);
-             background: var(--panel-2); color: var(--ink); cursor: pointer;
+             background: var(--panel-2); color: var(--vellum); cursor: pointer;
              font-size: 12px; }
 .acct-chip:hover { border-color: var(--ember); }
 .acct-guest { color: var(--muted); }
@@ -1746,12 +1937,12 @@ button { background: none; border: 0; cursor: pointer; }
 /* --- build mode: the player chooses, the system does not guess ----------- */
 .mode-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
 .mode-card {
-  text-align: left; padding: 11px 12px; cursor: pointer; color: var(--ink);
+  text-align: left; padding: 11px 12px; cursor: pointer; color: var(--vellum);
   border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
   transition: border-color .15s, background .15s;
 }
 .mode-card:hover { border-color: var(--ember); }
-.mode-card.on { border-color: var(--ember); background: var(--ember-soft); }
+.mode-card.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
 @media (max-width: 620px) { .mode-pick { grid-template-columns: 1fr; } }

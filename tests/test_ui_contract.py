@@ -136,10 +136,48 @@ def test_assets_are_cache_busted():
        "re-read for a client to learn the new asset hashes at all")
 
 
+# The palette splits cleanly in two: tokens that name a SURFACE and tokens
+# that name INK on a surface. Both themes redefine both halves, so a rule that
+# takes its text colour from the surface half is invisible in every theme at
+# once - which is exactly how it shipped.
+GROUNDS = ("--void", "--ink", "--panel", "--panel-2", "--panel-3",
+           "--line", "--line-soft")
+
+
+def test_text_is_never_painted_in_a_ground_colour():
+    section("contrast — a label painted in a background token is invisible")
+    # `.mode-chip` set `background: var(--panel); color: var(--ink)`. Those are
+    # one shade apart in ink AND one shade apart in parchment, so the name of
+    # every unselected option ("Loose", "Strict") did not render in either
+    # theme. Only the blurb showed, because `small` names --muted explicitly.
+    # Nothing caught it: the element existed, carried text, and had a colour.
+    offenders = []
+    for sel, block in re.findall(r"([^{}]+)\{([^{}]*)\}", CSS):
+        colour = re.search(r"(?<!-)\bcolor:\s*var\((--[a-z0-9-]+)\)", block)
+        ground = re.search(r"\bbackground(?:-color)?:\s*var\((--[a-z0-9-]+)\)", block)
+        if not colour or not ground:
+            continue
+        if colour.group(1) in GROUNDS and ground.group(1) in GROUNDS:
+            offenders.append(f"{sel.strip().splitlines()[-1].strip()} "
+                             f"({colour.group(1)} on {ground.group(1)})")
+    ok(not offenders,
+       "no rule paints text in a surface token on top of another surface token"
+       + (" — found " + "; ".join(offenders[:4]) if offenders else ""))
+
+    m = re.search(r"\.mode-chip\s*\{([^}]*)\}", CSS, re.S)
+    ok(m and "color: var(--vellum)" in m.group(1),
+       "and the chip that shipped the bug names a real foreground token")
+    m_on = re.search(r"\.mode-chip\.on\s*\{([^}]*)\}", CSS, re.S)
+    ok(m_on and "color:" in m_on.group(1),
+       "its selected state, which paints a LIGHT ground in both themes, sets "
+       "its own text colour rather than inheriting the one meant for a dark chip")
+
+
 def _all():
     return (test_hidden_actually_hides, test_scroll_containers_can_shrink,
             test_mobile_overrides_come_after_base_rules,
-            test_responsive_panels_stay_reachable, test_assets_are_cache_busted)
+            test_responsive_panels_stay_reachable, test_assets_are_cache_busted,
+            test_text_is_never_painted_in_a_ground_colour)
 
 
 def main():
