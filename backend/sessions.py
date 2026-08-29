@@ -101,9 +101,33 @@ def settle(session_id, *, outcome, winner="") -> dict:
             session_id))
     db.run("UPDATE playthroughs SET run_state='ended' WHERE id=?", (row["playthrough_id"],))
     rt.cache_drop(f"sl:session:{session_id}")
+
+    # The result reaches every profile at the table. Without this a Duel could
+    # be won and the ladder would never hear about it - the whole competitive
+    # half of the spec would have been a table nobody wrote to.
+    scored = []
+    if modetree.family(mode_id) == "pvp":
+        from . import ladder
+        for p in players(session_id):
+            if p["role"] == "spectator" or p.get("left_at"):
+                continue
+            won = bool(winner) and p["player_id"] == winner
+            opponent = next((q["player_id"] for q in players(session_id)
+                             if q["player_id"] != p["player_id"]
+                             and q["role"] != "spectator"), "")
+            try:
+                scored.append(ladder.record_match(
+                    account_id=p["user_id"], player_id=p["player_id"],
+                    session_id=session_id, mode=mode_id,
+                    outcome="win" if won else "loss",
+                    opponent=opponent,
+                    opponent_name=next((q["name"] for q in players(session_id)
+                                        if q["player_id"] == opponent), "")))
+            except ValueError:
+                continue
     return {"settled": True, "session_id": session_id, "mode": mode_id,
             "disposable": modetree.is_disposable(mode_id),
-            "outcome": outcome, "winner": winner}
+            "outcome": outcome, "winner": winner, "scored": scored}
 
 
 def by_code(code):

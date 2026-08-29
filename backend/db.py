@@ -641,6 +641,119 @@ CREATE TABLE IF NOT EXISTS claimants (
 );
 CREATE INDEX IF NOT EXISTS ix_claimants ON claimants(playthrough_id, vacuum_key);
 
+-- ======================================================== detective & masks
+-- The case is not authored. A culprit and a victim are drawn from the living,
+-- the killing goes through the ordinary witness path, and what is stored here
+-- is only the ANSWER - the mystery itself is whatever the awareness layer left
+-- in whose heads.
+CREATE TABLE IF NOT EXISTS cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playthrough_id TEXT NOT NULL,
+  culprit TEXT NOT NULL,
+  victim TEXT NOT NULL,
+  place_id TEXT NOT NULL DEFAULT '',
+  phase TEXT NOT NULL DEFAULT '',
+  opened_turn INTEGER NOT NULL DEFAULT 0,
+  fact_key TEXT NOT NULL DEFAULT '',
+  clue_count INTEGER NOT NULL DEFAULT 1,
+  solved INTEGER NOT NULL DEFAULT 0,
+  accused TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_cases ON cases(playthrough_id, id);
+
+-- A hunter wearing the face of somebody who lives here. Voting the face out
+-- either pulls a mask off or kills a real resident, and both are real.
+CREATE TABLE IF NOT EXISTS masks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  playthrough_id TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  npc_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'hidden',
+  pulled_turn INTEGER NOT NULL DEFAULT -1,
+  created_at TEXT NOT NULL,
+  UNIQUE (session_id, player_id)
+);
+
+-- ====================================================== competitive profile
+-- One row per player identity. An ACCOUNT profile is durable across runs and
+-- devices; a SESSION profile exists so anonymous play still earns something
+-- and is never blocked, and dies with the session it belongs to.
+CREATE TABLE IF NOT EXISTS profiles (
+  owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  legacy INTEGER NOT NULL DEFAULT 0,
+  coop INTEGER NOT NULL DEFAULT 0,
+  pvp TEXT NOT NULL DEFAULT '{}',
+  achievements TEXT NOT NULL DEFAULT '[]',
+  feuds TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (owner_kind, owner_id)
+);
+
+-- The Daily board. Everyone played the same seeded world that day, which is
+-- the only board here where comparing two runs is genuinely like for like.
+CREATE TABLE IF NOT EXISTS daily_results (
+  day TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  score INTEGER NOT NULL DEFAULT 0,
+  turns INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (day, owner_id)
+);
+CREATE INDEX IF NOT EXISTS ix_daily ON daily_results(day, score DESC);
+
+-- ================================================================= P8 Room
+-- A table of characters, at least one of whom is a real person wearing that
+-- character's face. Seats are assigned once and never rerolled: a reconnect
+-- that could change your role would make the whole mode unplayable.
+CREATE TABLE IF NOT EXISTS room_seats (
+  session_id TEXT NOT NULL,
+  seat_id TEXT NOT NULL,
+  character_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  card TEXT NOT NULL DEFAULT '{}',
+  occupant TEXT NOT NULL DEFAULT 'ai',
+  is_imposter INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'seated',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, seat_id)
+);
+
+CREATE TABLE IF NOT EXISTS room_state (
+  session_id TEXT PRIMARY KEY,
+  phase TEXT NOT NULL DEFAULT 'lobby',
+  round_no INTEGER NOT NULL DEFAULT 0,
+  rounds INTEGER NOT NULL DEFAULT 4,
+  ends_reason TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS room_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  round_no INTEGER NOT NULL,
+  seat_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'ai',
+  clamped INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_room_lines ON room_lines(session_id, round_no, id);
+
+CREATE TABLE IF NOT EXISTS room_votes (
+  session_id TEXT NOT NULL,
+  round_no INTEGER NOT NULL,
+  voter_seat TEXT NOT NULL,
+  target_seat TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, round_no, voter_seat)
+);
+
 -- ============================================================== OOC channel
 -- The table talking ABOUT the story, kept out of the story. Nothing here
 -- enters the timeline, moves a relationship, or is witnessed - so asking
@@ -797,6 +910,9 @@ MIGRATIONS = [
     ("sessions", "ended_at", "TEXT NOT NULL DEFAULT ''"),
     ("session_players", "team", "TEXT NOT NULL DEFAULT ''"),
     ("session_players", "seat_role", "TEXT NOT NULL DEFAULT ''"),
+    # A SOLO world has no session, so there was nowhere to record which of the
+    # six solo modes it is - and every solo world silently played as Story.
+    ("playthroughs", "session_type", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

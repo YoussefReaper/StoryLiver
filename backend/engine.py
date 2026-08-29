@@ -51,8 +51,43 @@ def ensure_user(user_id):
     return user_id
 
 
+def mode_of(pt) -> str:
+    """Which of the nineteen sub-modes this world is playing.
+
+    ONE resolver. The alternative is the engine asking the session and the
+    client asking the playthrough, and the two disagreeing on a Tuesday. A
+    room's setting wins because a room is the stronger statement; a solo world
+    carries its own; anything older falls back to the default rather than
+    raising at the worst possible moment."""
+    if isinstance(pt, str):
+        pt = _pt(pt) or {}
+    if pt.get("session_id"):
+        from . import sessions as _sessions
+        return _sessions.type_of(pt["session_id"])
+    return modetree.normalise(pt.get("session_type") or "")
+
+
+def mode_setup(pt_id, world, mode_id, *, turn=0) -> dict:
+    """What has to be DONE to a world before its mode is playable.
+
+    A Detective world with no killing in it is one where the player opens the
+    casefile, finds nothing, and reasonably concludes the mode is broken. Run
+    once at creation, and guarded so it cannot run twice."""
+    from . import submodes
+    out = {}
+    if mode_id == "detective" and not submodes.current_case(pt_id):
+        try:
+            out["case"] = submodes.open_case(pt_id, world, turn=turn)
+        except submodes.SubmodeError as exc:
+            # A world too small or too empty for a case is a real answer. Said
+            # out loud rather than swallowed, so the client can offer another
+            # world instead of showing an empty casefile.
+            out["case_error"] = str(exc)
+    return out
+
+
 def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=None,
-                       session_id="", world_json=None):
+                       session_id="", world_json=None, session_type=""):
     world = world_registry.resolve(world_id, world_json)
     ensure_user(user_id)
     pt_id = uuid.uuid4().hex[:12]
@@ -61,11 +96,12 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     start = world.get("start_location")
     db.run(
         "INSERT INTO playthroughs (id,user_id,world_id,title,protagonist,current_turn,current_location,"
-        "mana_balance,mana_used,tension,last_beat_turn,created_at,updated_at,session_id,world_json)"
-        " VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?)",
+        "mana_balance,mana_used,tension,last_beat_turn,created_at,updated_at,session_id,world_json,"
+        "session_type) VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?,?)",
         (pt_id, user_id, world.id, title or world.name,
          protagonist or world.get("default_protagonist"), start,
-         config.STARTING_MANA, db.now(), db.now(), session_id, pinned),
+         config.STARTING_MANA, db.now(), db.now(), session_id, pinned,
+         modetree.normalise(session_type or "") if not session_id else ""),
     )
     memory.seed(pt_id, world)
     worldstate.seed(pt_id, world)
@@ -89,6 +125,10 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     authority.seed_from_memory(pt_id, world, account_id=user_id, player=memory.SOLO)
     _feed(pt_id, 0, "opening", world.get("opening") or world.get("premise"), actor=None,
           meta={"location": start})
+    # Whatever this mode needs staged before it is playable. Solo modes only:
+    # a room stages itself when the host sets the table.
+    if session_type and not session_id:
+        mode_setup(pt_id, world, modetree.normalise(session_type), turn=0)
     return pt_id
 
 
@@ -303,20 +343,23 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
     # whether this verb is allowed at all, and whether it is even this
     # player's turn. Both are enforced HERE rather than at each entry point,
     # so the HTTP path and the socket path cannot drift apart on the answer.
-    mode_id = modetree.DEFAULT_MODE
+    mode_id = mode_of(pt)
+
+    # Guard layer 1, and it is checked for SOLO worlds too. It used to sit
+    # inside the room branch, so a talk-only mode played alone was not
+    # talk-only at all.
+    verdict_action = modetree.check_action(mode_id, action)
+    if not verdict_action["allowed"]:
+        return {"blocked": True, "reason": verdict_action["reason"],
+                "refused": verdict_action["kind"], "entries": [],
+                "state": snapshot(pt_id, player)}
+
     if session_id:
         from . import sessions as _sessions
-        mode_id = _sessions.type_of(session_id)
 
         # Guard layer 1. A talk-only room refuses the verb at the parser, not
         # in a prompt: a model told not to narrate combat will eventually
         # narrate combat, and a parser that rejects the input cannot.
-        verdict_action = modetree.check_action(mode_id, action)
-        if not verdict_action["allowed"]:
-            return {"blocked": True, "reason": verdict_action["reason"],
-                    "refused": verdict_action["kind"], "entries": [],
-                    "state": snapshot(pt_id, player)}
-
         whose = _sessions.may_act(session_id, player, pt["current_turn"])
         if not whose["ok"]:
             return {"blocked": True,
@@ -698,10 +741,8 @@ def snapshot(pt_id, player=memory.SOLO):
         # most about a PvP world: that it ends when the match does.
         "session": ({"id": session["id"], "code": session["code"], "mode": session["mode"],
                      "status": session["status"],
-                     "session_type": modetree.normalise(
-                         session.get("session_type") or "", room_mode=session["mode"]),
-                     "mode_spec": modetree.public(modetree.normalise(
-                         session.get("session_type") or "", room_mode=session["mode"])),
+                     "session_type": mode_of(pt),
+                     "mode_spec": modetree.public(mode_of(pt)),
                      "seats": modetree.seat_order(db.rows(
                          "SELECT player_id, role, joined_at, left_at FROM session_players"
                          " WHERE session_id=?", (session["id"],))),
@@ -712,6 +753,10 @@ def snapshot(pt_id, player=memory.SOLO):
         # whether death is permanent, which run this is, or whether Deep Prose
         # is even available - and every panel that shows them would be guessing.
         "modes": modes.public(pt_id),
+        # What KIND of game this is, at the top level rather than nested under
+        # `session` - a solo world has no session row, so a solo Detective was
+        # unable to tell its own client what it was.
+        "mode": modetree.public(mode_of(pt)),
         "run": runs.public(pt_id, pt["user_id"], pt["world_id"]),
         "arc": arcs.position(pt_id, pt["world_id"]),
         "skills": fastforward.skills(pt_id, player),

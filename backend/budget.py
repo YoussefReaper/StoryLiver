@@ -27,6 +27,7 @@ ALLOWED = {
     "rumor",              # narrating a rumour's arrival
     "ooc",                # token-thrifty World Master reply in the OOC channel
     "card",               # character-card autofill, cheapest model
+    "room",               # one seat's reply in a P8 Room, hard-capped short
 }
 
 # Hard ceiling on model calls inside one resolved turn.
@@ -47,6 +48,10 @@ ACTION_PRICE = {
     "contest": 2,            # PVP arbitration
     "bootstrap": 6,          # building a whole world
     "voice_studio": 2,
+    # A seat speaking is one short completion. Priced as an ordinary
+    # action because a room is many of them, and a mode that got
+    # expensive per line would be a mode nobody finishes.
+    "room_line": 1,
 }
 
 FREE_ACTIONS = (

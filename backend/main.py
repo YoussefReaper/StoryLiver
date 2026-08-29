@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from . import (aftermath, arcs, atlas, auth, authority, awareness, betrayal, budget,
-               canon, combat, durable, legacy, legibility, modetree, ooc,
-               research, sessionzero, uploads,
+               canon, combat, durable, ladder, legacy, legibility, modetree,
+               ooc, research, room, sessionzero, submodes, uploads,
                config, db,
                death, engine, fastforward, identity, llm, mana, memory, modes,
                narrgraph,
@@ -73,6 +73,9 @@ class NewPlaythrough(BaseModel):
     world_id: str = "emberfall"
     protagonist: str | None = None
     title: str | None = None
+    # Which of the six solo modes. Empty is Story, which is what every solo
+    # world was before there was anywhere to say otherwise.
+    session_type: str = ""
 
 
 class Action(BaseModel):
@@ -367,8 +370,13 @@ def list_playthroughs(user_id: str = Query(min_length=4)):
 def new_playthrough(body: NewPlaythrough):
     if not world_registry.exists(body.world_id):
         raise HTTPException(400, "unknown world")
-    pt_id = engine.create_playthrough(body.user_id, body.world_id, body.protagonist, body.title)
-    return {"id": pt_id, "state": engine.snapshot(pt_id), "feed": engine.feed(pt_id)}
+    try:
+        pt_id = engine.create_playthrough(body.user_id, body.world_id, body.protagonist,
+                                          body.title, session_type=body.session_type)
+    except modetree.ModeError as e:
+        raise HTTPException(400, str(e))
+    return {"id": pt_id, "mode": modetree.public(engine.mode_of(pt_id)),
+            "state": engine.snapshot(pt_id), "feed": engine.feed(pt_id)}
 
 
 @app.get("/api/playthroughs/{pt_id}")
@@ -2242,6 +2250,309 @@ def turn_order(session_id: str, player: str = Query(default="")):
         "you": modetree.may_act(mode_id, seats=seats, player_id=player, turn=turn)
         if player else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# P8 The Room - seats, talk, the vote
+# ---------------------------------------------------------------------------
+
+def _room_session(session_id):
+    row = db.row("SELECT * FROM sessions WHERE id=?", (session_id,))
+    if not row:
+        raise HTTPException(404, "no such room")
+    if sessions.type_of(session_id) != "room":
+        raise HTTPException(400, "that room is not playing The Room")
+    return row
+
+
+class RoomSetup(BaseModel):
+    characters: list = Field(default_factory=list)
+    imposters: int = Field(default=1, ge=1, le=4)
+    rounds: int = Field(default=room.DEFAULT_ROUNDS, ge=1, le=12)
+
+
+@app.post("/api/rooms/{session_id}/setup")
+def room_setup(session_id: str, body: RoomSetup, user_id: str = Query(default="")):
+    """Seat the table. Who is an imposter is decided here and never again."""
+    row = _room_session(session_id)
+    if user_id and row["host_user_id"] != user_id:
+        raise HTTPException(403, "only the host sets the table")
+    try:
+        out = room.setup(session_id, characters=body.characters,
+                         imposters=body.imposters, rounds=body.rounds)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "setup"})
+    return out
+
+
+@app.post("/api/rooms/{session_id}/seat/{seat_id}")
+def room_take_seat(session_id: str, seat_id: str, player: str = Query(...)):
+    _room_session(session_id)
+    try:
+        out = room.take_seat(session_id, seat_id, player)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "seated", "seat": out})
+    return out
+
+
+@app.post("/api/rooms/{session_id}/begin")
+def room_begin(session_id: str, user_id: str = Query(default="")):
+    row = _room_session(session_id)
+    if user_id and row["host_user_id"] != user_id:
+        raise HTTPException(403, "only the host starts it")
+    try:
+        out = room.begin(session_id)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "begin", "state": out})
+    return out
+
+
+class RoomSay(BaseModel):
+    text: str = Field(min_length=1, max_length=room.MAX_SAY)
+
+
+@app.post("/api/rooms/{session_id}/say")
+def room_say(session_id: str, body: RoomSay, player: str = Query(...)):
+    """A player speaks as their character. No model call - a human in a seat
+    is the only character in the game that never drifts."""
+    _room_session(session_id)
+    seat_id = room.seat_of(session_id, player)
+    if not seat_id:
+        raise HTTPException(400, "you have no seat")
+    try:
+        line = room.say(session_id, seat_id, body.text, player_id=player)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "line", "line": line})
+    return line
+
+
+@app.post("/api/rooms/{session_id}/ai/{seat_id}")
+def room_ai(session_id: str, seat_id: str, user_id: str = Query(default="")):
+    """An AI seat takes its turn. One completion, guarded on both sides, and it
+    clamps rather than showing a broken frame."""
+    row = _room_session(session_id)
+    try:
+        with budget.turn(f"room:{session_id}", limit=2):
+            line = room.ai_say(session_id, seat_id, user_id=user_id or row["host_user_id"])
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    except llm.LLMError as e:
+        raise HTTPException(502, f"that seat could not answer: {e}")
+    _publish(session_id, {"type": "room", "event": "line", "line": line})
+    return line
+
+
+@app.post("/api/rooms/{session_id}/advance")
+def room_advance(session_id: str):
+    _room_session(session_id)
+    try:
+        out = room.advance(session_id)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "phase", "state": out})
+    return out
+
+
+class RoomVote(BaseModel):
+    target: str = Field(min_length=1, max_length=12)
+
+
+@app.post("/api/rooms/{session_id}/vote")
+def room_vote(session_id: str, body: RoomVote, player: str = Query(...)):
+    _room_session(session_id)
+    seat_id = room.seat_of(session_id, player)
+    if not seat_id:
+        raise HTTPException(400, "you have no seat")
+    try:
+        out = room.vote(session_id, seat_id, body.target)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "vote", "tally": out})
+    return out
+
+
+@app.post("/api/rooms/{session_id}/resolve")
+def room_resolve(session_id: str):
+    """Banish the most-voted seat and reveal what they were."""
+    _room_session(session_id)
+    try:
+        out = room.resolve(session_id)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "resolved", "result": out})
+    if out.get("over"):
+        _settle_room(session_id, out)
+    return out
+
+
+def _settle_room(session_id, out):
+    """A finished Room is a finished PvP match: the world is torn down and the
+    result reaches every profile at the table."""
+    winner = out.get("winner", "")
+    for seat in room.seats(session_id):
+        if seat["occupant"] == "ai":
+            continue
+        won = (winner == "imposters") == bool(seat["is_imposter"])
+        try:
+            ladder.record_match(player_id=seat["occupant"], session_id=session_id,
+                                mode="room", outcome="win" if won else "loss")
+        except ValueError:
+            continue
+    try:
+        sessions.settle(session_id, outcome=winner, winner=winner)
+    except KeyError:
+        pass
+
+
+@app.get("/api/rooms/{session_id}")
+def room_state(session_id: str, player: str = Query(default="")):
+    """What one seat may see. Your own role is yours; everyone else's is hidden
+    until they are banished or it is over - enforced here, never in a client."""
+    _room_session(session_id)
+    return room.public(session_id, player)
+
+
+# ---------------------------------------------------------------------------
+# The competitive profile, seasons and boards
+# ---------------------------------------------------------------------------
+
+def _owner(user_id: str, player: str, session_id: str):
+    """An account if there is one, otherwise a session-scoped identity. Play is
+    never blocked to make somebody sign up."""
+    acct = db.row("SELECT id FROM accounts WHERE id=?", (user_id,)) if user_id else None
+    return (user_id if acct else "", player, session_id)
+
+
+@app.get("/api/profile/standing")
+def get_standing(user_id: str = Query(default=""), player: str = Query(default=memory.SOLO),
+                 session_id: str = Query(default="")):
+    """The COMPETITIVE profile - scores, season, rank, feuds.
+
+    Not /api/profile: that path is the account profile (mana, runs, cards) and
+    was registered first, so this handler would have been dead and the client
+    would have silently received the wrong shape forever."""
+    a, p, s = _owner(user_id, player, session_id)
+    return ladder.public(a, p, s)
+
+
+@app.get("/api/profile/trophies")
+def get_trophies(user_id: str = Query(default=""), player: str = Query(default=memory.SOLO),
+                 session_id: str = Query(default="")):
+    a, p, s = _owner(user_id, player, session_id)
+    return ladder.trophy_room(a, p, s)
+
+
+@app.get("/api/leaderboard")
+def get_leaderboard(board: str = Query(default="pvp"), mode: str = Query(default=""),
+                    limit: int = Query(default=50, ge=1, le=200)):
+    try:
+        return ladder.leaderboard(board=board, mode=mode, limit=limit)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/leaderboard/daily")
+def get_daily_board(day: str = Query(default=""), limit: int = Query(default=50, ge=1, le=200)):
+    return ladder.daily_board(day=day, limit=limit)
+
+
+class DailySubmit(BaseModel):
+    name: str = Field(default="", max_length=40)
+
+
+@app.post("/api/playthroughs/{pt_id}/daily/submit")
+def submit_daily(pt_id: str, body: DailySubmit, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    """Put today's run on the board. Everyone played the same world, so this is
+    the one comparison here that is genuinely like for like."""
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    scored = submodes.daily_score(pt_id, world, player)
+    out = ladder.submit_daily(owner_id=user_id or f"{pt_id}:{player}",
+                              name=body.name or player, score=scored["score"],
+                              turns=scored["turns"])
+    return {**out, "score_detail": scored}
+
+
+# ---------------------------------------------------------------------------
+# Sub-mode mechanics - the objective, and the modes that have their own verbs
+# ---------------------------------------------------------------------------
+
+@app.get("/api/playthroughs/{pt_id}/objective")
+def get_objective(pt_id: str, user_id: str = Query(default=""),
+                  player: str = Query(default=memory.SOLO)):
+    """What you are trying to do here, and how far along you are. Read out of
+    engine state rather than a parallel counter."""
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    # engine.mode_of is the single resolver. Deriving it here a second way is
+    # how a solo Detective world was told its objective was Story.
+    mode_id = engine.mode_of(pt)
+    return submodes.public(pt_id, world, mode_id, player=player,
+                           session_id=pt["session_id"])
+
+
+@app.post("/api/playthroughs/{pt_id}/case/open")
+def case_open(pt_id: str, user_id: str = Query(default="")):
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    try:
+        return submodes.open_case(pt_id, world, turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/playthroughs/{pt_id}/case")
+def case_file(pt_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    pt = _own(pt_id, user_id)
+    return submodes.casefile(pt_id, engine.world_for(pt), player)
+
+
+@app.post("/api/playthroughs/{pt_id}/case/ask/{npc_id}")
+def case_ask(pt_id: str, npc_id: str, user_id: str = Query(default=""),
+             player: str = Query(default=memory.SOLO)):
+    """Ask somebody what they saw. Gated on both sides: they must know it, and
+    they must be willing to tell YOU."""
+    pt = _own(pt_id, user_id)
+    try:
+        return submodes.question(pt_id, engine.world_for(pt), npc_id,
+                                 player=player, turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/playthroughs/{pt_id}/case/accuse/{npc_id}")
+def case_accuse(pt_id: str, npc_id: str, user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    try:
+        out = submodes.accuse(pt_id, world, npc_id, player=player,
+                              turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+    if out.get("correct"):
+        ladder.add_legacy(120, account_id=user_id, player_id=player,
+                          session_id=pt["session_id"], why="closed a case")
+    return out
+
+
+@app.post("/api/playthroughs/{pt_id}/masks/vote/{npc_id}")
+def mask_vote(pt_id: str, npc_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    """Vote a face out. Right, and a mask comes off. Wrong, and somebody who
+    actually lived here is dead and the world knows who called for it."""
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    out = submodes.mask_vote(pt["session_id"], pt_id, world, npc_id=npc_id,
+                             by=player, turn=pt["current_turn"])
+    _publish(pt["session_id"], {"type": "mask", "result": out})
+    return out
 
 
 # ---------------------------------------------------------------------------

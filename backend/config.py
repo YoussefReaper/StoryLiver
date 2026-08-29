@@ -99,6 +99,9 @@ MODELS = {
     "narrator_premium": os.getenv("STORYLIVER_MODEL_NARRATOR_PREMIUM", "gpt-5.1"),
     "npc": os.getenv("STORYLIVER_MODEL_NPC", "gpt-5.4-mini"),
     "director": os.getenv("STORYLIVER_MODEL_DIRECTOR", "gpt-5.4-nano"),
+    # A room seat says one to three sentences. The cheap model is not a
+    # compromise here - the frame does the work, and the frame is code.
+    "room": os.getenv("STORYLIVER_MODEL_ROOM", "gpt-5.4-mini"),
 }
 
 # USD per 1M tokens (input, output). Verified against OpenAI's and Anthropic's
