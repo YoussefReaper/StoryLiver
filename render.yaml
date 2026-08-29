@@ -1,0 +1,25 @@
+# Render blueprint — free tier. Push this repo, point Render at it, add the key.
+services:
+  - type: web
+    name: storyliver
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: OPENAI_API_KEY
+        sync: false            # set this in the Render dashboard
+      - key: REDIS_URL
+        sync: false            # Upstash connection string (rediss://…)
+      - key: STORYLIVER_DATA_DIR
+        value: /var/data
+      - key: STORYLIVER_CORS
+        sync: false            # e.g. https://storyliver.pages.dev
+    disk:
+      name: storyliver-data
+      mountPath: /var/data
+      sizeGB: 1

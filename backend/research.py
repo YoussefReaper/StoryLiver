@@ -1,0 +1,781 @@
+"""Live canon research - the World Bootstrap's eyes.
+
+Bootstrap used to build a named world purely from what the model already knew.
+For a famous setting that looks fine, but it is guessing: the model cannot tell
+you whether it is confusing two characters, it has no idea what it does not
+know, and anything after its training cut-off simply does not exist to it. This
+module goes and looks.
+
+WHAT IT FETCHES, AND WHY THOSE SOURCES
+Wikipedia and Fandom, both of which run MediaWiki and expose a real JSON API.
+That matters more than it sounds: we ask the API for structured fields rather
+than scraping rendered HTML, so we get titles, categories and plain-text
+extracts instead of a pile of markup to regex at. Both are CC-BY-SA, so
+attribution is recorded on every world built this way.
+
+WHAT IT DELIBERATELY DOES NOT DO
+It does not copy prose into the game. What crosses from the web into a world is
+a DOSSIER OF FACTS - names, roles, places, in-world vocabulary - plus one short
+grounding summary that is capped hard and never handed to the narrator. Facts
+are not copyrightable; paragraphs are. This keeps the existing copyright posture
+intact (an IP-derived world is still personal_only and still forced private)
+while making the world materially more accurate.
+
+SECURITY: this is the one place the server fetches a URL, so it is the one
+place that can be turned into a server-side request forgery. Three controls,
+because any one of them alone is bypassable:
+
+  1. A fixed host allowlist. The player supplies a SETTING NAME, never a URL,
+     so there is no user-controlled host to begin with - but the allowlist means
+     even a bug upstream cannot make this fetch somewhere else.
+  2. Every resolved IP is checked against private, loopback, link-local and
+     carrier-grade-NAT ranges before we connect. A hostname allowlist alone
+     falls to DNS rebinding: a domain that resolves to a public IP at check time
+     and 169.254.169.254 at connect time passes a name check and hits the cloud
+     metadata endpoint.
+  3. The connection is PINNED to the IP we validated, with the hostname carried
+     in SNI and certificate verification. That closes the gap between "we
+     checked the name" and "we opened the socket", which is where rebinding
+     lives.
+
+Redirects are not followed. Responses are size-capped and read incrementally, so
+a hostile or broken endpoint cannot stream us out of memory.
+
+MANNERS: Wikimedia asks for a descriptive User-Agent with contact details,
+serial rather than parallel requests, `maxlag` so we back off when their
+replication is behind, and respect for `Retry-After` on 429. All four are here.
+Results are cached in SQLite so the same setting is never researched twice.
+
+COST: zero model calls. This is HTTP and parsing. It runs BEFORE the two
+existing bootstrap calls and changes what they are told, not how many there are.
+"""
+from __future__ import annotations
+
+import ipaddress
+import json
+import re
+import socket
+import time
+from urllib.parse import quote, urlparse
+
+from . import config, db
+
+# ---------------------------------------------------------------------------
+# Policy
+# ---------------------------------------------------------------------------
+
+# Hosts we will talk to. Suffix match, so "en.wikipedia.org" and
+# "naruto.fandom.com" both pass while "wikipedia.org.evil.test" does not.
+ALLOWED_SUFFIXES = (
+    ".wikipedia.org",
+    ".wikimedia.org",
+    ".fandom.com",
+    "wikipedia.org",
+    "wikidata.org",
+)
+
+MAX_BYTES = 2 * 1024 * 1024          # a MediaWiki JSON reply is far under this
+MAX_REQUESTS = 16                    # hard ceiling per dossier, so latency is bounded
+CACHE_DAYS = 30                      # canon does not move fast
+EXTRACT_CHARS = 1200                 # grounding summary cap - facts, not prose
+SNIPPET_CHARS = 180                  # per-entity note cap
+
+CONTACT = config.RESEARCH_CONTACT
+USER_AGENT = f"StoryLiver-WorldForge/1.0 ({CONTACT}) python-httpx"
+
+
+class ResearchError(RuntimeError):
+    pass
+
+
+class BlockedHost(ResearchError):
+    pass
+
+
+def enabled() -> bool:
+    """Off in mock mode so the test suite stays hermetic, offline and $0, and
+    off entirely if someone deploys without egress."""
+    if config.RESEARCH in ("0", "off", "false", "no"):
+        return False
+    return config.LLM_MODE != "mock"
+
+
+# ---------------------------------------------------------------------------
+# SSRF-safe fetching
+# ---------------------------------------------------------------------------
+
+def _host_allowed(host: str) -> bool:
+    host = (host or "").lower().strip(".")
+    return any(host == s.lstrip(".") or host.endswith(s)
+               for s in ALLOWED_SUFFIXES)
+
+
+def _public_ips(host: str) -> list:
+    """Resolve, then reject anything that is not a normal public address.
+
+    Checked BEFORE connecting and then pinned, because a name that passes a
+    check and a name that is connected to are not guaranteed to be the same
+    address - that gap is exactly what DNS rebinding exploits."""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise ResearchError(f"cannot resolve {host}: {e}")
+
+    good = []
+    for family, _, _, _, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            raise BlockedHost(f"{host} resolves to a non-public address ({ip})")
+        # 100.64.0.0/10 - carrier-grade NAT, routable inside a provider and a
+        # real path to internal services on some hosts.
+        if ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10"):
+            raise BlockedHost(f"{host} resolves into carrier-grade NAT ({ip})")
+        good.append(str(ip))
+    if not good:
+        raise ResearchError(f"no usable address for {host}")
+    return good
+
+
+class _Budget:
+    """A dossier gets a fixed number of requests, and ONE connection per host.
+
+    The ceiling stops an odd setting walking a wiki forever while a player
+    waits. The connection pool matters just as much: a fresh client per request
+    means a fresh DNS lookup and a fresh TLS handshake every time, which was
+    the bulk of the wall clock on a ten-request dossier."""
+
+    def __init__(self, limit=MAX_REQUESTS):
+        self.left = limit
+        self._clients = {}
+
+    def take(self):
+        if self.left <= 0:
+            raise ResearchError("research budget exhausted")
+        self.left -= 1
+
+    def client(self, host, ip, timeout):
+        """One pinned, verified connection per host, kept open for the dossier."""
+        import httpx
+        if host not in self._clients:
+            self._clients[host] = httpx.Client(
+                timeout=timeout, follow_redirects=False, verify=True,
+                headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                         "Host": host, "Accept-Encoding": "gzip"},
+                limits=httpx.Limits(max_connections=2, keepalive_expiry=30.0))
+        return self._clients[host]
+
+    def close(self):
+        for c in self._clients.values():
+            try:
+                c.close()
+            except Exception:
+                pass
+        self._clients.clear()
+
+
+def _get_json(url: str, params: dict, budget: _Budget, *, timeout=None,
+              attempts=3) -> dict:
+    import httpx
+
+    timeout = config.RESEARCH_TIMEOUT if timeout is None else timeout
+    budget.take()
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise BlockedHost("research is HTTPS-only")
+    host = parsed.hostname or ""
+    if not _host_allowed(host):
+        raise BlockedHost(f"{host} is not an allowed research source")
+
+    ip = _public_ips(host)[0]
+    # Connect to the validated ADDRESS, carrying the hostname in SNI and in the
+    # certificate check. Nothing between validating and connecting can swap it.
+    pinned = parsed._replace(netloc=ip).geturl()
+
+    client = budget.client(host, ip, timeout)
+
+    for attempt in range(attempts):
+        try:
+            r = client.get(pinned, params=params,
+                           extensions={"sni_hostname": host})
+        except httpx.HTTPError as e:
+            if attempt == attempts - 1:
+                raise ResearchError(f"{host} unreachable: {e}")
+            time.sleep(0.6 * (attempt + 1))
+            continue
+
+        # Wikimedia signals overload properly; honour it rather than hammering.
+        if r.status_code == 429:
+            wait = float(r.headers.get("Retry-After", "2") or 2)
+            time.sleep(min(wait, 5.0))
+            continue
+        if r.status_code in (301, 302, 303, 307, 308):
+            raise ResearchError("redirect refused - the source moved")
+        if r.status_code >= 400:
+            raise ResearchError(f"{host} returned {r.status_code}")
+
+        if len(r.content) > MAX_BYTES:
+            raise ResearchError("response too large")
+        try:
+            data = r.json()
+        except ValueError:
+            raise ResearchError(f"{host} did not return JSON")
+        # maxlag: their replication is behind, so back off and retry.
+        if isinstance(data, dict) and data.get("error", {}).get("code") == "maxlag":
+            time.sleep(1.5)
+            continue
+        return data
+
+    raise ResearchError(f"{host} kept asking us to wait")
+
+
+def _api(host: str, params: dict, budget: _Budget, *, quick=False) -> dict:
+    """One MediaWiki Action API call, with the etiquette parameters set."""
+    base = {"format": "json", "formatversion": "2", "maxlag": "5"}
+    return _get_json(f"https://{host}/w/api.php" if "wikipedia" in host
+                     else f"https://{host}/api.php",
+                     {**base, **params}, budget,
+                     attempts=1 if quick else 3,
+                     timeout=3.0 if quick else None)
+
+
+# ---------------------------------------------------------------------------
+# Wikipedia: identify the work
+# ---------------------------------------------------------------------------
+
+STOPWORDS = {"the", "a", "an", "of", "and", "no", "wiki", "fandom", "series",
+             "manga", "anime", "game", "franchise", "universe", "encyclopedia",
+             "in", "on", "at", "to", "for", "with", "its", "it", "that", "this",
+             "own", "from", "by", "as", "is", "are", "was", "were"}
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def _tokens(s: str) -> set:
+    return {t for t in _norm(s).split() if t and t not in STOPWORDS}
+
+
+def identify(setting: str, budget: _Budget) -> dict | None:
+    """Find the Wikipedia article that IS this setting.
+
+    Ranked rather than first-hit, because a search for a work returns the work,
+    its episode lists, its films and its characters, and taking result [0] lands
+    on the wrong one often enough to matter. Disambiguation pages are then
+    RESOLVED rather than accepted - "Demon Slayer" is a disambiguation page, and
+    treating it as the answer produces a world built from "may refer to:"."""
+    data = _api("en.wikipedia.org", {
+        "action": "query", "list": "search", "srsearch": setting,
+        "srlimit": 10, "srnamespace": 0,
+    }, budget)
+    hits = (data.get("query") or {}).get("search") or []
+    if not hits:
+        return None
+
+    best = _rank(setting, [h.get("title", "") for h in hits], hits)
+    if not best or not _confident(setting, best):
+        # Wikipedia's search ALWAYS returns something. "a frozen post-collapse
+        # Earth" comes back as "Apocalyptic fiction", "Frozen 2", "Earth" -
+        # all real articles, none of them this setting. Accepting the top hit
+        # would ground an ORIGINAL world in an unrelated article and quietly
+        # make it worse than not researching at all. An original setting
+        # SHOULD find nothing; that is the correct answer, not a failure.
+        return None
+
+    resolved = _resolve_disambiguation(setting, best, budget)
+    return {"title": resolved, "score": 0}
+
+
+def _confident(setting: str, title: str) -> bool:
+    """Is this article plausibly the SAME THING the player named?"""
+    want, got = _tokens(setting), _tokens(title)
+    if not want:
+        return False
+    n = _norm(setting)
+    t = _norm(title)
+    # `n in t` is the safe direction: "demon slayer" inside "demon slayer:
+    # kimetsu no yaiba" is a real match. The REVERSE is not - "earth" sits
+    # inside "a frozen post-collapse earth" and means nothing, which is
+    # exactly how an original setting gets grounded on the wrong article.
+    if n and (n == t or n in t):
+        return True
+    # Otherwise most of what the player typed has to appear in the title.
+    return len(want & got) >= max(1, int(round(len(want) * 0.6)))
+
+
+def _rank(setting: str, titles: list, hits: list | None = None) -> str | None:
+    want = _norm(setting)
+    want_tokens = _tokens(setting)
+    counts = {h.get("title", ""): h.get("wordcount", 0) for h in (hits or [])}
+
+    best, best_score = None, -1e9
+    for title in titles:
+        if not title or title.startswith(("Category:", "File:", "Template:")):
+            continue
+        t = _norm(title)
+        score = 0.0
+        if t == want:
+            score += 100
+        elif want and (want in t or t in want):
+            score += 45
+        # Token overlap catches "Demon Slayer: Kimetsu no Yaiba" for "demon slayer".
+        overlap = len(want_tokens & _tokens(title))
+        score += 14 * overlap
+        # Pages ABOUT the work beat pages derived from it.
+        low = title.lower()
+        for bad, penalty in (("list of", 50), ("episode", 40), ("season", 34),
+                             ("soundtrack", 34), ("discography", 34),
+                             ("(film", 14), ("(video game", 14), ("(disambiguation", 8)):
+            if bad in low:
+                score -= penalty
+        score += min(18, counts.get(title, 0) / 1200.0)
+        if score > best_score:
+            best, best_score = title, score
+    return best
+
+
+def _resolve_disambiguation(setting: str, title: str, budget: _Budget) -> str:
+    """A disambiguation page is a signpost, not a destination.
+
+    Detected properly via pageprops rather than by sniffing for "may refer to",
+    which is a phrasing that varies. When we land on one, the page's own links
+    are the candidate list and the same ranking picks from them."""
+    if budget.left <= 2:
+        return title
+    try:
+        data = _api("en.wikipedia.org", {
+            "action": "query", "prop": "pageprops|links", "titles": title,
+            "ppprop": "disambiguation", "pllimit": 40, "plnamespace": 0,
+        }, budget)
+    except ResearchError:
+        return title
+
+    pages = (data.get("query") or {}).get("pages") or []
+    if not pages:
+        return title
+    page = pages[0]
+    if "disambiguation" not in (page.get("pageprops") or {}):
+        return title
+
+    links = [l.get("title", "") for l in (page.get("links") or [])]
+    return _rank(setting, links) or title
+
+
+def summarise(title: str, budget: _Budget) -> dict:
+    """The intro, as plain text, hard-capped. This grounds the generator in what
+    the setting actually IS; it never reaches the narrator."""
+    data = _api("en.wikipedia.org", {
+        "action": "query", "prop": "extracts|info", "titles": title,
+        "exintro": "1", "explaintext": "1", "inprop": "url",
+    }, budget)
+    pages = (data.get("query") or {}).get("pages") or []
+    if not pages:
+        return {}
+    p = pages[0]
+    text = re.sub(r"\s+", " ", p.get("extract", "") or "").strip()
+    return {"title": p.get("title", title),
+            "summary": text[:EXTRACT_CHARS],
+            "url": p.get("fullurl", ""),
+            "source": "Wikipedia", "license": "CC BY-SA 4.0"}
+
+
+def characters_from_wikipedia(setting: str, canonical: str, budget: _Budget) -> list:
+    """The fallback when no Fandom wiki is found or trusted.
+
+    Most works of any size have a "List of <work> characters" article, and its
+    section headings are the character names - which is exactly the fact we
+    want and nothing more."""
+    if budget.left <= 2:
+        return []
+    try:
+        data = _api("en.wikipedia.org", {
+            "action": "query", "list": "search",
+            "srsearch": f"List of {canonical or setting} characters",
+            "srlimit": 3, "srnamespace": 0,
+        }, budget)
+    except ResearchError:
+        return []
+    hits = [h.get("title", "") for h in (data.get("query") or {}).get("search") or []]
+    page = next((t for t in hits if t.lower().startswith("list of")), None)
+    if not page:
+        return []
+    try:
+        sec = _api("en.wikipedia.org", {"action": "parse", "page": page,
+                                        "prop": "sections"}, budget)
+    except ResearchError:
+        return []
+    names = []
+    for s in (sec.get("parse") or {}).get("sections") or []:
+        line = re.sub(r"\s*\(.*?\)\s*", "", (s.get("line") or "")).strip()
+        # Real names, not "Reception" or "See also".
+        low = line.lower()
+        # A character list article is mostly people, but it also has
+        # "Creation and conception", "Secondary characters" and team groupings.
+        # Those are real headings and completely wrong as character names.
+        furniture = ("reception", "see also", "reference", "main", "other",
+                     "minor", "recurring", "list", "note", "cast", "creation",
+                     "conception", "development", "character", "media",
+                     "introduce", "overview", "background", "summary",
+                     "antagonist", "protagonist", "supporting", "secondary",
+                     "villain", "team", "group", "organi", "clan", "family",
+                     "appear", "adaptation", "reaction", "analysis",
+                     "external", "link", "further", "bibliograph", "appendix",
+                     "content", "source", "index", "gallery", "trivia",
+                     "concept", "casting", "voice", "legacy", "merchand",
+                     "film", "television", "novel", "comic", "game", "series")
+        if (2 <= len(line.split()) <= 4 and line[:1].isupper()
+                and not any(w in low for w in furniture)
+                and not re.search(r"\d", line)):
+            names.append(line)
+    clean = _dedupe(names)[:14]
+    return [{"name": n, "note": ""} for n in clean] if len(clean) >= 3 else []
+
+
+# ---------------------------------------------------------------------------
+# Fandom: the deep canon
+# ---------------------------------------------------------------------------
+
+def _slug_candidates(setting: str, wiki_title: str = "") -> list:
+    """Fandom subdomains are guessable, but only if you try the CANONICAL title
+    and its subtitle too. "Demon Slayer" alone finds `demon.fandom.com`, which
+    is a real wiki about something else entirely; the actual one is keyed to
+    the subtitle, "Kimetsu no Yaiba"."""
+    seeds = []
+    if wiki_title:
+        clean = re.sub(r"\s*\(.*?\)\s*", "", wiki_title).strip()
+        parts = [x.strip() for x in re.split(r"[:–—]", clean) if len(x.strip()) > 3]
+        # Subtitle first: for anime and manga the wiki is almost always named
+        # after it ("Kimetsu no Yaiba Wiki"), not the western title, and a
+        # western-title guess can land on a real but unrelated wiki.
+        seeds.extend(parts[1:])
+        seeds.append(clean)
+        seeds.extend(parts[:1])
+    seeds.append(setting)
+
+    out = []
+    for seed in seeds:
+        base = _norm(seed)
+        if not base:
+            continue
+        # Leading articles are dropped from most wiki subdomains.
+        stripped = re.sub(r"^(the|a|an)\s+", "", base)
+        for form in (base, stripped):
+            for cand in (form.replace(" ", ""), form.replace(" ", "-")):
+                if cand and cand not in out:
+                    out.append(cand)
+    return out[:7]
+
+
+def _wiki_is_about(sitename: str, setting: str, canonical: str, slug: str = "") -> bool:
+    """Guard against confidently fetching the wrong wiki.
+
+    A slug guess can land on a real, busy, completely unrelated wiki, and
+    everything downstream would then look like it worked. Requiring the site's
+    own name to share vocabulary with the setting is what stops a Demon Slayer
+    world being built out of a different franchise's characters."""
+    site = _tokens(sitename)
+    if not site:
+        return False
+
+    # An EXACT slug match is evidence in itself: we guessed the whole name and
+    # a real wiki answered. `naruto` -> "Narutopedia" passes here; `demon` for
+    # "Demon Slayer" does not, because it is not the whole name.
+    if slug:
+        flat = slug.replace("-", "")
+        for candidate in (canonical, setting):
+            cand_flat = _norm(candidate).replace(" ", "")
+            stripped = re.sub(r"^(the|a|an)", "", cand_flat)
+            if flat and flat in (cand_flat, stripped):
+                return True
+
+    for candidate in (canonical, setting):
+        want = _tokens(candidate)
+        if not want:
+            continue
+        overlap = len(site & want)
+        # A short name has to match in FULL. At 50% a two-word setting accepts
+        # any wiki sharing one word, which is how "Demon Wiki" passes for
+        # "Demon Slayer" - a real wiki about entirely the wrong thing.
+        needed = len(want) if len(want) <= 2 else max(2, int(round(len(want) * 0.5)))
+        if overlap and overlap >= needed:
+            return True
+        if _norm(candidate) and _norm(candidate) in _norm(sitename):
+            return True
+    return False
+
+
+def find_wiki(setting: str, wiki_title: str, budget: _Budget) -> str | None:
+    """Probe candidate subdomains, and only accept one that is demonstrably
+    about this setting."""
+    for slug in _slug_candidates(setting, wiki_title):
+        if budget.left <= 5:
+            break
+        host = f"{slug}.fandom.com"
+        try:
+            # Probes are cheap and expected to fail, so no retry budget.
+            data = _api(host, {"action": "query", "meta": "siteinfo",
+                               "siprop": "general"}, budget, quick=True)
+        except ResearchError:
+            continue
+        sitename = ((data.get("query") or {}).get("general") or {}).get("sitename", "")
+        if sitename and _wiki_is_about(sitename, setting, wiki_title, slug):
+            return host
+    return None
+
+
+CATEGORY_SETS = {
+    "characters": ("Category:Characters", "Category:Male Characters",
+                   "Category:Female Characters"),
+    "places": ("Category:Locations", "Category:Places", "Category:Locations by type"),
+    "factions": ("Category:Organizations", "Category:Factions", "Category:Groups"),
+}
+
+
+def category_members(host: str, category: str, budget: _Budget, limit=40) -> list:
+    try:
+        data = _api(host, {"action": "query", "list": "categorymembers",
+                           "cmtitle": category, "cmlimit": limit,
+                           "cmnamespace": 0}, budget)
+    except ResearchError:
+        return []
+    return [m.get("title", "") for m in
+            (data.get("query") or {}).get("categorymembers") or [] if m.get("title")]
+
+
+def by_importance(host: str, titles: list, budget: _Budget, keep=16) -> list:
+    """Category listings come back ALPHABETICALLY, which is the worst possible
+    order for this: asking a wiki for its characters returns "A (First
+    Raikage)", "Abiru", "Ada" - real names, and entirely the wrong ones.
+
+    Article LENGTH is a good proxy for how central a character is, and
+    `prop=info` reports it. One batched call turns an alphabetical list into a
+    main-cast list."""
+    if not titles:
+        return []
+    sizes = {}
+    for chunk in (titles[i:i + 50] for i in range(0, min(len(titles), 100), 50)):
+        if budget.left <= 2:
+            break
+        try:
+            data = _api(host, {"action": "query", "prop": "info",
+                               "titles": "|".join(chunk)}, budget)
+        except ResearchError:
+            break
+        for pg in (data.get("query") or {}).get("pages") or []:
+            if pg.get("title"):
+                sizes[pg["title"]] = int(pg.get("length") or 0)
+    if not sizes:
+        return titles[:keep]
+    return sorted(titles, key=lambda t: -sizes.get(t, 0))[:keep]
+
+
+def describe(host: str, titles: list, budget: _Budget) -> dict:
+    """One batched call for up to 20 short descriptions. Batching is the
+    difference between one request and twenty."""
+    if not titles:
+        return {}
+    try:
+        data = _api(host, {"action": "query", "prop": "extracts",
+                           "titles": "|".join(titles[:20]),
+                           "exintro": "1", "explaintext": "1",
+                           "exlimit": "20"}, budget)
+    except ResearchError:
+        return {}
+    out = {}
+    for p in (data.get("query") or {}).get("pages") or []:
+        text = re.sub(r"\s+", " ", p.get("extract", "") or "").strip()
+        if text:
+            out[p.get("title", "")] = text[:SNIPPET_CHARS]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The dossier
+# ---------------------------------------------------------------------------
+
+def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict:
+    """Everything we could learn about a named setting, cached.
+
+    Never raises: research is an ENHANCEMENT. If the network is down, the
+    setting is invented, or a wiki is missing, bootstrap must still produce a
+    playable world from the model's own knowledge - just a less grounded one."""
+    setting = (setting or "").strip()
+    if not setting:
+        return _empty(setting, "no setting given")
+    if not enabled():
+        return _empty(setting, "research disabled")
+
+    # The type-ahead preview and the actual build want different things. QUICK
+    # answers "is this a real setting?" from Wikipedia alone in a few requests;
+    # FULL goes on to find the wiki and pull its categories. Cached separately,
+    # so a fast preview never becomes the shallow basis for a built world.
+    depth = "quick" if depth == "quick" else "full"
+    key = f"research:{depth}:" + _norm(setting)
+    if not refresh:
+        cached = _cache_get(key)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
+
+    budget = _Budget()
+    out = _empty(setting, "")
+    out["depth"] = depth
+    try:
+        found = identify(setting, budget)
+        if not found:
+            out["note"] = "nothing found under that name"
+            _cache_put(key, out)
+            return out
+
+        page = summarise(found["title"], budget)
+        out["canonical_name"] = page.get("title", found["title"])
+        out["summary"] = page.get("summary", "")
+        if page.get("url"):
+            out["sources"].append({"title": page["title"], "url": page["url"],
+                                   "source": "Wikipedia", "license": page["license"]})
+
+        # Curated main cast BEFORE any wiki probing: this is the highest-value
+        # data in the dossier, and probing wrong subdomains must never be what
+        # starves it.
+        curated = characters_from_wikipedia(setting, out["canonical_name"], budget)
+
+        host = find_wiki(setting, out["canonical_name"], budget) if depth == "full" else None
+        if host:
+            out["wiki"] = host
+            out["sources"].append({"title": f"{out['canonical_name']} Wiki",
+                                   "url": f"https://{host}",
+                                   "source": "Fandom", "license": "CC BY-SA 3.0"})
+            for bucket, cats in CATEGORY_SETS.items():
+                names = []
+                for cat in cats:
+                    names.extend(category_members(host, cat, budget,
+                                                  limit=200 if bucket == "characters" else 120))
+                    if len(names) >= 30 or budget.left <= 4:
+                        break
+                # Rank before truncating: the top 18 alphabetically is noise,
+                # the top 18 by article size is the cast.
+                names = by_importance(host, _dedupe(names), budget,
+                                      keep=16 if bucket == "characters" else 12)
+                notes = describe(host, names, budget) if bucket == "characters" else {}
+                out[bucket] = [{"name": n, "note": notes.get(n, "")} for n in names]
+                if budget.left <= 1:
+                    break
+
+        # The curated list LEADS. A wiki category is exhaustive and
+        # alphabetical, so for a large franchise its first page never reaches
+        # the protagonist; Wikipedia's list is the main cast by construction.
+        if curated:
+            seen = {_norm(c["name"]) for c in curated}
+            out["characters"] = curated + [c for c in out["characters"]
+                                           if _norm(c["name"]) not in seen]
+
+        out["found"] = bool(out["summary"] or out["characters"])
+        out["fetched_at"] = db.now()
+    except ResearchError as e:
+        out["note"] = str(e)
+    except Exception as e:                     # never break a world build
+        out["note"] = f"research failed: {type(e).__name__}"
+
+    finally:
+        budget.close()
+
+    _cache_put(key, out)
+    return out
+
+
+def _dedupe(names):
+    seen, out = set(), []
+    for n in names:
+        n = (n or "").strip()
+        k = _norm(n)
+        # Wiki category listings are full of maintenance and index pages.
+        if not k or k in seen or n.startswith(("List of", "Category:", "File:")):
+            continue
+        seen.add(k)
+        out.append(n)
+    return out
+
+
+def _empty(setting, note):
+    return {"setting": setting, "canonical_name": "", "found": False,
+            "summary": "", "wiki": "", "characters": [], "places": [],
+            "factions": [], "sources": [], "note": note, "cached": False,
+            "depth": "full", "fetched_at": ""}
+
+
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+def _cache_get(key):
+    row = db.row("SELECT payload, fetched_at FROM research_cache WHERE key=?", (key,))
+    if not row:
+        return None
+    try:
+        age_days = (time.time() - float(row["fetched_at"])) / 86400.0
+    except (TypeError, ValueError):
+        age_days = 999
+    if age_days > CACHE_DAYS:
+        db.run("DELETE FROM research_cache WHERE key=?", (key,))
+        return None
+    return db.jload(row["payload"], None)
+
+
+def _cache_put(key, payload):
+    db.run("INSERT INTO research_cache (key,payload,fetched_at) VALUES (?,?,?)"
+           " ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,"
+           " fetched_at=excluded.fetched_at",
+           (key, json.dumps(payload), str(time.time())))
+
+
+# ---------------------------------------------------------------------------
+# What the generator is told
+# ---------------------------------------------------------------------------
+
+def grounding_brief(d: dict) -> str:
+    """Turn a dossier into instructions for the world architect.
+
+    Names and roles only. The wording is deliberate: the model is told these are
+    REAL and must be used, which is the whole point - an ungrounded build
+    invents 'Tanjiro Kamada' and a grounded one does not."""
+    if not d.get("found"):
+        return ""
+    lines = ["RESEARCHED CANON (gathered live from public wikis - these are REAL "
+             "names from this setting, not suggestions):"]
+    if d.get("canonical_name"):
+        lines.append(f"CANONICAL TITLE: {d['canonical_name']}")
+    if d.get("summary"):
+        lines.append(f"WHAT IT IS: {d['summary'][:700]}")
+
+    for bucket, label in (("characters", "REAL CHARACTERS"),
+                          ("places", "REAL PLACES"),
+                          ("factions", "REAL ORGANISATIONS")):
+        items = d.get(bucket) or []
+        if not items:
+            continue
+        rendered = []
+        for it in items[:14]:
+            name = (it.get("name") or "").strip()
+            if not name:                      # a blank entry teaches nothing
+                continue
+            rendered.append(f"- {name}" + (f": {it['note'][:110]}" if it.get("note") else ""))
+        if not rendered:
+            continue
+        lines.append(f"{label}:\n" + "\n".join(rendered))
+
+    lines.append(
+        "Use these real names for people, places and groups wherever they fit. Spell "
+        "them exactly as written above. Do NOT copy any sentence from the research "
+        "text - write your own descriptions of these people and places. Invent "
+        "freely for anything not listed."
+    )
+    return "\n\n".join(lines)
+
+
+def attribution(d: dict) -> list:
+    """Recorded on the world, and shown to the player. CC BY-SA asks for it, and
+    a player deserves to know where the world came from."""
+    return [{"title": s.get("title", ""), "url": s.get("url", ""),
+             "source": s.get("source", ""), "license": s.get("license", "")}
+            for s in (d.get("sources") or [])]

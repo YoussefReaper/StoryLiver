@@ -1,0 +1,672 @@
+"""Turn orchestration - the pipeline the whole product is.
+
+  action -> canon gate -> World Master validates -> diff applied to shared state
+         -> deterministic layers tick (world, atlas, relationships, awareness,
+            factions, hunts, graph)  [all $0]
+         -> an NPC may act -> the Director may turn the story
+         -> Narrator writes ONE passage -> canon gate -> broadcast
+
+Everything between the two gates is arithmetic. The model is called at most
+`budget.MAX_LLM_CALLS_PER_TURN` times and only for the six things a model is
+actually better at; the cap is enforced in llm.complete, not trusted here.
+"""
+from __future__ import annotations
+
+import json
+import uuid
+
+from . import (arcs, atlas, authority, awareness, betrayal, budget, canon, config,
+               db, director,
+               fastforward, identity, mana, memory, modes, narrator, narrgraph,
+               npc_sim, precommit, relationships, rt, runs, streaks, world_master,
+               worldstate)
+from . import worlds as world_registry
+
+
+def _pt(pt_id):
+    return db.row("SELECT * FROM playthroughs WHERE id=?", (pt_id,))
+
+
+def world_for(pt):
+    return world_registry.resolve(pt["world_id"], pt["world_json"] or None)
+
+
+def _feed(pt_id, turn, kind, text, actor=None, meta=None):
+    return db.run(
+        "INSERT INTO narrative (playthrough_id,turn,kind,actor,text,meta,created_at) VALUES (?,?,?,?,?,?,?)",
+        (pt_id, turn, kind, actor, text, json.dumps(meta or {}), db.now()),
+    )
+
+
+def _render(pt_id, turn, kind, text, actor=None, meta=None):
+    rid = _feed(pt_id, turn, kind, text, actor, meta)
+    return {"id": rid, "turn": turn, "kind": kind, "actor": actor, "text": text, "meta": meta or {}}
+
+
+def ensure_user(user_id):
+    if not db.row("SELECT id FROM users WHERE id=?", (user_id,)):
+        db.run("INSERT INTO users (id,created_at) VALUES (?,?)", (user_id, db.now()))
+    return user_id
+
+
+def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=None,
+                       session_id="", world_json=None):
+    world = world_registry.resolve(world_id, world_json)
+    ensure_user(user_id)
+    pt_id = uuid.uuid4().hex[:12]
+    pinned = world_json or ("" if world.id in world_registry.STARTERS_RAW
+                            else json.dumps(world.data))
+    start = world.get("start_location")
+    db.run(
+        "INSERT INTO playthroughs (id,user_id,world_id,title,protagonist,current_turn,current_location,"
+        "mana_balance,mana_used,tension,last_beat_turn,created_at,updated_at,session_id,world_json)"
+        " VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?)",
+        (pt_id, user_id, world.id, title or world.name,
+         protagonist or world.get("default_protagonist"), start,
+         config.STARTING_MANA, db.now(), db.now(), session_id, pinned),
+    )
+    memory.seed(pt_id, world)
+    worldstate.seed(pt_id, world)
+    atlas.seed(pt_id, world, start)
+    canon.safety(pt_id)
+    memory.add_event(pt_id, 0, "world", world.get("arrival"),
+                     "You are an outsider here, with no claim and no history.",
+                     kind="world", importance=4, location=start)
+    narrgraph.add(pt_id, 0, "arrival", "You arrive", detail=world.get("arrival"),
+                  place_id=start, weight=3)
+    # A story IS a run. Opening it here means the run frame is never in a
+    # half-created state, and the first thing a player sees already knows
+    # which run this is and what the last one left behind.
+    runs.start(pt_id, user_id, world_id=world.id)
+    # Derive this world's arcs if nobody has yet, so the entry-point picker
+    # works on starter worlds too and not only on forged ones.
+    arcs.ensure_timeline(world)
+    # C4 - the town already has an opinion of you, if you have an account and
+    # a history here. A guest starts clean every time, which is the honest
+    # trade for not having an identity that can be verified.
+    authority.seed_from_memory(pt_id, world, account_id=user_id, player=memory.SOLO)
+    _feed(pt_id, 0, "opening", world.get("opening") or world.get("premise"), actor=None,
+          meta={"location": start})
+    return pt_id
+
+
+# --------------------------------------------------------------------------
+
+def _apply_fate(pt, world, turn, entries):
+    fired = []
+    for f in world.fated_events:
+        if f["turn"] != turn:
+            continue
+        memory.add_event(pt["id"], turn, "fate", f["title"], f["desc"],
+                         rule_ref="fate", kind="fate", importance=5, location=f["location"])
+        npc_sim.observe_fate(pt["id"], turn, f)
+        narrgraph.add(pt["id"], turn, "fate", f["title"], detail=f["desc"],
+                      place_id=f.get("location", ""), weight=5)
+        if f.get("kills"):
+            memory.kill_npc(pt["id"], f["kills"])
+        if f.get("ruins"):
+            atlas.ripple(pt["id"], f["ruins"], f.get("condition", "ruined"), turn,
+                         f["desc"], magnitude=5)
+        else:
+            atlas.echo(pt["id"], turn, f["desc"], place_id=f.get("location", ""),
+                       kind="fate", magnitude=5)
+        entries.append(_render(pt["id"], turn, "fate", f["desc"],
+                               meta={"fate_id": f["id"], "title": f["title"], "immutable": True}))
+        fired.append(f)
+    return fired
+
+
+def _party_context(session_id, exclude=None):
+    if not session_id:
+        return [], []
+    rows = db.rows("SELECT * FROM session_players WHERE session_id=? AND role!='spectator'",
+                   (session_id,))
+    party = [{"player_id": r["player_id"], "name": r["name"], "goal": r["goal"]}
+             for r in rows if r["player_id"] != exclude]
+    payers = [r["user_id"] for r in rows if r["pays"]]
+    return party, payers
+
+
+def _player_places(pt_id, session_id, default_place):
+    """Where every player currently is - one shared location today, but the hunt
+    layer asks per player so split parties already work."""
+    places = {}
+    rows = db.rows("SELECT player_id FROM session_players WHERE session_id=?", (session_id,)) \
+        if session_id else [{"player_id": memory.SOLO}]
+    for r in rows:
+        split = betrayal.active(pt_id, r["player_id"])
+        places[r["player_id"]] = (split["destination"] if split and split["destination"]
+                                  else default_place)
+    return places
+
+
+# --------------------------------------------------------------------------
+# The deterministic tick - every layer, every turn, at zero model cost
+# --------------------------------------------------------------------------
+
+def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
+                        state, session_id, moved_to):
+    out = {"relationship": [], "witness": None, "rumours": [], "reputation": [],
+           "hunts": [], "arrivals": [], "discovered": None, "world": None}
+
+    out["world"] = worldstate.tick(pt["id"], world, turn,
+                                   events=[verdict.get("kind", "action")])
+
+    if moved_to:
+        first = atlas.discover(pt["id"], moved_to, turn)
+        for neighbour in world.connects(moved_to):
+            atlas.rumour(pt["id"], neighbour, turn)
+        if first:
+            out["discovered"] = {"place": moved_to, "name": world.loc_name(moved_to)}
+            narrgraph.add(pt["id"], turn, "discovery", f"Found {world.loc_name(moved_to)}",
+                          place_id=moved_to, weight=3)
+            atlas.echo(pt["id"], turn, f"You found {world.loc_name(moved_to)}.",
+                       place_id=moved_to, kind="discovery", magnitude=2)
+
+    # Relationships move from a deterministic read of what was done, TO WHOM.
+    event = relationships.classify(action)
+    aimed_at = relationships.targets(world, action, state["present"])
+    if event and aimed_at:
+        for npc_id in aimed_at[:3]:
+            applied = relationships.apply_event(pt["id"], npc_id, player, event,
+                                                turn=turn, note=event.replace("_", " "))
+            if applied:
+                out["relationship"].append(applied)
+    out["targets"] = aimed_at
+    relationships.decay(pt["id"], turn)
+
+    # Witness -> rumour -> reputation -> hunt. Nobody learns what they did not see.
+    severity = int(verdict.get("importance", 3))
+    if severity >= 3 and event not in (None, "spoke_kindly", "listened"):
+        fact = awareness.witness(
+            pt["id"], world, actor=player, kind=event or "action",
+            summary=f"{actor_name or 'A traveller'}: {action[:120]}",
+            detail=verdict.get("consequence", "")[:200],
+            place_id=pt["current_location"], turn=turn, severity=severity,
+            present=state["present"], subject=player)
+        out["witness"] = fact
+        if fact["witnesses"]:
+            out["rumours"] = awareness.spread(pt["id"], world, fact, turn=turn,
+                                              witnesses=fact["witnesses"], severity=severity)
+            valence = -1 if event in ("harmed", "threatened", "betrayed", "took_from",
+                                      "insulted", "killed_ally_of") else 1
+            out["reputation"] = awareness.adjust_rep(pt["id"], world, player=player,
+                                                     fact=fact, turn=turn, valence=valence)
+            if valence < 0:
+                out["hunts"] = awareness.maybe_order_hunt(
+                    pt["id"], world, player=player, fact=fact, turn=turn,
+                    reps=out["reputation"])
+
+    out["arrivals"] = awareness.arrivals(pt["id"], world, turn)
+    out["hunt_events"] = awareness.hunt_tick(
+        pt["id"], world, turn,
+        player_places=_player_places(pt["id"], session_id, pt["current_location"]))
+
+    # A hunt that arrives where you are is something you now know about.
+    for h in out["hunt_events"]:
+        if h["kind"] == "arrived":
+            awareness.reveal_hunt_to_player(
+                pt["id"], h["id"], player, turn,
+                f"{world.npc_name(h['hunter'])} came looking for you.")
+            narrgraph.add(pt["id"], turn, "twist", "They found you",
+                          detail=h.get("reason", ""), place_id=h["to_place"], weight=4)
+    # A rumour landing where you are is how you hear you are hunted.
+    for a in out["arrivals"]:
+        if a["place"] == pt["current_location"] and a["severity"] >= 3:
+            awareness.learn(pt["id"], "player", player, key=a["key"], summary=a["summary"],
+                            turn=turn, confidence=a["confidence"], source="overheard",
+                            severity=a["severity"])
+
+    # The institution. An officer on patrol perceives through the same witness
+    # math as anyone else - no privileged sight - and a crime an authority
+    # actually KNOWS about moves the warrant ladder. Standing has already been
+    # adjusted above, so this reads the result rather than punishing twice.
+    out["authority"] = []
+    if severity >= 3 and event in ("harmed", "threatened", "betrayed", "took_from",
+                                   "killed_ally_of", "insulted"):
+        seen = authority.patrol_tick(
+            pt["id"], world, turn, place_id=pt["current_location"], actor=player,
+            summary=f"{actor_name or 'Someone'}: {action[:100]}", severity=severity)
+        for hit in seen["witnessed_by_authority"]:
+            out["authority"].append(authority.register_crime(
+                pt["id"], world, player=player, faction_id=hit["faction"],
+                severity=severity, summary=action[:140], turn=turn))
+
+    # Institutions forget slowly, but they do forget - otherwise one bad turn
+    # is a life sentence, which reads as the world being broken, not strict.
+    out["authority_decay"] = authority.decay(pt["id"], world, player, turn)
+    return out
+
+
+# --------------------------------------------------------------------------
+
+def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=None,
+              session_id=""):
+    pt = _pt(pt_id)
+    if not pt:
+        raise KeyError("playthrough not found")
+    world = world_for(pt)
+    user_id = pt["user_id"]
+    action = (action or "").strip()
+    if not action:
+        raise ValueError("empty action")
+
+    session_id = session_id or pt["session_id"]
+    party, payers = _party_context(session_id, exclude=player)
+    payer_ids = payers or [user_id]
+
+    # §8 - Deep Prose is a ROOM setting the host owns, never a per-action flag
+    # any player can fire. The narrator is shared across the table, so premium
+    # was always all-or-nothing; leaving it per-action just meant a friend
+    # could spend the host's Mana at 4x. In a room, the host's flag decides.
+    # Solo (no session) keeps the caller's choice - it is the player's own
+    # wallet either way.
+    if session_id:
+        from . import sessions          # local: sessions imports engine
+        premium = sessions.premium_allowed(session_id)
+        seat = db.row("SELECT life_state, resolution FROM session_players"
+                      " WHERE session_id=? AND player_id=?", (session_id, player))
+        # Death has resolutions, and some of them (ghost, spirit) keep a voice
+        # without a hand. Those players whisper; they do not take turns.
+        if seat and seat["life_state"] == "dead":
+            return {"blocked": True, "dead": True,
+                    "reason": "Your character is gone. You can still whisper - "
+                              "or take one of the resolutions offered.",
+                    "resolution": seat["resolution"], "entries": [],
+                    "state": snapshot(pt_id, player)}
+
+    mode, note = mana.preview(user_id, pt, premium, payer_ids)
+    if mode == mana.RAIL:
+        return {"blocked": True, "reason": note, "entries": [], "state": snapshot(pt_id, player)}
+    use_premium = premium and mode == mana.FULL
+
+    entries = []
+    with budget.turn(f"turn:{pt_id}:{pt['current_turn'] + 1}"):
+        # 0. The table's Lines outrank everything, including what the player typed.
+        try:
+            canon.safety_gate(pt_id, action)
+        except canon.Cancelled as c:
+            canon.log(pt_id, turn=pt["current_turn"], actor=player, attempted=action,
+                      verdict="cancelled", rule=c.rule, layer="safety")
+            entries.append(_render(pt_id, pt["current_turn"], "safety",
+                                   "That is a line this table drew. The scene moves on.",
+                                   actor="table", meta={"rule": c.rule, "layer": "safety"}))
+            return {"blocked": False, "rejected": True, "safety": True, "note": "",
+                    "entries": entries, "state": snapshot(pt_id, player)}
+
+        # 1. World Master ---------------------------------------------------
+        verdict = world_master.validate(pt, world, action, user_id=user_id,
+                                        player=player, party=party)
+        if not verdict["valid"]:
+            entries.append(_render(pt_id, pt["current_turn"], "you", action, actor=player,
+                                   meta={"name": actor_name or "You"}))
+            text = narrator.refusal(pt, world, action, verdict, user_id=user_id)
+            memory.add_event(pt_id, pt["current_turn"], actor_name or "user", action,
+                             f"Refused: {verdict['reason']}", rule_ref=verdict.get("rule_ref"),
+                             kind="rejection", importance=2, location=pt["current_location"])
+            entries.append(_render(pt_id, pt["current_turn"], "refusal", text, actor="world",
+                                   meta={"reason": verdict["reason"],
+                                         "rule_ref": verdict.get("rule_ref"),
+                                         "checked_by": verdict.get("checked_by"),
+                                         "player": player}))
+            return {"blocked": False, "rejected": True, "note": note, "entries": entries,
+                    "state": snapshot(pt_id, player)}
+
+        # 2. Commit ---------------------------------------------------------
+        mana.commit(user_id, pt, use_premium, payer_ids)
+        turn = pt["current_turn"] + 1
+        new_loc = verdict.get("new_location") or pt["current_location"]
+        moved_to = None
+        if new_loc != pt["current_location"]:
+            if new_loc in world.connects(pt["current_location"]) and not atlas.blocked(pt_id, new_loc):
+                moved_to = new_loc
+            else:
+                new_loc = pt["current_location"]
+        db.run("UPDATE playthroughs SET current_turn=?, current_location=?, updated_at=? WHERE id=?",
+               (turn, new_loc, db.now(), pt_id))
+        rt.cache_drop(f"sl:pt:{pt_id}:snapshot")
+        pt = _pt(pt_id)
+        entries.append(_render(pt_id, turn, "you", action, actor=player,
+                               meta={"name": actor_name or "You"}))
+
+        applied = memory.apply_deltas(pt_id, verdict["relationship_deltas"], turn, player)
+        memory.add_event(pt_id, turn, actor_name or "user", action, verdict["consequence"],
+                         rule_ref=verdict.get("rule_ref"), kind="action",
+                         importance=verdict.get("importance", 3), location=new_loc)
+        narrgraph.add(pt_id, turn, "action", action[:90], detail=verdict.get("consequence", ""),
+                      place_id=new_loc, actor=actor_name or "you",
+                      weight=verdict.get("importance", 2))
+
+        state = world_master.build_state(pt, world, player)
+        npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
+                             verdict.get("importance", 3), player=player,
+                             actor_name=actor_name or "the traveller")
+        fired_fate = _apply_fate(pt, world, turn, entries)
+        state = world_master.build_state(_pt(pt_id), world, player)
+
+        # 3. Every deterministic layer, $0 -----------------------------------
+        ticked = _deterministic_tick(
+            pt, world, turn=turn, player=player, actor_name=actor_name, action=action,
+            verdict=verdict, state=state, session_id=session_id, moved_to=moved_to)
+
+        # A private turn while split off does not enter the shared record.
+        split_progress = betrayal.note_private_turn(pt_id, player)
+        if split_progress:
+            betrayal.record_private(pt_id, player_id=player, turn=turn,
+                                    summary=action[:160], detail=verdict.get("consequence", ""),
+                                    place_id=new_loc)
+
+        # 4. NPC agency - a model call only when the numbers say it matters ---
+        npc_action = None
+        if mode == mana.FULL and not fired_fate and budget.affordable("npc"):
+            actor_id = npc_sim.pick_actor(pt, state, player)
+            if actor_id:
+                npc_action = npc_sim.maybe_act(pt, world, actor_id, user_id=user_id,
+                                               player=player,
+                                               actor_name=actor_name or "the traveller")
+                if npc_action:
+                    try:
+                        canon.check_npc_action(pt_id, world, actor_id, npc_action["action"],
+                                               turn=turn, state=state)
+                    except canon.Cancelled as c:
+                        canon.log(pt_id, turn=turn, actor=actor_id,
+                                  attempted=npc_action["action"], verdict="cancelled",
+                                  rule=c.rule, layer=c.layer)
+                        npc_action = None
+
+        # 5. Director --------------------------------------------------------
+        beat, scores = (None, director.tension_score(pt, world, state, player))
+        if mode == mana.FULL and not fired_fate and not npc_action and budget.affordable("director"):
+            beat, scores = director.propose(pt, world, state, user_id=user_id, player=player)
+
+        # 6. One passage ------------------------------------------------------
+        verdict["state"] = state
+        verdict["world_line"] = worldstate.line(pt_id, world, new_loc)
+        try:
+            text = narrator.narrate(
+                pt, world, action, verdict, user_id=user_id, premium=use_premium,
+                beat=(beat or {}).get("beat"),
+                npc_action=(npc_action or {}).get("action"),
+                player=player, actor_name=actor_name if session_id else None)
+            text = canon.check_prose(pt_id, world, text, turn=turn)
+        except canon.Cancelled:
+            text = (f"{verdict.get('consequence') or action.strip()} "
+                    f"{worldstate.line(pt_id, world, new_loc).capitalize()}.")
+
+        entries.append(_render(pt_id, turn, "narration", text, actor="narrator", meta={
+            "premium": use_premium, "mode": mode, "player": player,
+            "actor_name": actor_name,
+            "relationship_changes": applied,
+            "relationship_events": ticked["relationship"],
+            "npc_initiated": ({"npc": npc_action["npc"], "name": npc_action["name"],
+                               "action": npc_action["action"]} if npc_action else None),
+            "director_beat": ({"kind": beat["kind"], "beat": beat["beat"], "npc": beat.get("npc")}
+                              if beat else None),
+            "tension": scores["tension"],
+            "world": {"phase": ticked["world"]["phase"], "weather": ticked["world"]["weather"],
+                      "day": ticked["world"]["day"]},
+            "discovered": ticked["discovered"],
+            "unseen": bool(ticked["witness"] and ticked["witness"]["unseen"]),
+            "reputation": ticked["reputation"],
+            "hunts_ordered": ticked["hunts"],
+            "llm_calls": len(budget.used()),
+        }))
+
+        if npc_action:
+            memory.add_event(pt_id, turn, npc_action["name"], npc_action["action"],
+                             "Acted without being asked.", kind="npc",
+                             importance=npc_action["importance"], location=new_loc)
+            memory.apply_deltas(pt_id, [npc_action["delta"]], turn, player)
+            memory.npc_observe(pt_id, npc_action["npc"], turn,
+                               f"I made a move on {actor_name or 'the traveller'}: "
+                               f"{npc_action['action']}", importance=4, player=player)
+            narrgraph.add(pt_id, turn, "bond", f"{npc_action['name']} moved first",
+                          detail=npc_action["action"], place_id=new_loc, weight=3)
+        if beat:
+            memory.add_event(pt_id, turn, "director", f"[{beat['kind']}] {beat['beat']}",
+                             "The story turned without anyone choosing it.",
+                             kind="beat", importance=4, location=new_loc)
+            db.run("UPDATE playthroughs SET last_beat_turn=?, tension=? WHERE id=?",
+                   (turn, float(beat.get("tension", scores["tension"])), pt_id))
+            narrgraph.add(pt_id, turn, "beat", beat["beat"][:90], detail=beat["kind"],
+                          place_id=new_loc, weight=4)
+
+        # 7. One reflection, cheapest model ----------------------------------
+        if mode == mana.FULL and state["present"] and budget.affordable("npc"):
+            who = state["present"][turn % len(state["present"])]
+            npc_sim.reflect(_pt(pt_id), world, who, user_id=user_id, player=player)
+
+    streaks.touch(user_id)
+
+    # A story that has passed its last fated event is over. Settling the run
+    # HERE, exactly once, is what turns "the turn counter kept going" into an
+    # actual ending with a payout - and the `closed` flag is idempotent, so a
+    # story cannot pay out twice.
+    ending = None
+    if turn >= world.fated_events[-1]["turn"] and world.fated_events:
+        row = _pt(pt_id)
+        if row["run_state"] != "ended":
+            from . import aftermath
+            ending = aftermath.close_story(pt_id, world, reason="victory", turn=turn)
+
+    return {"blocked": False, "rejected": False, "note": note, "entries": entries,
+            "ending": ending,
+            "state": snapshot(pt_id, player), "tick": {
+                "discovered": ticked["discovered"], "arrivals": ticked["arrivals"],
+                "reputation": ticked["reputation"], "hunts": ticked["hunts"],
+                "relationship": ticked["relationship"]}}
+
+
+# --------------------------------------------------------------------------
+
+def whisper(pt_id, *, player, target_kind, target_id, text, actor_name=None, session_id=""):
+    pt = _pt(pt_id)
+    world = world_for(pt)
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("empty whisper")
+    canon.safety_gate(pt_id, text)
+
+    row_id = db.run(
+        "INSERT INTO whispers (session_id,playthrough_id,turn,from_player,to_kind,to_id,text,created_at)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (session_id or pt["session_id"], pt_id, pt["current_turn"], player,
+         target_kind, target_id, text, db.now()))
+
+    if target_kind == "player":
+        return {"id": row_id, "kind": "player", "to": target_id, "text": text, "reply": None}
+
+    if target_id not in world.by_id:
+        raise ValueError("no such character")
+    st = memory.npc_state(pt_id, target_id)
+    if not st or not st["alive"]:
+        return {"id": row_id, "kind": "npc", "to": target_id, "text": text,
+                "reply": f"{world.npc_name(target_id)} is dead. The dead do not answer."}
+
+    with budget.turn(f"whisper:{pt_id}", limit=2):
+        out = npc_sim.whisper(pt, world, target_id, text, user_id=pt["user_id"],
+                              player=player, speaker=actor_name or "the traveller")
+        try:
+            out["reply"] = canon.check_npc_action(pt_id, world, target_id, out["reply"],
+                                                  turn=pt["current_turn"])
+        except canon.Cancelled as c:
+            canon.log(pt_id, turn=pt["current_turn"], actor=target_id,
+                      attempted=out["reply"], verdict="cancelled", rule=c.rule, layer=c.layer)
+            out["reply"] = f"{world.npc_name(target_id)} looks at you and says nothing at all."
+
+    # Telling someone a secret privately is a deterministic relationship event.
+    relationships.apply_event(pt_id, target_id, player, "shared_secret",
+                              turn=pt["current_turn"], note="told them privately")
+    db.run("UPDATE whispers SET reply=? WHERE id=?", (out["reply"], row_id))
+    return {"id": row_id, "kind": "npc", "to": target_id,
+            "name": world.npc_name(target_id), "text": text,
+            "reply": out["reply"], "delta": out["delta"]}
+
+
+def contest(pt_id, challenger, defender, *, session_id=""):
+    pt = _pt(pt_id)
+    world = world_for(pt)
+    with budget.turn(f"contest:{pt_id}", limit=2):
+        result = world_master.arbitrate(pt, world, {"challenger": challenger, "defender": defender},
+                                        user_id=pt["user_id"])
+    turn = pt["current_turn"]
+    winner = result["winner"]
+    win_side = challenger if challenger["player_id"] == winner else defender
+    lose_side = defender if win_side is challenger else challenger
+
+    memory.add_event(pt_id, turn, "contest",
+                     f"{win_side['name']} vs {lose_side['name']}: {win_side['action']}",
+                     f"{result['consequence']} {result['loser_cost']}",
+                     kind="contest", importance=5, location=pt["current_location"])
+    narrgraph.add(pt_id, turn, "contest", f"{win_side['name']} over {lose_side['name']}",
+                  detail=result["consequence"], place_id=pt["current_location"], weight=5)
+    entry = _render(pt_id, turn, "contest", result["consequence"], actor="world", meta={
+        "winner": winner, "winner_name": win_side["name"], "loser_name": lose_side["name"],
+        "reason": result["reason"], "loser_cost": result["loser_cost"],
+        "rolls": result["rolls"],
+    })
+    return {"result": result, "entries": [entry], "state": snapshot(pt_id, winner)}
+
+
+# --------------------------------------------------------------------------
+
+def snapshot(pt_id, player=memory.SOLO):
+    pt = _pt(pt_id)
+    world = world_for(pt)
+    turn = pt["current_turn"]
+    states = {s["npc_id"]: s for s in memory.all_npc_states(pt_id)}
+    present = memory.npcs_at(pt_id, world, pt["current_location"], turn)
+    rels = relationships.all_for(pt_id, player)
+
+    npcs = []
+    for npc in world.npcs:
+        st = states.get(npc["id"], {})
+        r = rels.get(npc["id"], {})
+        ps = memory.npc_player_state(pt_id, npc["id"], player)
+        refl = db.jload(ps["reflections"], [])
+        loc = st.get("location", npc["start_location"])
+        npcs.append({
+            "id": npc["id"], "name": npc["name"], "role": npc["role"],
+            "voice": npc["anchors"]["voice"],
+            "goals": npc["anchors"]["goals"], "taboos": npc["anchors"]["taboos"],
+            "constraints": npc["anchors"]["constraints"],
+            "alive": bool(st.get("alive", 1)),
+            "location": loc, "location_name": world.loc_name(loc),
+            "present": npc["id"] in present,
+            "affinity": r.get("affinity", 0), "trust": r.get("trust", 0),
+            "fear": r.get("fear", 0), "obligation": r.get("obligation", 0),
+            "love": r.get("love", 0), "loyalty": r.get("loyalty", 0),
+            "respect": r.get("respect", 0),
+            "disposition": r.get("disposition", "stranger"),
+            "will_cover": r.get("will_cover", False),
+            "betrayal_pressure": r.get("betrayal_pressure", 0.0),
+            "last_interaction_turn": r.get("last_interaction_turn", -1),
+            "plan": db.jload(ps["plan"], []),
+            "latest_reflection": refl[-1]["text"] if refl else None,
+            "reflection_count": len(refl),
+        })
+
+    next_turn = min((x["turn"] for x in world.fated_events if x["turn"] > turn), default=-1)
+    fate = [{**f, "status": "passed" if f["turn"] <= turn
+             else ("next" if f["turn"] == next_turn else "sealed")}
+            for f in world.fated_events]
+
+    scores = director.tension_score(pt, world, {"turn": turn, "present": present}, player)
+    session = db.row("SELECT * FROM sessions WHERE playthrough_id=?", (pt_id,))
+    payers = None
+    if session:
+        _, payers = _party_context(session["id"])
+
+    return {
+        "id": pt["id"],
+        "world": world.summary(),
+        "title": pt["title"], "protagonist": pt["protagonist"],
+        "turn": turn, "day": world.day_for(turn), "phase": world.phase_for(turn),
+        "location": pt["current_location"],
+        "location_name": world.loc_name(pt["current_location"]),
+        "location_desc": world.loc_by_id[pt["current_location"]]["desc"],
+        "exits": [{"id": e, "name": world.loc_name(e),
+                   "blocked": atlas.blocked(pt_id, e)}
+                  for e in world.connects(pt["current_location"])],
+        "npcs": npcs, "fate": fate, "tension": scores["tension"],
+        "mana": mana.status(pt["user_id"], pt, payers or [pt["user_id"]]),
+        "rules": world.rules,
+        "player": player,
+        "weather": worldstate.public(pt_id, world, pt["current_location"]),
+        "session": ({"id": session["id"], "code": session["code"], "mode": session["mode"],
+                     "status": session["status"],
+                     "premium_allowed": bool(session.get("premium_allowed", 0))}
+                    if session else None),
+        # The dials and the run frame travel with every snapshot. Without
+        # these the client has no way to know what kind of world it is in -
+        # whether death is permanent, which run this is, or whether Deep Prose
+        # is even available - and every panel that shows them would be guessing.
+        "modes": modes.public(pt_id),
+        "run": runs.public(pt_id, pt["user_id"], pt["world_id"]),
+        "arc": arcs.position(pt_id, pt["world_id"]),
+        "skills": fastforward.skills(pt_id, player),
+        "combat_id": (db.row("SELECT id FROM combats WHERE playthrough_id=? AND status!='over'"
+                             " ORDER BY rowid DESC LIMIT 1", (pt_id,)) or {}).get("id"),
+        "ended": turn >= world.fated_events[-1]["turn"],
+    }
+
+
+def workspace(pt_id, player=memory.SOLO, *, session_id=""):
+    """Everything the visual shell needs, in one round trip."""
+    pt = _pt(pt_id)
+    world = world_for(pt)
+    turn = pt["current_turn"]
+    party, _ = _party_context(session_id or pt["session_id"])
+    return {
+        "state": snapshot(pt_id, player),
+        "atlas": atlas.view(pt_id, world, here=pt["current_location"], turn=turn),
+        "graph": narrgraph.view(pt_id, world, turn),
+        "knowledge": awareness.public_state(pt_id, world, player, turn),
+        "board": betrayal.board(pt_id, world, player, turn, party),
+        "safety": canon.safety(pt_id),
+        "budget": budget.table(),
+    }
+
+
+def feed(pt_id, after_id=0, limit=200):
+    return db.rows(
+        "SELECT * FROM narrative WHERE playthrough_id=? AND id>? ORDER BY id LIMIT ?",
+        (pt_id, after_id, limit))
+
+
+def export(pt_id):
+    pt = _pt(pt_id)
+    world = world_for(pt)
+    tables = ("timeline_events", "relationships", "npc_state", "npc_player", "npc_memories",
+              "narrative", "whispers", "atlas_places", "world_echoes", "graph_nodes",
+              "graph_edges", "faction_rep", "knowledge", "rumors", "hunts", "splits",
+              "canon_log", "cards")
+    out = {
+        "storyliver_export_version": 3,
+        "exported_at": db.now(),
+        "playthrough": pt,
+        "world_id": pt["world_id"],
+        "world": world.data,
+        "snapshot": snapshot(pt_id),
+        "world_state": worldstate.get(pt_id),
+        "safety": canon.safety(pt_id),
+        "usage": db.rows("SELECT role,model,in_tokens,out_tokens,usd,created_at FROM usage_log"
+                         " WHERE playthrough_id=?", (pt_id,)),
+    }
+    for t in tables:
+        out[t] = db.rows(f"SELECT * FROM {t} WHERE playthrough_id=?", (pt_id,))
+    return out
+
+
+def usage_summary(pt_id):
+    rows = db.rows(
+        "SELECT role, model, COUNT(*) n, SUM(in_tokens) tin, SUM(out_tokens) tout, SUM(usd) usd"
+        " FROM usage_log WHERE playthrough_id=? GROUP BY role, model", (pt_id,))
+    pt = _pt(pt_id)
+    actions = max(1, pt["current_turn"])
+    total = sum(r["usd"] or 0 for r in rows)
+    return {"by_role": rows, "total_usd": round(total, 6), "actions": actions,
+            "usd_per_action": round(total / actions, 6),
+            "target_usd_per_action": config.TARGET_BLENDED_COST_USD,
+            "within_budget": (total / actions) <= config.TARGET_BLENDED_COST_USD,
+            "calls_per_turn_cap": budget.MAX_LLM_CALLS_PER_TURN}
