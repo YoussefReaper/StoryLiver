@@ -884,7 +884,13 @@ async function submitAction(text) {
       // A dead character is a different kind of "blocked": there is something
       // to DO about it, so offer the resolutions instead of a warning toast.
       if (r.dead) { toast(r.reason, 'warn'); await offerResolutions(); return; }
-      toast(r.reason, 'warn'); return;
+      // The server says WHOSE turn it is and the client used to drop that on
+      // the floor, leaving "Not your turn - wait for the table" with no way to
+      // know who anyone is waiting on.
+      toast(r.whose_turn
+        ? `Not your turn — ${playerName(r.whose_turn)} is up.`
+        : r.reason, 'warn');
+      return;
     }
     const { feed } = await api(`/playthroughs/${S.ptId}?player=${encodeURIComponent(S.playerId)}`);
     renderFeed(feed.filter((e) => e.id > S.lastFeedId));
@@ -4207,6 +4213,7 @@ document.addEventListener('click', async (ev) => {
   if (pick('[data-daily-submit]')) return submitDaily();
   if (pick('[data-au-save]')) return saveAU();
   if (pick('[data-mask-call]')) return showMaskCall();
+  if (pick('[data-pw-change]')) return changePassword();
   const mv = pick('[data-mask-vote]');
   if (mv) return maskVote(mv.dataset.maskVote, mv.dataset.maskName);
 
@@ -5342,6 +5349,39 @@ async function doAuth(mode) {
   }
 }
 
+/** What this account has actually paid. Money the player spent and could not
+    see a record of anywhere; the endpoint has been there the whole time. */
+async function loadReceipts() {
+  const box = $('#pf-receipts');
+  if (!box) return;
+  let rows = [];
+  try { rows = (await api('/payments/history')).payments || []; } catch { return; }
+  if (!rows.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="pf-towns"><div class="pf-head">What you have paid</div>
+    ${rows.slice(0, 8).map((r) => `<div class="pf-town">
+      <span>${esc(String(r.captured_at || r.created_at || '').slice(0, 10))}
+        · ${esc(r.pack_id || 'Mana')}</span>
+      <span class="pf-crimes">${r.mana ? `${r.mana} Mana` : ''}</span>
+      <span class="pf-standing ${r.status === 'completed' ? 'good' : 'bad'}">
+        ${esc(r.status || '')}${r.usd ? ` · $${Number(r.usd).toFixed(2)}` : ''}</span>
+    </div>`).join('')}
+    <p class="fineprint">Mana buys model calls. Everything the engine computes
+      itself — reputation, witnessing, stealth, combat, the world tick — runs
+      every turn and costs nothing.</p></div>`;
+}
+
+async function changePassword() {
+  const current = $('#pf-pw-old')?.value || '';
+  const next = $('#pf-pw-new')?.value || '';
+  if (!current || !next) return toast('Both fields, please.', 'warn');
+  try {
+    await api('/auth/password', { method: 'POST', body: { current, new: next } });
+  } catch (e) { return toast(e.message, 'err'); }
+  toast('Changed. Every device is signed out — sign in again.');
+  S.account = null; S.guest = true;
+  closeOverlays(); renderAll();
+}
+
 async function showProfile() {
   if (!S.account) return showAuth('login');
   let p;
@@ -5402,11 +5442,27 @@ async function showProfile() {
 
       ${p.sessions?.length > 1 ? `<p class="fineprint">${p.sessions.length} devices signed in.</p>` : ''}
 
+      <div id="pf-receipts"></div>
+
+      <details class="pf-pass">
+        <summary>Change your password</summary>
+        <label class="field"><span>Current password</span>
+          <input class="input" id="pf-pw-old" type="password"
+                 autocomplete="current-password" /></label>
+        <label class="field"><span>New password</span>
+          <input class="input" id="pf-pw-new" type="password"
+                 autocomplete="new-password" /></label>
+        <p class="fineprint">Changing it signs out every device, including this
+          one — that is the point of changing it.</p>
+        <button class="btn btn-ghost" data-pw-change="1">Change it</button>
+      </details>
+
       <div class="row" style="margin-top:14px">
         <button class="btn btn-primary" id="pf-save">Save</button>
         <button class="btn btn-ghost" id="pf-logout">Sign out</button>
       </div>
     </div>`);
+  loadReceipts();
 }
 
 async function saveProfile() {

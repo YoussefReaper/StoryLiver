@@ -200,12 +200,52 @@ def test_every_colour_token_exists():
        + (" — found " + ", ".join(missing) if missing else ""))
 
 
+# Classes that carry no styling of their own on purpose: JS uses them as
+# selectors, or they sit beside a base class that does the painting.
+SEMANTIC_ONLY = {
+    "entry-narration",   # selected by app.js to find prose nodes
+    "fate-card", "obj-card", "party-card", "tension-card", "you-card",
+    "acct-name", "ib-facts",
+}
+
+
+def test_every_class_written_is_a_class_that_paints():
+    section("classes — a name no rule matches is a control with no clothes")
+    # `.input` was written on 36 controls and matched NO rule anywhere. Every
+    # one of them was painted by an ancestor (`.field input`, `.big-field
+    # textarea`), so a control that happened to sit somewhere else rendered as
+    # a raw browser widget - the profile's "About you" was a white box in a
+    # dark theme, because `.field input` does not cover a textarea. Same family
+    # as var(--danger) and `.alert.bad`: a name that paints nothing, raises
+    # nothing, and is invisible to every test that only asks whether an element
+    # exists.
+    css = CSS + (ROOT / "frontend" / "app" / "forge.css").read_text(encoding="utf-8")
+    declared = set(re.findall(r"\.([a-zA-Z][\w-]*)", css))
+    used = {}
+    for src, where in ((JS, "app.js"), (HTML, "index.html")):
+        # Only static class attributes - a template-built name cannot be
+        # checked here without guessing what it interpolates to.
+        for m in re.finditer(r'class="([^"$]*)"', src):
+            for cl in m.group(1).split():
+                used.setdefault(cl, where)
+    missing = sorted(c for c in used
+                     if c not in declared and c not in SEMANTIC_ONLY)
+    ok(not missing,
+       "every class name written on an element is matched by a rule, or is "
+       "listed as deliberately semantic"
+       + (" — found " + ", ".join(f"{c} ({used[c]})" for c in missing[:6])
+          if missing else ""))
+    ok("input" in declared,
+       "and `.input`, the most-written class in the app, is one of them")
+
+
 def _all():
     return (test_hidden_actually_hides, test_scroll_containers_can_shrink,
             test_mobile_overrides_come_after_base_rules,
             test_responsive_panels_stay_reachable, test_assets_are_cache_busted,
             test_text_is_never_painted_in_a_ground_colour,
-            test_every_colour_token_exists)
+            test_every_colour_token_exists,
+            test_every_class_written_is_a_class_that_paints)
 
 
 def main():

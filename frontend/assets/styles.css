@@ -176,6 +176,31 @@ button { background: none; border: 0; cursor: pointer; }
 .field input::placeholder { color: var(--faint); }
 .field input:focus { outline: none; border-color: var(--ember-deep); background: var(--panel-3); }
 
+/* `.input` is written on 36 controls across the app and, until now, matched no
+   rule at all. Every one of them was painted by an ANCESTOR - `.field input`,
+   `.big-field textarea`, `.fe-row select` - so a control that happened to sit
+   somewhere else rendered as a raw browser widget: a white box in a dark
+   theme. The profile's "About you" was exactly that, because `.field input`
+   does not cover a textarea.
+   The ancestor rules are more specific and still win where they apply, so
+   this changes nothing that was already right and fixes everything that was
+   relying on luck. */
+.input {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 12px 14px; color: var(--vellum);
+  font-family: var(--serif); font-size: 15px;
+  transition: border-color .18s, background .18s; resize: vertical;
+}
+.input::placeholder { color: var(--faint); }
+.input:focus { outline: none; border-color: var(--ember-deep); background: var(--panel-3); }
+.field textarea {
+  width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 12px 14px; color: var(--vellum);
+  font-family: var(--serif); font-size: 15px; resize: vertical;
+}
+.field textarea::placeholder { color: var(--faint); }
+.field textarea:focus { outline: none; border-color: var(--ember-deep); background: var(--panel-3); }
+
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 9px;
   border-radius: var(--r); padding: 10px 18px; font-weight: 600; font-size: 14px;
@@ -2062,6 +2087,18 @@ button { background: none; border: 0; cursor: pointer; }
   gap: 8px;
 }
 @media (max-width: 620px) { .mask-grid { grid-template-columns: 1fr 1fr; } }
+
+/* Folded away by default: changing a password is a thing you do once, and it
+   should not sit between the player and the panel they came here for. */
+.pf-pass { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.pf-pass > summary {
+  cursor: pointer; font-size: 12px; color: var(--muted);
+  letter-spacing: .04em; list-style: none;
+}
+.pf-pass > summary::-webkit-details-marker { display: none; }
+.pf-pass > summary::before { content: '+ '; color: var(--faint); }
+.pf-pass[open] > summary::before { content: '- '; }
+.pf-pass > summary:hover { color: var(--vellum); }
 .mode-card.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
