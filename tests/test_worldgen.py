@@ -30,6 +30,8 @@ Run:  python -m tests.test_worldgen
 """
 import json
 import os
+import pathlib
+import re
 import shutil
 import tempfile
 
@@ -41,6 +43,7 @@ from backend import (authority, db, death, engine, memory, modetree,  # noqa: E4
                      research, worldforge, worldkit)
 from backend import worlds as registry  # noqa: E402
 
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 FAILS, NOTES = [], []
 
 
@@ -299,6 +302,35 @@ def test_the_fate_thread_does_not_spoil_itself():
        "is coming and when, which is the dread the panel was for")
 
 
+def test_the_price_of_a_world_is_quoted_correctly():
+    section("the number a player decides on")
+    # This one number existed three times: hand-written into the backend's
+    # scale blurbs, hand-written AGAIN into the client's own copy of the size
+    # list, and computed in scale_plan(). All three disagreed, and both
+    # hand-written copies quoted every size exactly one model call cheaper
+    # than it is - on the screen where the player decides what to spend.
+    for key, spec in worldforge.SCALES.items():
+        plan = worldforge.scale_plan(key)
+        expected = (1 if spec["districts"] > 1 else 0) + spec["districts"] + 1
+        ok(plan["model_calls"] == expected,
+           f"{key}: the quoted cost is the real one ({plan['model_calls']} calls "
+           f"for {spec['districts']} district(s) plus laws)")
+        ok(not re.search(r"~?\d+\s*(?:model )?calls?", spec["blurb"]),
+           f"{key}: the blurb describes the shape and leaves the count to "
+           "arithmetic, so it cannot go stale next time a pass is added")
+        lo, hi = plan["locations"]
+        ok(lo >= spec["districts"] and hi >= lo,
+           f"{key}: the places promised are a real range, not a guess ({lo}-{hi})")
+
+    forge_js = (ROOT / "frontend" / "app" / "forge.js").read_text(encoding="utf-8")
+    ok("/forge/scales" in forge_js,
+       "and the client asks the server for the numbers rather than keeping a "
+       "fourth copy of them")
+    ok(worldforge.scale_plan("nonsense")["scale"] == "town",
+       "an unknown size falls back to a town rather than raising at the one "
+       "moment the player is committing")
+
+
 def _all():
     return (test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
@@ -307,7 +339,8 @@ def _all():
             test_a_forged_world_matches_the_starter,
             test_the_dark_systems_actually_light_up,
             test_the_daily_is_genuinely_the_same_world,
-            test_the_fate_thread_does_not_spoil_itself)
+            test_the_fate_thread_does_not_spoil_itself,
+            test_the_price_of_a_world_is_quoted_correctly)
 
 
 def main():

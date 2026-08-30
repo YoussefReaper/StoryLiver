@@ -51,15 +51,21 @@ IP_MARKERS = (
 #
 # Cost scales honestly with size, and the player is told the number of passes
 # before they commit - a "world" is roughly seven model calls, not one.
+# The blurb describes the SHAPE. It deliberately carries no call count: the
+# count is arithmetic over `districts` and belongs in one place. It was written
+# into these strings by hand, into the client by hand again, and computed a
+# third time in scale_plan - and all four sizes understated the real cost by
+# exactly one call, which is the sort of number a player is entitled to have
+# right before they spend on it.
 SCALES = {
     "town":   {"districts": 1, "locs": (9, 11),  "npcs": (10, 12),
-               "label": "A town", "blurb": "One dense, playable place. ~1 model call."},
+               "label": "A town", "blurb": "One dense, playable place."},
     "city":   {"districts": 3, "locs": (7, 9),   "npcs": (7, 9),
-               "label": "A city", "blurb": "Three districts, each with its own people. ~4 calls."},
+               "label": "A city", "blurb": "Three districts, each with its own people."},
     "region": {"districts": 5, "locs": (6, 8),   "npcs": (6, 8),
-               "label": "A region", "blurb": "Five settlements, connected by road. ~6 calls."},
+               "label": "A region", "blurb": "Five settlements, connected by road."},
     "world":  {"districts": 8, "locs": (6, 8),   "npcs": (6, 8),
-               "label": "A whole world", "blurb": "Eight regions, a continent's worth. ~9 calls."},
+               "label": "A whole world", "blurb": "Eight regions, a continent's worth."},
 }
 
 

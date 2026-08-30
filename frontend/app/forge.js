@@ -64,6 +64,12 @@ export function open() {
     peek: null, peeking: false, zero: null, answers: {}, building: false,
   });
   render();
+  // Fetched alongside the first paint rather than blocking it: the premise
+  // step does not need the numbers, and the size step is one click away.
+  loadScales().then(() => {
+    const f = get('forge');
+    if (f && (f.step === 'shape' || f.step === 'build')) render();
+  });
 }
 
 /* ------------------------------------------------------------------ view */
@@ -170,21 +176,53 @@ function peekView(f) {
 
 /* ----------------------------------------------------------------- shape */
 
-const SCALES = [
-  ['town', 'A town', 'One dense, playable place.', '~1 model call'],
-  ['city', 'A city', 'Three districts, each with its own people.', '~4 calls'],
-  ['region', 'A region', 'Five settlements, connected by road.', '~6 calls'],
-  ['world', 'A world', 'Eight regions. As big as it says.', '~10 calls'],
+/* The sizes, fetched rather than restated. This list used to be written out
+   here by hand, a second hand-written copy sat in the backend's blurbs, and a
+   third number was computed in scale_plan() - and all three disagreed. Every
+   size was quoted one model call cheaper than it actually is, which is the
+   one number a player is entitled to have right before they spend on it. */
+const FALLBACK_SCALES = [
+  { scale: 'town', label: 'A town', blurb: 'One dense, playable place.' },
+  { scale: 'city', label: 'A city', blurb: 'Three districts, each with its own people.' },
+  { scale: 'region', label: 'A region', blurb: 'Five settlements, connected by road.' },
+  { scale: 'world', label: 'A whole world', blurb: "Eight regions, a continent's worth." },
 ];
 
+let scalePlans = null;
+
+async function loadScales() {
+  if (scalePlans) return scalePlans;
+  try {
+    scalePlans = (await api('/forge/scales')).scales || FALLBACK_SCALES;
+  } catch {
+    // The step still works without the numbers; it just cannot promise them.
+    scalePlans = FALLBACK_SCALES;
+  }
+  return scalePlans;
+}
+
+/** "9–11 places · 10–12 people · 2 model calls" — what you actually get. */
+function scaleMeta(p) {
+  const range = (r) => (Array.isArray(r) ? (r[0] === r[1] ? `${r[0]}` : `${r[0]}–${r[1]}`) : '');
+  const bits = [];
+  if (p.locations) bits.push(`${range(p.locations)} places`);
+  if (p.characters) bits.push(`${range(p.characters)} people`);
+  if (p.model_calls) {
+    bits.push(`${p.model_calls} model call${p.model_calls === 1 ? '' : 's'}`);
+  }
+  return bits.join(' · ');
+}
+
 function shapeStep(f) {
+  const plans = scalePlans || FALLBACK_SCALES;
   return `
     ${heading('How much world?')}
     ${note('Anything past a town is built in several passes and stitched — which '
       + 'is why it costs more and takes longer. You are told the number before '
       + 'you commit, not after.')}
-    ${cardRow(SCALES.map(([id, title, blurb, meta]) => card({
-    attr: 'data-forge-scale', id, title, blurb, meta, selected: f.scale === id,
+    ${cardRow(plans.map((p) => card({
+    attr: 'data-forge-scale', id: p.scale, title: p.label, blurb: p.blurb,
+    meta: scaleMeta(p), selected: f.scale === p.scale,
   })))}
     ${note('Every world gets the same depth per place: people with a voice and a '
       + 'card, institutions that can actually detain you, characters who have '
@@ -239,7 +277,8 @@ function youStep(f) {
 /* ----------------------------------------------------------------- build */
 
 function buildStep(f) {
-  const scale = SCALES.find((s) => s[0] === f.scale) || SCALES[0];
+  const plans = scalePlans || FALLBACK_SCALES;
+  const scale = plans.find((s) => s.scale === f.scale) || plans[0];
   const parsed = (f.peek && f.peek.premise) || {};
   const answered = Object.keys(f.answers || {}).length;
   return `
@@ -249,8 +288,8 @@ function buildStep(f) {
       ${(parsed.imports || []).map((im) => `<div class="sum-row">
         <i>Carrying in</i><b>${esc(im.character)}</b>
         <span>from ${esc(im.from)}</span></div>`).join('')}
-      <div class="sum-row"><i>Size</i><b>${esc(scale[1])}</b>
-        <span>${esc(scale[3])}</span></div>
+      <div class="sum-row"><i>Size</i><b>${esc(scale.label)}</b>
+        <span>${esc(scaleMeta(scale))}</span></div>
       <div class="sum-row"><i>Sourcing</i><b>${esc(
     (BUILD_MODES.find((m) => m[0] === f.mode) || BUILD_MODES[0])[1])}</b></div>
       ${f.tone ? `<div class="sum-row"><i>Tone</i><b>${esc(f.tone)}</b></div>` : ''}
