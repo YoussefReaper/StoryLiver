@@ -153,6 +153,7 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   refreshStreak();
   refreshObjective();
   announceReturn();
+  if (sessionId) refreshPendingCards();
   if (sessionId) connectWS();
   $('#actionInput').focus();
 
@@ -1063,9 +1064,22 @@ function handleWS(msg) {
     case 'safety':
       S.safety = msg.payload; toast('Safety lines updated.');
       break;
-    case 'card':
-      toast(`Character card ${msg.event}.`);
+    case 'card': {
+      // A toast saying "card submitted" and nothing else is how this sat for
+      // as long as the vote endpoint went uncalled. Somebody else's card
+      // arriving is a thing you have to DO something about.
+      const c = msg.card || {};
+      if (msg.event === 'submitted' && c.player_id !== S.playerId) {
+        S.cardsPending = true; renderCardBadge();
+        toast(`${c.name || 'A character'} is waiting on the table's approval.`, 'warn');
+      } else if (msg.event === 'vote' && c.player_id === S.playerId) {
+        toast(c.status === 'approved' ? 'Your card is approved and in play.'
+          : c.status === 'changes_requested' ? 'The table asked for changes to your card.'
+            : 'A seat has voted on your card.');
+      }
+      loadPendingCards();
       break;
+    }
     case 'queued':
       S.busy = false; thinking(false); toast(msg.message || 'Another player is mid-turn.', 'warn');
       break;
@@ -3586,6 +3600,12 @@ function showTraitorReveal(r) {
    clause, never prose.
    ========================================================================= */
 
+/** A dot on the story menu when something behind it is waiting on you. */
+function renderCardBadge() {
+  const el = $('#menuDot');
+  if (el) el.hidden = !S.cardsPending;
+}
+
 function renderOocBadge() {
   const el = $('#oocBadge');
   if (el) el.textContent = S.oocUnread > 0 ? String(Math.min(99, S.oocUnread)) : '';
@@ -3917,6 +3937,8 @@ async function showParty() {
             </div>` : '<span class="pill">voted</span>'}
         </div>`).join('')}</div>` : ''}
 
+      <div id="party-cards"></div>
+
       <div id="party-archives"></div>
 
       <p class="fineprint">When someone leaves, every memory the world holds of them is
@@ -3924,6 +3946,78 @@ async function showParty() {
         because that is their memory too. Nothing is destroyed: a re-invite restores it all.</p>
     </div>`);
   loadArchives();
+  loadPendingCards();
+}
+
+
+/* ---------------------------------------------------------------------------
+   Cards waiting on the table.
+
+   The card panel has always promised that "every seated player approves a card
+   before it enters play, and an approved anomaly becomes a world rule the
+   World Master will enforce". The vote endpoint was written, wired to the
+   websocket and tested - and nothing ever rendered it, so a submitted card sat
+   at `pending` forever and no anomaly ever became canon. The promise was real
+   in the backend and unkeepable in the client.
+   ------------------------------------------------------------------------ */
+
+/* Fetching and rendering are separate on purpose: the badge has to be right
+   whether or not the table panel happens to be open, and the panel is exactly
+   where it is NOT open that the player needs telling. */
+async function refreshPendingCards() {
+  if (!S.sessionId || !S.ptId) return [];
+  let cards = [];
+  try { cards = (await api(`/playthroughs/${S.ptId}/cards`)).cards || []; } catch { return []; }
+  S.pendingCards = cards.filter((c) => c.status === 'pending'
+    && c.player_id !== S.playerId && !(S.playerId in (c.approvals || {})));
+  S.cardsPending = S.pendingCards.length > 0;
+  renderCardBadge();
+  return S.pendingCards;
+}
+
+async function loadPendingCards() {
+  const waiting = await refreshPendingCards();
+  const box = $('#party-cards');
+  if (!box) return;
+  box.innerHTML = waiting.length
+    ? `<div class="pf-head">Waiting on you</div>
+       ${waiting.map((c) => renderPendingCard(c)).join('')}`
+    : '';
+}
+
+function renderPendingCard(c) {
+  const a = c.aspects || {};
+  const voted = S.playerId in (c.approvals || {});
+  return `<div class="cardvote">
+    <div class="cardvote-h"><b>${esc(c.name || 'unnamed')}</b>
+      <small>${esc(c.concept || '')}</small></div>
+    ${[['Voice', a.voice], ['Drive', a.drive], ['Flaw', a.flaw]]
+    .filter(([, v]) => v).map(([k, v]) =>
+    `<div class="cardvote-r"><i>${k}</i><span>${esc(v)}</span></div>`).join('')}
+    ${c.anomaly ? `<div class="alert owed">
+      <div class="alert-t">Anomaly — approving this makes it a world rule</div>
+      <div class="alert-b">${esc(c.anomaly)}</div></div>` : ''}
+    ${voted ? '<span class="pill">voted</span>' : `
+      <input class="input sm" id="cv-note-${esc(c.id)}" maxlength="200"
+        placeholder="Optional — what you want changed" />
+      <div class="row">
+        <button class="btn btn-ghost sm" data-card-vote="${esc(c.id)}" data-ok="0">Ask for changes</button>
+        <button class="btn btn-primary sm" data-card-vote="${esc(c.id)}" data-ok="1">Agree</button>
+      </div>`}
+  </div>`;
+}
+
+async function voteCard(cardId, ok) {
+  const note = $(`#cv-note-${cardId}`)?.value || '';
+  try {
+    const card = await api(`/playthroughs/${S.ptId}/cards/${cardId}/vote`,
+      { method: 'POST', body: { voter: S.playerId, ok, note } });
+    toast(card.status === 'approved'
+      ? `${card.name || 'The card'} is in play.${card.anomaly ? ' Their anomaly is now a world rule.' : ''}`
+      : ok ? 'Agreed. Waiting on the rest of the table.'
+        : 'Sent back for changes.');
+  } catch (e) { return toast(e.message, 'err'); }
+  loadPendingCards();
 }
 
 async function loadArchives() {
@@ -4132,6 +4226,8 @@ document.addEventListener('click', async (ev) => {
 
   const vote = pick('[data-vote]');
   if (vote) return voteMotion(vote.dataset.vote, vote.dataset.approve === '1');
+  const cv = t.closest('[data-card-vote]');
+  if (cv) return voteCard(cv.dataset.cardVote, cv.dataset.ok === '1');
 
   const restore = pick('[data-restore]');
   if (restore) return restorePlayer(restore.dataset.restore);

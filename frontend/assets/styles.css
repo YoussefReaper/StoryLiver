@@ -2034,6 +2034,26 @@ button { background: none; border: 0; cursor: pointer; }
   color: var(--faint); font-size: 15px; line-height: 1;
 }
 .lib-x:hover { color: var(--crimson); background: var(--panel-3); }
+
+/* Something in the story menu needs this player. A dot, not a count: the menu
+   is a list of doors and the number belongs behind whichever one it is. */
+.dot-badge {
+  position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--ember); box-shadow: 0 0 0 2px var(--ink);
+}
+.icon-btn { position: relative; }
+
+/* A table-mate's card, and the two verbs the panel has always promised. */
+.cardvote {
+  border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px;
+  background: var(--panel-2); color: var(--vellum); margin-bottom: 8px;
+}
+.cardvote-h b { font-size: 14px; }
+.cardvote-h small { display: block; color: var(--muted); font-size: 11.5px; }
+.cardvote-r { display: flex; gap: 8px; font-size: 12px; margin-top: 5px; }
+.cardvote-r i { flex: 0 0 44px; font-style: normal; color: var(--faint); }
+.cardvote .input.sm { margin-top: 9px; font-size: 12px; padding: 7px 9px; }
+.cardvote .row { margin-top: 8px; justify-content: flex-end; }
 .mode-card.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
