@@ -10,6 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/styles.css">
+<link rel="stylesheet" href="/app/forge.css">
 </head>
 <body>
 
@@ -345,5 +346,9 @@
 <div class="toasts" id="toasts"></div>
 
 <script src="/assets/app.js"></script>
+<!-- Rebuilt panels, as native ES modules. No build step: the backend serves
+     these as static files, so `python run.py` still works with no toolchain,
+     and the layout tests still read the real CSS and HTML off disk. -->
+<script type="module" src="/app/main.js"></script>
 </body>
 </html>

@@ -636,9 +636,9 @@ _CONNECTIVE = r"(?:of|the|and|in|on|at|to|de|von|van|no|le|la|du)"
 _PROPER = (r"((?:The\s+)?[A-Z][\w'\-]*"
            r"(?:\s+(?:" + _CONNECTIVE + r"\s+)*[A-Z0-9][\w'\-]*)*)")
 _HOST_PATTERNS = (
-    rf"(?:world|universe|setting|reality|timeline|continuity)\s+of\s+{_PROPER}",
-    rf"(?:inside|within|into|in)\s+(?:the\s+)?(?:world\s+of\s+)?{_PROPER}",
-    rf"set\s+in\s+{_PROPER}",
+    rf"\b(?:world|universe|setting|reality|timeline|continuity)\s+of\s+{_PROPER}",
+    rf"\bset\s+in\s+{_PROPER}",
+    rf"\b(?:inside|within|into|in)\b\s+(?:the\s+)?(?:world\s+of\s+)?{_PROPER}",
 )
 
 # "X from Y" - a character carried in from somewhere else.

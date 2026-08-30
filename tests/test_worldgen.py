@@ -84,6 +84,15 @@ def test_a_premise_is_parsed_not_searched():
     ok(True, "titles keep their article, numbers stay inside a name, and a "
              "connective does not swallow the rest of the sentence")
 
+    # A word-boundary regression found by typing into the real UI: "Hazbin
+    # Hotel inside The Last of Us" picked HOTEL, because the `in` alternative
+    # matched the last two letters of "Hazbin" and took the next capitalised
+    # word. A name that contains a preposition is not rare.
+    boundary = research.parse_premise("Charlie from Hazbin Hotel inside The Last of Us")
+    ok(boundary["host"] == "The Last of Us",
+       f"a preposition INSIDE a name does not become the match "
+       f"({boundary['host']!r})")
+
     plain = research.parse_premise("The Last of Us")
     ok(not plain["is_premise"] and plain["host"] == "The Last of Us",
        "a bare title needs no parsing and is left alone")

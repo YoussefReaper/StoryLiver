@@ -1598,6 +1598,10 @@ async function showLibrary() {
 }
 
 async function showForge() {
+  // The rebuilt forge lives in /app/forge.js. This shell stays because the
+  // old world list and editor still hang off it; the BUILD flow - the part
+  // that matters and the part that was a text box - is the module's.
+  if (window.__forge) return window.__forge.openModal();
   const worlds = await api('/forge/worlds');
   const suggestions = ['a frozen post-collapse Earth', 'a cyberpunk megacity in 2200',
     'a lighthouse at the end of the world', 'a generation ship 200 years in',
@@ -1902,6 +1906,25 @@ function showRules() {
     </div><p class="fineprint">Break one and the world pushes back in character, cites the rule, and charges
     you nothing for the attempt.</p></div>`);
 }
+
+/* The rebuilt panels are ES modules and cannot see this file's scope, so the
+   two things they need - the transport, and what to do with a built world -
+   are handed over explicitly rather than reached for. */
+window.__appBridge = {
+  api: (path, opts) => api(path, opts),
+  esc: (s) => esc(s),
+  toast: (m, k) => toast(m, k),
+  closeOverlays: () => closeOverlays(),
+  showModal: (html) => showModal(html),
+  head: (t, s) => head(t, s),
+  onWorldBuilt: async (payload) => {
+    const world = payload.world || payload;
+    S.forgeWorld = world;
+    closeOverlays();
+    if (payload.notice) toast(payload.notice, 'warn');
+    openEditor(world, world.id, payload.notice || 'Built. Edit anything before you play.');
+  },
+};
 
 /* ==================================================================== WIRE */
 function autosize(ta) {
