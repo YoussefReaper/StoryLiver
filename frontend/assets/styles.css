@@ -1992,6 +1992,48 @@ button { background: none; border: 0; cursor: pointer; }
   transition: border-color .15s, background .15s;
 }
 .mode-card:hover { border-color: var(--ember); }
+
+/* ---------------------------------------------------------------- library
+   Characters you have made, across every world. A card used to be keyed to a
+   playthrough, so building one was a cost you paid again in each new story.
+   Presented as a row of faces rather than a list of names, because picking a
+   person is a recognition task - you know them on sight. */
+.lib { margin-bottom: 16px; }
+.lib-head {
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px;
+}
+.lib-row {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+.lib-card {
+  position: relative; flex: 0 0 148px; text-align: left; cursor: pointer;
+  padding: 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel-2); color: var(--vellum);
+  transition: border-color .15s;
+}
+.lib-card.static { cursor: default; }
+.lib-card:not(.static):hover { border-color: var(--ember); }
+.lib-av {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%; margin-bottom: 7px;
+  background: var(--ember-glow); color: var(--ember);
+  font-size: 13px; font-weight: 600; overflow: hidden;
+}
+.lib-av img { width: 100%; height: 100%; object-fit: cover; }
+.lib-n { display: block; font-size: 13px; }
+.lib-c {
+  display: block; font-size: 11px; line-height: 1.35; color: var(--muted);
+  margin-top: 2px; overflow: hidden; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.lib-x {
+  position: absolute; top: 4px; right: 5px; width: 20px; height: 20px;
+  border: 0; border-radius: 6px; background: none; cursor: pointer;
+  color: var(--faint); font-size: 15px; line-height: 1;
+}
+.lib-x:hover { color: var(--crimson); background: var(--panel-3); }
 .mode-card.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }

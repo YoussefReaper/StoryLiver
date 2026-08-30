@@ -1098,7 +1098,7 @@ def list_cards(pt_id: str, user_id: str = Query(default="")):
 
 
 @app.post("/api/playthroughs/{pt_id}/cards")
-def save_card(pt_id: str, body: CardDraft, user_id: str = Query(default="")):
+def save_card(pt_id: str, body: CardDraft, request: Request, user_id: str = Query(default="")):
     pt = _own(pt_id, user_id)
     world = engine.world_for(pt)
     draft = {"player_id": body.player_id, "name": body.name, "concept": body.concept,
@@ -1106,7 +1106,13 @@ def save_card(pt_id: str, body: CardDraft, user_id: str = Query(default="")):
     if body.autofill:
         with budget.turn(f"card:{pt_id}", limit=1):
             draft = identity.autofill(world, draft, user_id=body.user_id, pt_id=pt_id)
-    card = identity.save(pt_id, draft, session_id=pt["session_id"], card_id=body.card_id)
+    # Stamped with the ACCOUNT when there is one, so the character joins the
+    # player's library instead of dying with this world. Read from the cookie,
+    # never from the query string - a client-supplied id here would let anyone
+    # file characters into somebody else's library. A guest's card still saves
+    # and still plays; it just has nowhere durable to live.
+    card = identity.save(pt_id, draft, session_id=pt["session_id"], card_id=body.card_id,
+                         account_id=_account_id_or_none(request) or "")
     return card
 
 
@@ -1719,6 +1725,54 @@ class CardIdentity(BaseModel):
     on_death: str = ""
 
 
+@app.get("/api/cards")
+def my_cards(request: Request):
+    """Every character on this account. The library that makes a card worth
+    writing: build somebody once, bring them into anything."""
+    account_id = _require_account(request)
+    return {"cards": identity.roster(account_id)}
+
+
+class Adopt(BaseModel):
+    playthrough_id: str = Field(min_length=4, max_length=64)
+    player_id: str = Field(default=memory.SOLO, max_length=64)
+
+
+@app.post("/api/cards/{card_id}/adopt")
+def adopt_card(card_id: str, body: Adopt, request: Request):
+    """Bring an existing character into a world. Copied, not moved - the same
+    person can be in two stories at once and what happens in one must not
+    rewrite the other."""
+    account_id = _require_account(request)
+    card = identity.get(card_id)
+    if not card or card.get("account_id") != account_id:
+        raise HTTPException(404, "no such character")
+    pt = db.row("SELECT session_id FROM playthroughs WHERE id=?", (body.playthrough_id,))
+    if not pt:
+        raise HTTPException(404, "no such story")
+    try:
+        return identity.adopt(card_id, body.playthrough_id, player_id=body.player_id,
+                              session_id=pt["session_id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/cards/{card_id}")
+def forget_card(card_id: str, request: Request):
+    """Take a character out of the library.
+
+    Unlinked, not destroyed. The card may still be standing in a world someone
+    is playing, and deleting the row would tear a person out of a story that
+    already happened. The library is a shortcut, so removing something from it
+    should only ever remove the shortcut."""
+    account_id = _require_account(request)
+    card = identity.get(card_id)
+    if not card or card.get("account_id") != account_id:
+        raise HTTPException(404, "no such character")
+    db.run("UPDATE cards SET account_id='' WHERE id=?", (card_id,))
+    return {"ok": True}
+
+
 @app.post("/api/cards/{card_id}/identity")
 def card_identity(card_id: str, body: CardIdentity):
     row = db.row("SELECT * FROM cards WHERE id=?", (card_id,))
@@ -1995,7 +2049,11 @@ def profile_get(request: Request):
         "mana": _account_mana(account_id),
         "runs": runs.history(account_id, 10),
         "streak": streaks.status(account_id),
-        "cards": db.rows("SELECT id,name,concept,avatar_url FROM cards WHERE player_id=?"
+        # Read by ACCOUNT. This counted `WHERE player_id = <account id>`, and
+        # identity.save stores whatever player_id the caller passed - "user"
+        # for every solo player - so the number was always zero for anyone
+        # who had ever played alone.
+        "cards": db.rows("SELECT id,name,concept,avatar_url FROM cards WHERE account_id=?"
                          " ORDER BY updated_at DESC LIMIT 20", (account_id,)),
         "towns": authority.town_memory(account_id),
         "sessions": auth.sessions_for(account_id),
@@ -2857,5 +2915,19 @@ def static_files(path: str):
         raise HTTPException(404, "no such endpoint")
     target = (FRONTEND / path).resolve()
     if target.is_file() and str(target).startswith(str(FRONTEND.resolve())):
-        return FileResponse(target)
+        # The rebuilt panels under /app are ES modules, and a module's static
+        # imports are resolved by the BROWSER relative to the importing file -
+        # so the ?v= hash trick that protects /assets cannot reach them. Left
+        # to the browser's heuristic cache, a deploy can leave forge.js new and
+        # viewport.js months old, which is the same stale-asset failure the
+        # hashes exist to prevent, only harder to see. `no-cache` means
+        # revalidate, not "do not cache": the ETag below turns almost every one
+        # of these into an empty 304.
+        headers = ({"Cache-Control": "no-cache"}
+                   if target.suffix in (".js", ".css", ".mjs") else None)
+        return FileResponse(target, headers=headers)
+    # A module import that 404s would otherwise be answered with index.html,
+    # and the browser reports a MIME error instead of a missing file.
+    if "." in path.rsplit("/", 1)[-1]:
+        raise HTTPException(404, "no such file")
     return FileResponse(FRONTEND / "index.html")

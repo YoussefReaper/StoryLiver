@@ -88,14 +88,22 @@ function bind(svg, view) {
   let originY = 0;
 
   svg.addEventListener('pointerdown', (e) => {
+    // Primary button, primary pointer. Without this a right-click starts a pan
+    // that the context menu then covers, and the second finger of a pinch
+    // yanks the map sideways.
+    if (e.button !== 0 || e.isPrimary === false) return;
     view.dragging = true;
     view.moved = false;
     startX = e.clientX;
     startY = e.clientY;
     originX = view.x;
     originY = view.y;
-    svg.setPointerCapture(e.pointerId);
     svg.style.cursor = 'grabbing';
+    // Capture is an optimisation - it keeps the drag alive when the cursor
+    // leaves the map. It throws NotFoundError when the pointer is already
+    // gone (a fast tap, a synthetic event), and an uncaught throw here would
+    // abandon the rest of the handler. The drag works without it.
+    try { svg.setPointerCapture(e.pointerId); } catch { /* pointer gone */ }
   });
 
   svg.addEventListener('pointermove', (e) => {

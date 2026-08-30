@@ -1284,10 +1284,34 @@ async function showSafety() {
     </div>`);
 }
 
+/* Every character on the account, cached for the session. Fetched once because
+   it is read by the card panel, the profile and the join flow, and none of
+   them should pay for it twice. */
+async function roster(force) {
+  if (!S.account) return [];
+  if (S.roster && !force) return S.roster;
+  try { S.roster = (await api('/cards')).cards || []; } catch { S.roster = []; }
+  return S.roster;
+}
+
+/** Bring somebody from the library into this world. */
+async function adoptCard(cardId) {
+  try {
+    await api(`/cards/${cardId}/adopt`, { method: 'POST',
+      body: { playthrough_id: S.ptId, player_id: S.playerId } });
+  } catch (e) { return toast(e.message, 'err'); }
+  await roster(true);
+  await showCard();
+  toast('They are here. Change anything you like — this world gets its own copy.');
+}
+
 async function showCard() {
   const cards = await api(`/playthroughs/${S.ptId}/cards`);
   const mine = (cards.cards || []).find((c) => c.player_id === S.playerId);
   const a = mine?.aspects || {};
+  // The library, shown only when it can actually save you the typing: signed
+  // in, somebody in it, and no character standing here yet.
+  const lib = mine ? [] : await roster();
   // Remembered so the identity panel can be opened straight from the menu
   // without making the player find their card again first.
   S.cardId = mine?.id || null;
@@ -1295,6 +1319,20 @@ async function showCard() {
   if (mine?.avatar_url) S.identityAvatar = mine.avatar_url;
   showModal(`${head('Your character card', 'Leave anything blank and roll it, or let the cheapest model fill it in.')}
     <div class="modal-body">
+      ${lib.length ? `<div class="lib">
+        <div class="lib-head">Someone you have already made</div>
+        <div class="lib-row">${lib.map((c) => `
+          <button class="lib-card" data-adopt="${esc(c.id)}">
+            <span class="lib-av">${c.avatar_url
+              ? `<img src="${esc(c.avatar_url)}" alt="" />`
+              : esc((c.name || '?')[0])}</span>
+            <span class="lib-n">${esc(c.name || 'unnamed')}</span>
+            <span class="lib-c">${esc(c.concept || '')}</span>
+          </button>`).join('')}</div>
+        <p class="fineprint">This world gets its own copy of them — what happens
+          here never rewrites the one in your library, or the one in any other
+          story they are standing in.</p>
+      </div>` : ''}
       <label class="big-field"><span>Name</span><input id="cdName" maxlength="40" value="${esc(mine?.name || '')}"></label>
       <label class="big-field"><span>Concept</span><input id="cdConcept" maxlength="120" value="${esc(mine?.concept || '')}" placeholder="a courier who stopped running"></label>
       <label class="big-field"><span>Voice</span><textarea id="cdVoice" rows="2" placeholder="How you speak.">${esc(a.voice || '')}</textarea></label>
@@ -2341,6 +2379,15 @@ async function onGlobalClick(e) {
     closeOverlays(); return toast('Saved. Lines outrank everything, including canon.');
   }
   if (t.closest('[data-xcard]')) { closeOverlays(); return doXCard(); }
+  const adopt = t.closest('[data-adopt]');
+  if (adopt) return adoptCard(adopt.dataset.adopt);
+  const forget = t.closest('[data-forget-card]');
+  if (forget) {
+    try { await api(`/cards/${forget.dataset.forgetCard}`, { method: 'DELETE' }); }
+    catch (e) { return toast(e.message, 'err'); }
+    await roster(true); await showProfile();
+    return toast('Out of your library. Any story they are already in keeps them.');
+  }
   if (t.closest('[data-card-roll]')) {
     const r = await api(`/playthroughs/${S.ptId}/card-roll?player=${encodeURIComponent(S.playerId)}`
       + `&name=${encodeURIComponent($('#cdName').value)}`);
@@ -5157,6 +5204,22 @@ async function showProfile() {
         <div class="run-stat"><b>${p.streak?.current ?? 0}</b><small>day streak</small></div>
         <div class="run-stat"><b>${p.cards.length}</b><small>characters</small></div>
       </div>
+
+      ${p.cards?.length ? `<div class="pf-towns">
+        <div class="pf-head">Your characters</div>
+        <div class="lib-row">${p.cards.map((c) => `
+          <div class="lib-card static">
+            <span class="lib-av">${c.avatar_url
+              ? `<img src="${esc(c.avatar_url)}" alt="" />`
+              : esc((c.name || '?')[0])}</span>
+            <span class="lib-n">${esc(c.name || 'unnamed')}</span>
+            <span class="lib-c">${esc(c.concept || '')}</span>
+            <button class="lib-x" data-forget-card="${esc(c.id)}"
+              title="Take out of your library">&times;</button>
+          </div>`).join('')}</div>
+        <p class="fineprint">Any of these can be dropped straight into a new world
+          from the character panel.</p>
+      </div>` : ''}
 
       ${p.runs?.length ? `<div class="pf-towns">
         <div class="pf-head">Your runs</div>

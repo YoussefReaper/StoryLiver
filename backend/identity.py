@@ -123,7 +123,48 @@ def autofill(world, draft, *, user_id, pt_id=None):
 # Storage + the approval gate
 # ---------------------------------------------------------------------------
 
-def save(pt_id, draft, *, session_id="", card_id=None):
+def roster(account_id, limit=40) -> list:
+    """Every character this account has made, newest use first.
+
+    The library that makes a card worth writing: build somebody once and bring
+    them into anything. Keyed on the ACCOUNT, because the alternative - keying
+    on player_id - is the string "user" for every solo player alive."""
+    if not account_id:
+        return []
+    rows = db.rows(
+        "SELECT id,name,concept,aspects,anomaly,identity,avatar_url,on_death,"
+        "last_used,updated_at FROM cards WHERE account_id=?"
+        " ORDER BY CASE WHEN last_used='' THEN updated_at ELSE last_used END DESC"
+        " LIMIT ?", (account_id, limit))
+    return [{**r, "aspects": db.jload(r["aspects"], {}) or {},
+             "identity": db.jload(r["identity"], {}) or {}} for r in rows]
+
+
+def adopt(card_id, pt_id, *, player_id, session_id="") -> dict:
+    """Bring an existing character into this world.
+
+    Copied rather than moved: the same person can be in two stories at once,
+    and what happens to them in one must not rewrite the other. The library
+    entry is the ORIGINAL, and this is them arriving somewhere."""
+    src = get(card_id)
+    if not src:
+        raise ValueError("no such character")
+    now = db.now()
+    new_id = _cid()
+    db.run(
+        # The copy gets NO account_id: the library entry is the original, and a
+        # character brought into four worlds must still be one line in the
+        # library rather than four.
+        "INSERT INTO cards (id,playthrough_id,session_id,player_id,account_id,name,"
+        "concept,aspects,anomaly,identity,avatar_url,on_death,status,approvals,"
+        "created_at,updated_at) SELECT ?,?,?,?,'',name,concept,aspects,"
+        "anomaly,identity,avatar_url,on_death,'draft','{}',?,? FROM cards WHERE id=?",
+        (new_id, pt_id, session_id, player_id, now, now, card_id))
+    db.run("UPDATE cards SET last_used=? WHERE id=?", (now, card_id))
+    return get(new_id)
+
+
+def save(pt_id, draft, *, session_id="", card_id=None, account_id=""):
     now = db.now()
     aspects = json.dumps(draft.get("aspects") or {})
     if card_id:
@@ -131,13 +172,21 @@ def save(pt_id, draft, *, session_id="", card_id=None):
                " WHERE id=? AND playthrough_id=?",
                (draft.get("name", "")[:60], draft.get("concept", "")[:160], aspects,
                 (draft.get("anomaly") or "")[:300], now, card_id, pt_id))
+        # Claimed on first edit after signing in. Playing as a guest and making
+        # an account afterwards is the ordinary path, and the character you
+        # made an hour ago should not be the one thing that stays behind.
+        if account_id:
+            db.run("UPDATE cards SET account_id=? WHERE id=? AND account_id=''",
+                   (account_id, card_id))
         return get(card_id)
     card_id = _cid()
     db.run(
-        "INSERT INTO cards (id,playthrough_id,session_id,player_id,name,concept,aspects,anomaly,"
-        "status,approvals,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'draft','{}',?,?)",
-        (card_id, pt_id, session_id, draft.get("player_id", ""), draft.get("name", "")[:60],
-         draft.get("concept", "")[:160], aspects, (draft.get("anomaly") or "")[:300], now, now))
+        "INSERT INTO cards (id,playthrough_id,session_id,player_id,account_id,name,concept,"
+        "aspects,anomaly,status,approvals,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,'draft','{}',?,?)",
+        (card_id, pt_id, session_id, draft.get("player_id", ""), account_id,
+         draft.get("name", "")[:60], draft.get("concept", "")[:160], aspects,
+         (draft.get("anomaly") or "")[:300], now, now))
     return get(card_id)
 
 

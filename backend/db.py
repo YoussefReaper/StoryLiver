@@ -916,6 +916,12 @@ MIGRATIONS = [
     # The seed this world was BUILT from, not just the one the session was
     # allocated. Without it a Daily could not be verified after the fact.
     ("playthroughs", "seed", "INTEGER NOT NULL DEFAULT 0"),
+    # Who a character card actually belongs to. It was keyed to a playthrough,
+    # so a card died with the world it was made in - and the profile counted
+    # cards by player_id, which is the literal string "user" for every solo
+    # player on every device.
+    ("cards", "account_id", "TEXT NOT NULL DEFAULT ''"),
+    ("cards", "last_used", "TEXT NOT NULL DEFAULT ''"),
     # The other half of the arc. cause_node records the act that turned
     # somebody AGAINST you; nothing recorded the act that made somebody
     # yours, so a loyal ally had no receipt while a villain had one.
