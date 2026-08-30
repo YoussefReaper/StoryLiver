@@ -36,6 +36,7 @@ ready(() => {
 
   forge.init({
     apiFn: b.api,
+    userId: b.userId,
     onWorldBuilt: (world) => b.onWorldBuilt(world),
   });
 

@@ -44,7 +44,16 @@ async function api(path, opts = {}) {
   });
   if (!res.ok) {
     let detail = `${res.status}`;
-    try { detail = (await res.json()).detail || detail; } catch { /* non-JSON */ }
+    try {
+      const d = (await res.json()).detail;
+      // FastAPI returns a LIST of field errors for a 422, and String(list of
+      // objects) is "[object Object]" - which is what every validation
+      // failure in this app has reported to the console since it was written.
+      detail = Array.isArray(d)
+        ? d.map((e) => `${(e.loc || []).slice(1).join('.') || 'request'}: ${e.msg}`)
+          .join('; ')
+        : (d || detail);
+    } catch { /* non-JSON */ }
     throw new Error(detail);
   }
   return res.json();
@@ -2124,6 +2133,11 @@ function showRules() {
    are handed over explicitly rather than reached for. */
 window.__appBridge = {
   api: (path, opts) => api(path, opts),
+  // The rebuilt panels need this in a BODY, not only on the query string.
+  // api() appends user_id as a query param, and FastAPI reads a Pydantic
+  // model from the body alone - so a POST that the endpoint declares
+  // `user_id` on was rejected 422 with nothing filled in.
+  userId: () => S.userId,
   esc: (s) => esc(s),
   toast: (m, k) => toast(m, k),
   closeOverlays: () => closeOverlays(),
