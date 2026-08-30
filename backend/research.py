@@ -610,6 +610,246 @@ def describe(host: str, titles: list, budget: _Budget) -> dict:
 # The dossier
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Premise parsing - a player writes a sentence, not a title
+# ---------------------------------------------------------------------------
+# The identifier was built on one assumption: `setting` is the NAME OF ONE
+# WORK. Real players do not type "The Last of Us". They type
+#
+#     "I and Charlie from Hazbin Hotel are inside the world of The Last of Us"
+#
+# which names two real properties and a character, and describes a crossover.
+# Against that sentence the confidence gate needed 60% of thirteen tokens to
+# appear in an article title, which no title on earth does - so a wholly canon
+# premise came back "Nothing found for that name."
+#
+# So a premise is PARSED rather than searched. The parts are pulled out
+# deterministically, each is researched on its own, and what comes back is a
+# host world plus the characters the player wants carried into it.
+
+# A proper-noun run. Connectives are allowed INSIDE a name ("Attack on Titan",
+# "The Lord of the Rings") but only when a capitalised word follows them, so
+# "Jujutsu Kaisen in the world of..." stops at Kaisen rather than swallowing
+# the rest of the sentence. Smart quotes are normalised on the way in, so the
+# character class stays plain ASCII and readable.
+_CONNECTIVE = r"(?:of|the|and|in|on|at|to|de|von|van|no|le|la|du)"
+_PROPER = (r"((?:The\s+)?[A-Z][\w'\-]*"
+           r"(?:\s+(?:" + _CONNECTIVE + r"\s+)*[A-Z0-9][\w'\-]*)*)")
+_HOST_PATTERNS = (
+    rf"(?:world|universe|setting|reality|timeline|continuity)\s+of\s+{_PROPER}",
+    rf"(?:inside|within|into|in)\s+(?:the\s+)?(?:world\s+of\s+)?{_PROPER}",
+    rf"set\s+in\s+{_PROPER}",
+)
+
+# "X from Y" - a character carried in from somewhere else.
+_IMPORT_PATTERN = rf"{_PROPER}\s+from\s+{_PROPER}"
+
+# Words that begin a sentence and are capitalised for that reason alone.
+_NOT_PROPER = {
+    "i", "we", "my", "me", "you", "the", "a", "an", "and", "but", "so", "then",
+    "it", "its", "this", "that", "there", "here", "what", "when", "where", "who",
+    "how", "why", "am", "is", "are", "was", "were", "be", "being", "been",
+    "have", "has", "had", "do", "does", "did", "can", "could", "would", "will",
+    "let", "make", "makes", "want", "wants", "play", "playing", "story", "world",
+    "universe", "setting", "character", "characters", "everyone", "someone",
+}
+
+
+# Only these are stripped from the FRONT of a captured name. Articles are
+# deliberately absent: "The Last of Us" and "The Lord of the Rings" carry their
+# article as part of the title, while "I and Charlie" is a pronoun and a
+# conjunction that a regex cannot tell from a name.
+_LEAD_STRIP = {
+    "i", "we", "my", "me", "you", "and", "but", "so", "then", "it", "its",
+    "this", "that", "am", "is", "are", "was", "were", "let", "play", "playing",
+    "want", "wants", "as",
+}
+
+
+def looks_like_premise(text: str) -> bool:
+    """A sentence, or a title?
+
+    A title is short and has no verb. Anything with a first-person pronoun, a
+    linking verb, or more than about six words is somebody describing what they
+    want rather than naming a work - and describing is the case the old path
+    could not represent at all."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    words = t.split()
+    if len(words) > 6:
+        return True
+    low = " " + t.lower() + " "
+    return any(m in low for m in (" i ", " we ", " my ", " me ", " am ", " are ",
+                                  " is ", " from ", " inside ", " within ",
+                                  " world of ", " universe of ", " set in "))
+
+
+def _clean_entity(raw: str) -> str:
+    name = re.sub(r"\s+", " ", (raw or "").strip(" .,!?;:\"'"))
+    # Trailing connective words the pattern may have swept up.
+    name = re.sub(r"\s+(?:are|is|am|was|were|and|but|who|which|that)$", "", name,
+                  flags=re.I)
+    # "I and Charlie" is one capitalised run to a regex and two words to a
+    # person. Strip leading words that are capitalised only because they opened
+    # the sentence, until something that reads like a name is in front.
+    parts = name.split()
+    while parts and parts[0].lower() in _LEAD_STRIP:
+        parts.pop(0)
+    name = " ".join(parts)
+    if not name or name.lower() in _NOT_PROPER or len(name) < 3:
+        return ""
+    return name
+
+
+def parse_premise(text: str) -> dict:
+    """Pull the named properties out of what the player actually wrote.
+
+    Deterministic and $0 - no model call. Returns the host world, the
+    characters being carried in and where they are from, and every proper name
+    found, so the builder can be told about all of them even when a lookup
+    finds nothing."""
+    raw = (text or "").strip().replace("\u2019", "'").replace("\u2018", "'")
+    out = {"raw": raw, "is_premise": looks_like_premise(raw),
+           "host": "", "imports": [], "entities": [],
+           # Did we EXTRACT a proper name, or merely echo the input back?
+           # "a frozen post-collapse Earth" is a host string and not evidence
+           # of anybody's property; treating the two the same made every
+           # original setting look like canon and quietly forced it private.
+           "host_is_proper": False}
+    if not raw:
+        return out
+    if not out["is_premise"]:
+        # A bare title is its own host and needs no parsing. Whether it is a
+        # real property is research's question, not the parser's.
+        out["host"] = raw
+        out["entities"] = [raw]
+        return out
+
+    seen = []
+
+    def remember(name):
+        name = _clean_entity(name)
+        if name and _norm(name) not in {_norm(x) for x in seen}:
+            seen.append(name)
+        return name
+
+    for who, where in re.findall(_IMPORT_PATTERN, raw):
+        character, source = remember(who), remember(where)
+        if character and source:
+            out["imports"].append({"character": character, "from": source})
+
+    for pattern in _HOST_PATTERNS:
+        m = re.search(pattern, raw)
+        if m:
+            host = remember(m.group(1))
+            if host and host not in [i["from"] for i in out["imports"]]:
+                out["host"] = host
+                out["host_is_proper"] = True
+                break
+
+    # Everything else that reads as a proper name, so nothing the player typed
+    # is silently dropped.
+    for m in re.finditer(_PROPER, raw):
+        remember(m.group(1))
+
+    out["entities"] = seen
+    if not out["host"] and seen:
+        # No "world of X" phrasing. The last named property is the likeliest
+        # host - "Charlie from Hazbin Hotel, The Last of Us" reads that way -
+        # and being wrong here costs an ordering, not a lookup.
+        tail = [e for e in seen if e not in [i["character"] for i in out["imports"]]]
+        out["host"] = tail[-1] if tail else seen[-1]
+        out["host_is_proper"] = True
+    return out
+
+
+def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") -> dict:
+    """Research every property named in a premise, not just the whole string.
+
+    The result always carries the parse, so the world builder knows what the
+    player asked for EVEN WHEN NOTHING IS FOUND. That is the important half:
+    research is an enhancement, and a failed lookup must never turn a canon
+    crossover into "build something original"."""
+    parsed = parse_premise(text)
+    out = {**_empty(text, ""), "premise": parsed, "entities": {}}
+
+    if not parsed["entities"]:
+        out["note"] = "no named properties in that"
+        return out
+
+    # Bounded: a premise naming six franchises would otherwise be six full
+    # research passes and a minute of latency.
+    lookups = []
+    if parsed["host"]:
+        lookups.append(parsed["host"])
+    for imp in parsed["imports"]:
+        for name in (imp["from"], imp["character"]):
+            if name not in lookups:
+                lookups.append(name)
+    for name in parsed["entities"]:
+        if name not in lookups:
+            lookups.append(name)
+
+    host_d = None
+    for name in lookups[:4]:
+        d = dossier(name, refresh=refresh, depth=depth)
+        out["entities"][name] = d
+        if d.get("found"):
+            out["sources"].extend(d.get("sources") or [])
+            if host_d is None and name == parsed["host"]:
+                host_d = d
+
+    # The host's own dossier is promoted to the top level so every existing
+    # caller (grounding, attribution, Session Zero) keeps working unchanged.
+    if host_d is None:
+        host_d = next((d for d in out["entities"].values() if d.get("found")), None)
+    if host_d:
+        for key in ("canonical_name", "summary", "wiki", "characters", "places",
+                    "factions", "powers", "arcs"):
+            out[key] = host_d.get(key) or out.get(key)
+    out["found"] = any(d.get("found") for d in out["entities"].values())
+    out["note"] = "" if out["found"] else "nothing found for any of those names"
+    return out
+
+
+def premise_brief(d: dict) -> str:
+    """What the world architect is told about a crossover.
+
+    Written so that a lookup MISS still produces a usable instruction: the
+    model already knows most fiction, and the old path threw that away by
+    telling it to build something original the moment research came back
+    empty."""
+    parsed = d.get("premise") or {}
+    if not parsed.get("raw"):
+        return ""
+    lines = [f"WHAT THE PLAYER ASKED FOR, IN THEIR WORDS:\n  {parsed['raw']}"]
+
+    if parsed.get("host"):
+        lines.append(
+            f"HOST WORLD: {parsed['host']}. This is where the story happens - its "
+            f"places, its rules, its dangers.")
+    for imp in parsed.get("imports") or []:
+        lines.append(
+            f"CARRIED IN: {imp['character']}, from {imp['from']}. They are HERE now, "
+            f"in the host world, as themselves - the same voice, the same values, "
+            f"the same limits. Do not rewrite them into a local character and do "
+            f"not explain how they arrived.")
+
+    unfound = [name for name, ent in (d.get("entities") or {}).items()
+               if not ent.get("found")]
+    if unfound:
+        # The whole point of the rewrite. A name we could not look up is still
+        # a name the model very likely knows.
+        lines.append(
+            "NOT FOUND IN RESEARCH, BUT NAMED BY THE PLAYER: "
+            + ", ".join(unfound)
+            + ". Use everything you already know about them. If you genuinely do "
+              "not know one, build it faithfully from what the player wrote "
+              "rather than replacing it with something of your own.")
+    return "\n\n".join(lines)
+
+
 def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict:
     """Everything we could learn about a named setting, cached.
 

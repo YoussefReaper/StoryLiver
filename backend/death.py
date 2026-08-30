@@ -69,10 +69,24 @@ class NotOffered(ValueError):
     pass
 
 
+def _world_get(world, key, default=None):
+    """Read a world field whether it arrives as a World or a plain dict."""
+    if world is None:
+        return default
+    getter = getattr(world, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(world, key, default)
+
+
 def offered(pt_id: str, *, world=None) -> list:
     """Which resolutions this world will actually allow, in offer order."""
     permadeath = modes.permadeath_on(pt_id)
-    has_revival = bool(world and getattr(world, "revival_rule", None))
+    # World stores everything in .data behind __slots__, so getattr() for a
+    # data key always returned the default - which meant a world declaring a
+    # revival rule could never actually offer `revive`. Read it the way every
+    # other world field is read.
+    has_revival = bool(world is not None and _world_get(world, "revival_rule"))
     out = []
     for rid, spec in RESOLUTIONS.items():
         if spec.get("hardcore_only") and not permadeath:
@@ -194,7 +208,7 @@ def resolve(pt_id, *, choice, who, session_id="", player_id="", world=None) -> d
     note = ""
 
     if choice == "revive":
-        rule = getattr(world, "revival_rule", None) or {}
+        rule = _world_get(world, "revival_rule") or {}
         note = rule.get("cost", "The price was paid.")
         memory.add_event(pt_id, turn, who, f"{who} is brought back",
                          f"{note} They return diminished.", kind="revival", importance=5)

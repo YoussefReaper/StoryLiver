@@ -107,7 +107,13 @@ DISTRICT_FILL_SYSTEM = """You are a world architect for a turn-based text RPG en
 
 You are given ONE district of a larger world, and the other districts around it. Populate THIS district only.
 
-Characters must be people, not archetypes. Each one needs a VOICE another writer could imitate, hard CONSTRAINTS that limit what they can do, WANTS that conflict with someone else's, and TABOOS they will not cross. At least one pair here must want incompatible things.
+Characters must be people, not archetypes. Each one needs a VOICE another writer could imitate, hard CONSTRAINTS that limit what they can do, WANTS that conflict with someone else's, and TABOOS they will not cross.
+
+Give every character the FULL card. MANNERISMS are physical and repeatable. SECRETS are things they act on and never say aloud. FAMOUS_LINES are keyed to a MOMENT and withheld until it arrives, so key them to moments this world will actually reach. POWER_PROFILE states the ceiling as well as the ability: "can read a room, cannot read a written word" is useful; "very skilled" is not.
+
+FACTIONS are the institutions with a grip on this place. `law` is 0 for a social group and 3-5 for anyone who can detain, fine or execute - at least one faction must have law 3 or more, with named OFFICERS whose schedules put them somewhere specific, because that is who a player meets after breaking a rule. Every member and officer id must be a character you defined.
+
+NPC_EDGES are how the characters feel about EACH OTHER, not about the player. Give at least six. Values are -100..100 for affinity and trust, 0..100 for fear and obligation. Two people who cannot stand each other, in the same room, is where a scene comes from. At least one pair here must want incompatible things.
 
 Return ONLY JSON:
 {
@@ -116,10 +122,25 @@ Return ONLY JSON:
             "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
                        "constraints":["hard limit","hard limit"],
                        "goals":["what they want","what they want"],
-                       "taboos":["what they never do","what they never do"]},
+                       "taboos":["what they never do","what they never do"],
+                       "mannerisms":["a physical tell","another"],
+                       "values":["what they will not trade away"],
+                       "flaws":["what costs them"],
+                       "secrets":["something they know and will not say"],
+                       "catchphrases":["a line they actually use"],
+                       "famous_lines":[{"beat":"threat|grief|resolve|farewell|greeting|mercy|betrayal|victory|defeat","line":"what they say when that moment comes"}],
+                       "power_profile":"what they can actually do, and its ceiling"},
             "schedule":{"morning":"place_id","midday":"place_id","evening":"place_id","night":"place_id"},
             "seed_memories":["something they already know, first person","another"],
-            "initial_relationship":{"affinity":-30..30,"trust":-30..30,"fear":0..30,"obligation":0..30}}]
+            "initial_relationship":{"affinity":-30..30,"trust":-30..30,"fear":0..30,"obligation":0..30}}],
+
+  "factions": [{"id":"snake_case","name":"The Name","seat":"place_id",
+                "law":0,
+                "members":["npc_id","npc_id"],
+                "officers":[{"id":"npc_id","rank":"what they are called",
+                             "schedule":{"morning":"place_id","evening":"place_id"}}]}],
+
+  "npc_edges": [["npc_id_who_feels","npc_id_they_feel_about",[affinity,trust,fear,obligation]]]
 }
 
 Every id you invent must be unique across the WHOLE world, so prefix them with the district id. Every connects[] and start_location id must be one you defined here, except a single threshold location that may connect to a neighbouring district."""
@@ -143,10 +164,25 @@ Return ONLY JSON:
             "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
                        "constraints":["hard limit","hard limit"],
                        "goals":["what they want","what they want"],
-                       "taboos":["what they never do","what they never do"]},
+                       "taboos":["what they never do","what they never do"],
+                       "mannerisms":["a physical tell","another"],
+                       "values":["what they will not trade away"],
+                       "flaws":["what costs them"],
+                       "secrets":["something they know and will not say"],
+                       "catchphrases":["a line they actually use"],
+                       "famous_lines":[{"beat":"threat|grief|resolve|farewell|greeting|mercy|betrayal|victory|defeat","line":"what they say when that moment comes"}],
+                       "power_profile":"what they can actually do, and its ceiling"},
             "schedule":{"morning":"place_id","midday":"place_id","evening":"place_id","night":"place_id"},
             "seed_memories":["something they already know, first person","another"],
-            "initial_relationship":{"affinity":-30..30,"trust":-30..30,"fear":0..30,"obligation":0..30}}]
+            "initial_relationship":{"affinity":-30..30,"trust":-30..30,"fear":0..30,"obligation":0..30}}],
+
+  "factions": [{"id":"snake_case","name":"The Name","seat":"place_id",
+                "law":0,
+                "members":["npc_id","npc_id"],
+                "officers":[{"id":"npc_id","rank":"what they are called",
+                             "schedule":{"morning":"place_id","evening":"place_id"}}]}],
+
+  "npc_edges": [["npc_id_who_feels","npc_id_they_feel_about",[affinity,trust,fear,obligation]]]
 }
 
 Exactly 9-11 locations and 10-12 characters. Every connects[] id must exist. The map must be connected."""
@@ -159,6 +195,10 @@ LAWS are hard constraints the engine enforces before any prose is written. Good 
 
 FATE is the spine: seven events that WILL happen on their turn no matter what any character does. They escalate. The player can never prevent one - only be somewhere, with someone, when it lands. At least one fated event should kill a named character.
 
+REVIVAL_RULE is how this world answers death, if it answers at all. If nothing here brings anyone back, say so plainly in `cost`.
+
+ORGS are the groups already operating when the player arrives - a crew, a house, a company. Two or three. They give the player something to join, rival or infiltrate on turn one instead of an empty board.
+
 Return ONLY JSON:
 {
   "rules": [{"id":"R1_short_slug","text":"the law, one sentence, absolute",
@@ -168,7 +208,13 @@ Return ONLY JSON:
   "fated_events": [{"id":"F1_short_slug","turn":4,"title":"Short Title",
                     "desc":"one or two sentences, present tense","location":"place_id",
                     "kills":"npc_id or null"}],
-  "fate_note": "one line about what fate means here"
+  "fate_note": "one line about what fate means here",
+
+  "revival_rule": {"name":"what this world calls coming back","cost":"what it takes from you"},
+
+  "orgs": [{"id":"snake_case","name":"The Name","kind":"cell|house|company|order|crew",
+            "seat":"place_id","charter":"what it exists to do, one sentence",
+            "members":["npc_id"]}]
 }
 
 Exactly 9-11 rules and exactly 7 fated events, on turns roughly 4, 9, 15, 22, 30, 38, 45. `check` is optional per rule; include it on at least 5. `when` is optional and may use turn_lt, turn_gte, phase_in, location."""
@@ -206,9 +252,13 @@ def _strip_ip_name(name: str, setting: str) -> str:
     return name
 
 
-def _stub_structure(setting: str, personal: bool = False) -> dict:
+def _stub_structure(setting: str, personal: bool = False, seed: int = 0) -> dict:
     name = (neutral_name(setting) if personal
             else (setting or "The Hollow").strip().title()[:40])
+    # Seeded worlds shuffle who stands where. Same seed, same arrangement -
+    # which is what makes a Daily comparable between two players and what
+    # makes a PvP rematch a genuinely different map.
+    _rng = llm.rng("worldgen", setting, seed) if seed else None
     places = [
         ("landing", "The Landing", "threshold", "Where you came in, and the only way anyone leaves."),
         ("commons", "The Commons", "open", "A trampled square where the whole place can see the whole place."),
@@ -235,9 +285,69 @@ def _stub_structure(setting: str, personal: bool = False) -> dict:
         ("sword", "The Sword", "sells protection", "Easy, transactional, quotes prices for everything."),
         ("child", "The Runner", "a child who goes everywhere", "Breathless run-ons, asks three questions at once."),
     ]
+    # One card per role, so the offline world exercises the same persona path
+    # a live one does.
+    cards = {
+        "warden": (["Rests one hand flat on the ledger"], ["Order before mercy"],
+                   ["Cannot admit an error in front of anyone"],
+                   ["Knows the ledger has been altered"], ["That is not how this works."],
+                   [("threat", "You will not like what I am obliged to do next.")],
+                   "Can compel obedience here; cannot enforce anything past the road."),
+        "smith": (["Wipes hands that are already clean"], ["Work that holds"],
+                  ["Says the cruel thing first"], ["Knows the Works cannot be fixed"],
+                  ["It holds or it does not."],
+                  [("resolve", "Then we do it the hard way, and we do it now.")],
+                  "Can make or mend almost anything; cannot work fast."),
+        "priest": (["Speaks to the room, never to one person"], ["Nobody faces it alone"],
+                   ["Will not choose between two people"], ["Stopped believing some time ago"],
+                   ["We are all still here."],
+                   [("grief", "We will say their name until saying it stops hurting.")],
+                   "Can gather people; can promise nothing."),
+        "broker": (["Counts on fingers while talking"], ["A debt is a relationship"],
+                   ["Cannot let a debt go"], ["Holds paper on half the town"],
+                   ["Let us call it a favour."],
+                   [("betrayal", "You signed. I merely waited.")],
+                   "Owns obligations, not force."),
+        "host": (["Refills a glass to end a sentence"], ["Everyone gets one night"],
+                 ["Trades secrets too cheaply"], ["Hears everything and sells most of it"],
+                 ["Sit down. You look like news."],
+                 [("greeting", "Sit down. You look like news.")],
+                 "Knows who was where; can prove none of it."),
+        "digger": (["Long pause before the true sentence"], ["The Deep is owed respect"],
+                   ["Drinks before going down"], ["Has seen what is under the Deep"],
+                   ["It is warm down there. It should not be."],
+                   [("resolve", "I will go down. Somebody has to and it is not going to be you.")],
+                   "Knows the Deep; useless above ground."),
+        "physician": (["Speaks doses, not comfort"], ["Triage over feeling"],
+                      ["Too tired to be kind"], ["Is out of the medicine that matters"],
+                      ["Sit. Do not talk."],
+                      [("mercy", "I can make it not hurt. That is all I have left.")],
+                      "Can keep someone alive a while; cannot cure."),
+        "holdout": (["Repeats their own last three words"], ["This is my place"],
+                    ["Will not be moved by reason"], ["Knows the road is already cut"],
+                    ["I was here first. Here first."],
+                    [("farewell", "Go on then. Go on.")],
+                    "Immovable; that is the whole of it."),
+        "sword": (["Names a price before answering"], ["A contract is a contract"],
+                  ["Has no side"], ["Has already been paid by someone else"],
+                  ["That will cost you."],
+                  [("threat", "I am paid until dawn. After that, we will see.")],
+                  "Genuinely dangerous; entirely purchasable."),
+        "child": (["Asks three questions in a row"], ["Wants to be told the truth"],
+                  ["Repeats what should not be repeated"], ["Saw who went into the Deep"],
+                  ["But why though? But why?"],
+                  [("greeting", "You are new. What are you? What are you for?")],
+                  "Goes everywhere unnoticed; understands half of it."),
+    }
+    if _rng is not None:
+        order = list(range(len(places)))
+        _rng.shuffle(order)
+    else:
+        order = list(range(len(places)))
+
     npcs = []
     for i, (nid, nm, role, voice) in enumerate(roles):
-        home = places[i % len(places)][0]
+        home = places[order[i % len(order)]][0]
         npcs.append({
             "id": nid, "name": nm, "role": role, "start_location": home,
             "anchors": {"voice": voice,
@@ -245,7 +355,8 @@ def _stub_structure(setting: str, personal: bool = False) -> dict:
                                         "Is an ordinary mortal person."],
                         "goals": [f"Get through what is coming to {name}.",
                                   "Be believed once, before the end."],
-                        "taboos": ["Never admits fear aloud.", "Never begs."]},
+                        "taboos": ["Never admits fear aloud.", "Never begs."],
+                        **_stub_card(cards.get(nid))},
             "schedule": {"morning": home, "midday": "commons", "evening": "house_of_lamps", "night": home},
             "seed_memories": [f"I have been in {name} longer than anyone asks about.",
                               "Something under this place is waking up."],
@@ -262,6 +373,45 @@ def _stub_structure(setting: str, personal: bool = False) -> dict:
         "arrival": f"You arrive in {name} off the road, with nothing anyone here wants.",
         "default_protagonist": "a traveller nobody here has heard of",
         "locations": locations, "npcs": npcs,
+        # The institution with a grip on the place, with a named officer on a
+        # real patrol - which is what turns authority.py on.
+        "factions": [
+            {"id": "the_office", "name": "The High Office", "seat": "high_office",
+             "law": 4,
+             "members": ["warden", "broker", "sword"],
+             "officers": [{"id": "warden", "rank": "Warden",
+                           "schedule": {"morning": "high_office", "midday": "commons",
+                                        "evening": "commons", "night": "high_office"}},
+                          {"id": "sword", "rank": "hired blade",
+                           "schedule": {"evening": "house_of_lamps", "night": "the_road"}}]},
+            {"id": "the_quiet", "name": "The Quiet House", "seat": "quiet_house",
+             "law": 0, "members": ["priest", "physician", "holdout"], "officers": []},
+        ],
+        # People with opinions about each other. Without these the room is a
+        # set of characters who only ever face the player.
+        "npc_edges": [
+            ["smith", "warden", [-35, -30, 10, 0]],
+            ["warden", "smith", [-20, -25, 0, 5]],
+            ["broker", "host", [-25, -40, 0, 0]],
+            ["host", "broker", [-30, -45, 15, 20]],
+            ["priest", "warden", [15, -20, 0, 10]],
+            ["digger", "holdout", [30, 25, 0, 0]],
+            ["child", "host", [40, 35, 0, 0]],
+            ["physician", "sword", [-40, -35, 25, 0]],
+        ],
+    }
+
+
+def _stub_card(entry):
+    """The offline persona card, in the same shape the schema asks for."""
+    if not entry:
+        return {}
+    mannerisms, values, flaws, secrets, catchphrases, lines, power = entry
+    return {
+        "mannerisms": list(mannerisms), "values": list(values), "flaws": list(flaws),
+        "secrets": list(secrets), "catchphrases": list(catchphrases),
+        "famous_lines": [{"beat": b, "line": l} for b, l in lines],
+        "power_profile": power,
     }
 
 
@@ -307,6 +457,20 @@ def _stub_laws(structure: dict) -> dict:
              "desc": "What was under the ground is no longer under the ground.", "location": loc_ids[1]},
             {"id": "F7_after", "turn": 45, "title": "Dawn on the road",
              "desc": "Whoever walked out has walked out. Behind them, nothing.", "location": loc_ids[-1]},
+        ],
+        # This world does answer death, at a price - so death.py can actually
+        # offer the revive resolution instead of silently never having it.
+        "revival_rule": {"name": "The Deep gives back",
+                         "cost": "It keeps something of yours in exchange, and does not say what."},
+        # Somebody is already organised when the player walks in.
+        "orgs": [
+            {"id": "the_ledger", "name": "The Ledger", "kind": "company",
+             "seat": loc_ids[4], "charter": "Debts, held and called in.",
+             "members": [npc_ids[3]] if len(npc_ids) > 3 else []},
+            {"id": "the_dig_crew", "name": "The Dig Crew", "kind": "crew",
+             "seat": loc_ids[6] if len(loc_ids) > 6 else loc_ids[-1],
+             "charter": "Goes down so nobody else has to.",
+             "members": [npc_ids[5]] if len(npc_ids) > 5 else []},
         ],
     }
 
@@ -494,7 +658,7 @@ def _stub_fill(district: dict, spec: dict) -> dict:
 
 def bootstrap(setting: str, *, user_id: str, tone: str = "",
               mode: str = "auto", scale: str = "town",
-              answers: dict | None = None) -> dict:
+              answers: dict | None = None, seed: int = 0) -> dict:
     """Build a playable world from a named setting. Returns a world dict; the
     caller decides whether to save it."""
     setting = (setting or "").strip()
@@ -520,12 +684,27 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # plausible-sounding ones - the model cannot tell you which it is doing,
     # so we hand it the answer instead of hoping. Zero model calls, and it
     # degrades to the old ungrounded behaviour when there is no network.
+    # A premise is PARSED, not searched. "I and Charlie from Hazbin Hotel are
+    # inside the world of The Last of Us" names two real properties and a
+    # character; searching that whole string found nothing, and the player was
+    # told "Nothing found for that name" about a wholly canon request.
     found = (_empty_dossier(setting) if mode == "original"
-             else research.dossier(setting))
+             else research.premise_dossier(setting))
     grounding = research.grounding_brief(found)
-    # The world is CANON if we actually found something to continue. An
-    # original world is not a failed canon world, it is the other mode.
-    canon = bool(found.get("found"))
+    premise = research.premise_brief(found)
+    parsed = found.get("premise") or {}
+
+    # CANON now means "the player named a property", not "a lookup succeeded".
+    # The old rule handed a failed lookup to the builder as an instruction to
+    # invent something original - which is how a crossover of two real IPs
+    # became a generic fantasy town. The model already knows most fiction; a
+    # miss should cost grounding, never the player's actual request.
+    # A property the player actually NAMED, as opposed to the raw string
+    # echoed back as a host. An original setting names nothing, so research
+    # and the keyword list remain the only signals for it - which is the
+    # behaviour that was there before and is still the right one.
+    named_properties = bool(parsed.get("imports") or parsed.get("host_is_proper"))
+    canon = bool(found.get("found")) or (mode != "original" and named_properties)
     # PRIVATE BY DEFAULT is not a judgement about the player - they own this
     # world, play it, and export it. It only means a world that continues
     # someone else's setting is not PUBLICLY LISTED on a shared service, which
@@ -535,11 +714,19 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # tells us a world is canon, and research cannot run offline. Without the
     # fallback, the same world would be private when built online and public
     # when built offline - and the offline answer is the unsafe one.
-    personal = canon or looks_like_ip(setting)
+    # A named property is treated as somebody else's IP whether or not the
+    # lookup worked. Before this, a real crossover that research missed could
+    # be marked PUBLICLY LISTABLE, because the only other signal was a keyword
+    # list that contains neither "the last of us" nor "hazbin hotel".
+    personal = canon or named_properties or looks_like_ip(setting)
 
     brief = f"SETTING: {setting}"
     if found.get("canonical_name") and found["canonical_name"].lower() != setting.lower():
         brief += f"\nCANONICAL TITLE: {found['canonical_name']}"
+    # What they asked for, in their words, ahead of anything we looked up - so
+    # a crossover survives even when every lookup misses.
+    if premise:
+        brief += "\n\n" + premise
     if tone:
         brief += f"\nTONE THE PLAYER ASKED FOR: {tone}"
     if personal:
@@ -552,6 +739,15 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
             "covers, with its own laws and its own fate.\n"
             "Do not copy sentences from the source material, and do not simply retell the "
             "story that already exists - the player wants to LIVE somewhere, not re-read it."
+        )
+    if parsed.get("imports"):
+        brief += (
+            "\n\nTHIS IS A CROSSOVER, AND THAT IS DELIBERATE. Build the HOST world "
+            "faithfully - its places, its dangers, its rules. Then place the carried-in "
+            "characters into it AS THEMSELVES. They keep their own voice, values and "
+            "limits; they do not become locals and they are not re-explained. How they "
+            "got here is not your problem and must not be narrated - they are simply "
+            "here, and the world reacts to them being here."
         )
 
     if grounding:
@@ -573,8 +769,8 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         structure = llm.complete(
             "narrator", STRUCTURE_SYSTEM,
             brief + "\n\nBuild the places and the people. JSON only.",
-            user_id=user_id, json_mode=True, max_tokens=3600, temperature=0.9,
-            stub=lambda: _stub_structure(setting, personal))
+            user_id=user_id, json_mode=True, max_tokens=5200, temperature=0.9,
+            stub=lambda: _stub_structure(setting, personal, seed=seed))
     else:
         plan, districts = _build_districts(brief, user_id=user_id, spec=spec,
                                            setting=setting, personal=personal)
@@ -593,11 +789,15 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     )
     laws = llm.complete(
         "narrator", LAW_SYSTEM, laws_brief, user_id=user_id, json_mode=True,
-        max_tokens=2400, temperature=0.7, stub=lambda: _stub_laws(structure))
+        max_tokens=3200, temperature=0.7, stub=lambda: _stub_laws(structure))
 
     raw = {**structure, **{k: v for k, v in laws.items() if v}}
     raw["origin"] = "bootstrap"
     raw["source_prompt"] = setting
+    # Recorded on the world so two worlds built from the same seed are
+    # provably the same build, and so a Daily can be verified after the fact.
+    if seed:
+        raw["seed"] = int(seed)
     # Attribution travels with the world: CC BY-SA asks for it, and a
     # player deserves to know which wiki their world was grounded on.
     raw["sources"] = research.attribution(found)

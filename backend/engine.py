@@ -87,7 +87,7 @@ def mode_setup(pt_id, world, mode_id, *, turn=0) -> dict:
 
 
 def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=None,
-                       session_id="", world_json=None, session_type=""):
+                       session_id="", world_json=None, session_type="", seed=0):
     world = world_registry.resolve(world_id, world_json)
     ensure_user(user_id)
     pt_id = uuid.uuid4().hex[:12]
@@ -97,11 +97,12 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     db.run(
         "INSERT INTO playthroughs (id,user_id,world_id,title,protagonist,current_turn,current_location,"
         "mana_balance,mana_used,tension,last_beat_turn,created_at,updated_at,session_id,world_json,"
-        "session_type) VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?,?)",
+        "session_type,seed) VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?,?,?)",
         (pt_id, user_id, world.id, title or world.name,
          protagonist or world.get("default_protagonist"), start,
          config.STARTING_MANA, db.now(), db.now(), session_id, pinned,
-         modetree.normalise(session_type or "") if not session_id else ""),
+         modetree.normalise(session_type or "") if not session_id else "",
+         int(seed or 0)),
     )
     memory.seed(pt_id, world)
     worldstate.seed(pt_id, world)

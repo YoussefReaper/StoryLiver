@@ -913,6 +913,9 @@ MIGRATIONS = [
     # A SOLO world has no session, so there was nowhere to record which of the
     # six solo modes it is - and every solo world silently played as Story.
     ("playthroughs", "session_type", "TEXT NOT NULL DEFAULT ''"),
+    # The seed this world was BUILT from, not just the one the session was
+    # allocated. Without it a Daily could not be verified after the fact.
+    ("playthroughs", "seed", "INTEGER NOT NULL DEFAULT 0"),
     # The other half of the arc. cause_node records the act that turned
     # somebody AGAINST you; nothing recorded the act that made somebody
     # yours, so a loyal ally had no receipt while a villain had one.

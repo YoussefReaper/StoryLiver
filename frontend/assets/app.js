@@ -1645,17 +1645,33 @@ async function peekResearch() {
     const r = await api(`/forge/research?setting=${encodeURIComponent(setting)}`);
     if ($('#bootSetting')?.value.trim() !== setting) return;   // the player moved on
     if (!r.enabled) { box.innerHTML = ''; return; }
+    // What we UNDERSTOOD, before what we could look up. A crossover that no
+    // wiki confirms is still a crossover, and telling the player "nothing
+    // found" about a request the model knows perfectly well reads as broken.
+    const p = r.premise || {};
+    const understood = (p.host || (p.imports || []).length) ? `
+      <div class="rp-read">
+        ${p.host ? `<div class="rp-line"><i>World</i><b>${esc(p.host)}</b></div>` : ''}
+        ${(p.imports || []).map((im) => `<div class="rp-line">
+          <i>Bringing in</i><b>${esc(im.character)}</b>
+          <span>from ${esc(im.from)}</span></div>`).join('')}
+      </div>` : '';
+
     if (!r.found) {
-      // Saying so is the point: an invented setting and a real one should not
-      // look identical right up until the world is built.
-      box.innerHTML = `<div class="rp rp-none"><b>Nothing found for that name.</b>
-        <span>It will be built from imagination — which is exactly right for an
-        original setting.</span></div>`;
+      box.innerHTML = `<div class="rp rp-none">
+        ${understood || '<b>An original setting.</b>'}
+        <span>${understood
+    ? 'No wiki confirmed these, so the build will lean on what the model already knows about them. Names you wrote are used as you wrote them.'
+    : 'It will be built from imagination — which is exactly right for an original setting.'}</span>
+      </div>`;
       return;
     }
     box.innerHTML = `<div class="rp rp-found">
       <b>Found it — ${esc(r.canonical_name || r.setting)}</b>
+      ${understood}
       <span>Your world will use the real names from this setting.</span>
+      ${(r.ungrounded || []).length ? `<span class="rp-partial">Not confirmed by a wiki:
+        ${r.ungrounded.map(esc).join(', ')} — built from what the model knows.</span>` : ''}
       ${r.characters.length ? `<div class="rp-tags">${r.characters.slice(0, 8)
         .map((c) => `<i>${esc(c)}</i>`).join('')}</div>` : ''}
       ${r.places.length ? `<div class="rp-tags rp-dim">${r.places.slice(0, 5)

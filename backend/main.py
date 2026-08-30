@@ -2042,9 +2042,25 @@ def forge_research(setting: str = Query(min_length=2, max_length=120),
     Exposed so a player can SEE what will ground their world - and so they can
     tell the difference between "we found the real canon" and "we are about to
     invent this", which is exactly the distinction an ungrounded build hides."""
-    d = research.dossier(setting, refresh=refresh, depth=depth)
+    # Parsed, not searched. A premise names properties; searching the sentence
+    # found nothing and told the player their canon request was unknown.
+    d = research.premise_dossier(setting, refresh=refresh, depth=depth)
+    parsed = d.get("premise") or {}
     return {
         "setting": d["setting"], "found": d["found"], "cached": d.get("cached", False),
+        # What we understood them to be asking for. Shown whether or not any
+        # lookup succeeded, because understanding the request and grounding it
+        # are two different things and the player should see both.
+        "premise": {
+            "is_premise": parsed.get("is_premise", False),
+            "host": parsed.get("host", ""),
+            "imports": parsed.get("imports", []),
+            "entities": parsed.get("entities", []),
+        },
+        "grounded": [name for name, ent in (d.get("entities") or {}).items()
+                     if ent.get("found")],
+        "ungrounded": [name for name, ent in (d.get("entities") or {}).items()
+                       if not ent.get("found")],
         "canonical_name": d["canonical_name"], "wiki": d["wiki"],
         "summary": d["summary"][:600],
         "characters": [c["name"] for c in d["characters"][:14]],
