@@ -241,6 +241,64 @@ def test_the_daily_is_genuinely_the_same_world():
        f"be verified after the fact rather than taken on trust")
 
 
+# ------------------------------------------------------------------- fate
+def test_the_fate_thread_does_not_spoil_itself():
+    section("fate - the panel was handing over the ending on turn one")
+    db.init()
+    pt = engine.create_playthrough("fate-spoil")
+    snap = engine.snapshot(pt)
+    ahead = [f for f in snap["fate"] if f["status"] != "passed"]
+    ok(len(ahead) == len(snap["fate"]),
+       "on turn 0 every fated event is still ahead")
+    ok(all(not f["title"] and not f["desc"] for f in ahead),
+       "and not one of them carries a title or a description - the panel sent "
+       "{**event} for all seven, so 'The Warden falls' was readable twenty-six "
+       "turns before it happened")
+    ok(all(not f.get("kills") for f in ahead),
+       "and `kills` never crosses the line at all - it names the character who "
+       "dies, and it was going out on turn one")
+    ok(all(f["id"].startswith("sealed_") for f in ahead),
+       "including the id, which is a slug like 'F5_the_warden_falls' and "
+       "carried the title it was supposed to hide")
+
+    blob = json.dumps(snap["fate"]).lower()
+    for word in ("warden", "falls", "kindling", "collapse"):
+        if word in blob:
+            ok(False, f"the word {word!r} reached the client")
+            return
+    ok(True, "no word from any unreached event is anywhere in the payload")
+
+    # The SAME leak lived on a second screen. narrgraph._futures printed the
+    # title and description of the next three fated events onto the Threads
+    # panel, so fixing the Fate card alone would have moved the spoiler
+    # rather than removed it.
+    from backend import narrgraph
+    world = engine.world_for(engine._pt(pt))
+    futures = narrgraph.view(pt, world, 0)["futures"]
+    ok(futures and all(f["label"] == "Something lands here" for f in futures),
+       f"the Threads panel marks the future without naming it "
+       f"({len(futures)} marks)")
+    ok(all(not f["detail"] and not f["place_id"] for f in futures),
+       "with no description and no place - a location is a spoiler of its own "
+       "when only one thing ever happens there")
+    graph_blob = json.dumps(narrgraph.view(pt, world, 0)).lower()
+    for word in ("warden", "falls", "kindling", "chapel"):
+        if word in graph_blob:
+            ok(False, f"the Threads panel leaked {word!r}")
+            return
+    ok(True, "and no word from an unreached event reaches that panel either")
+
+    db.run("UPDATE playthroughs SET current_turn=10 WHERE id=?", (pt,))
+    later = engine.snapshot(pt)["fate"]
+    passed = [f for f in later if f["status"] == "passed"]
+    ok(passed and all(f["title"] for f in passed),
+       f"what has ALREADY happened is named ({len(passed)} of them) - fate "
+       f"being fixed is the promise, and history is not a spoiler")
+    ok(any(f["status"] == "next" and not f["title"] for f in later),
+       "while the one about to land is a mark and a turn: you know something "
+       "is coming and when, which is the dread the panel was for")
+
+
 def _all():
     return (test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
@@ -248,7 +306,8 @@ def _all():
             test_a_crossover_is_private_even_when_research_misses,
             test_a_forged_world_matches_the_starter,
             test_the_dark_systems_actually_light_up,
-            test_the_daily_is_genuinely_the_same_world)
+            test_the_daily_is_genuinely_the_same_world,
+            test_the_fate_thread_does_not_spoil_itself)
 
 
 def main():

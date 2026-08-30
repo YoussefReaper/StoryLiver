@@ -377,10 +377,22 @@ function renderParty() {
 
 function renderFate() {
   const st = S.state; if (!st) return;
+  // What has happened is named. What is coming is a mark and a turn - the
+  // server does not send the title of an event you have not reached, so this
+  // cannot leak it even by accident.
+  const ahead = st.fate.filter((f) => f.status !== 'passed').length;
+  const count = $('#fateCount');
+  if (count) {
+    count.textContent = ahead ? `${ahead} still to come` : 'all of it, now';
+    count.title = 'Fate is fixed. What it is, you find out when it lands.';
+  }
   $('#fateList').innerHTML = st.fate.map((f) => `
     <li class="fate-item ${f.status}">
       <span class="ft">T${f.turn}${f.status === 'next' ? ' · next' : ''}</span>
-      <span class="fx">${esc(f.title)}</span>
+      <span class="fx">${f.title
+    ? esc(f.title)
+    : `<em class="fate-sealed">${f.status === 'next'
+      ? 'Something lands here.' : 'Sealed.'}</em>`}</span>
     </li>`).join('');
 }
 
@@ -426,6 +438,9 @@ function renderAtlas() {
   const a = S.atlas; const svg = $('#atlasMap');
   if (!a) { svg.innerHTML = ''; return; }
   const W = 1000, H = 1000, PAD = 90;
+  // Re-attached on every redraw with the same base extent, so the view the
+  // player had panned to survives the map growing under them.
+  if (window.__viewport) window.__viewport.attach(svg, [0, 0, W, H]);
   const px = (n) => PAD + n.x * (W - PAD * 2);
   const py = (n) => PAD + n.y * (H - PAD * 2);
   const byId = Object.fromEntries(a.nodes.map((n) => [n.id, n]));
@@ -506,8 +521,16 @@ function renderGraph() {
   });
   const futureBase = 40 + (nodes.length ? (nodes[nodes.length - 1].seq - startSeq + 1) : 0) * GAPX;
   const width = futureBase + (g.futures.length ? g.futures.length * GAPX : 0) + NW + 60;
-  svg.setAttribute('viewBox', `0 0 ${Math.max(width, 900)} 400`);
-  svg.style.minWidth = `${Math.max(width, 900)}px`;
+  const fullWidth = Math.max(width, 900);
+  // The old panel widened the viewBox as nodes accumulated and left the far
+  // end unreachable. It is a pannable canvas now, so it stays the size of the
+  // frame and the player moves around inside it.
+  if (window.__viewport) {
+    window.__viewport.attach(svg, [0, 0, fullWidth, 400]);
+  } else {
+    svg.setAttribute('viewBox', `0 0 ${fullWidth} 400`);
+    svg.style.minWidth = `${fullWidth}px`;
+  }
 
   const parts = [];
   for (const e of g.edges) {
@@ -2077,10 +2100,13 @@ function wire() {
     if (b) startWhisper('player', b.dataset.whisperPlayer, b.dataset.name);
   });
   $('#atlasMap').addEventListener('click', (e) => {
+    if (window.__viewport && window.__viewport.wasDrag(e.currentTarget)) return;
     const g = e.target.closest('[data-place]');
     if (g) { S.selectedPlace = g.dataset.place; renderAtlas(); }
   });
   $('#graphMap').addEventListener('click', (e) => {
+    // A pan that happens to start on a node would otherwise open that node.
+    if (window.__viewport && window.__viewport.wasDrag(e.currentTarget)) return;
     const g = e.target.closest('[data-gnode],[data-gfuture]');
     if (!g) return;
     const id = g.dataset.gnode ? Number(g.dataset.gnode) : g.dataset.gfuture;

@@ -58,9 +58,17 @@ def _futures(pt_id, world, turn, extra):
     out = []
     upcoming = [f for f in world.fated_events if f["turn"] > turn][:3]
     for i, f in enumerate(upcoming):
+        # A mark on the thread, never its content. This panel was printing the
+        # TITLE and DESCRIPTION of the next three fated events - the same leak
+        # the Fate panel had, on a different screen. "The Warden falls" is not
+        # something a player should be able to read twenty-six turns early,
+        # and the id is a slug that carries the title too.
         out.append({
-            "id": f"future_fate_{f['id']}", "turn": f["turn"], "kind": "fate",
-            "label": f["title"], "detail": f["desc"], "place_id": f.get("location", ""),
+            "id": f"future_fate_{f['turn']}", "turn": f["turn"], "kind": "fate",
+            "label": "Something lands here", "detail": "",
+            # The place is a spoiler of its own when only one thing happens
+            # there, so it does not travel either.
+            "place_id": "",
             "certainty": "sealed", "distance": f["turn"] - turn, "lane": i,
         })
     for item in extra or []:

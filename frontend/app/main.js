@@ -12,6 +12,7 @@
  */
 
 import * as forge from './forge.js';
+import * as viewport from './viewport.js';
 import { $ } from './dom.js';
 
 function bridge() {
@@ -37,6 +38,12 @@ ready(() => {
     apiFn: b.api,
     onWorldBuilt: (world) => b.onWorldBuilt(world),
   });
+
+  // Pan and zoom, handed to the old script because both maps still render
+  // there. Neither had any of it: the Atlas carried `cursor: grab` with no
+  // drag handler behind it, and Threads grew past its own frame with no way
+  // to reach the far end.
+  window.__viewport = viewport;
 
   // The forge opens into the existing modal chrome, so the shell, the scrim
   // and the close button keep behaving exactly as they do everywhere else.

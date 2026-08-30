@@ -689,6 +689,36 @@ def contest(pt_id, challenger, defender, *, session_id=""):
 
 # --------------------------------------------------------------------------
 
+def _fate_entry(f, turn, next_turn) -> dict:
+    """One line of the Fate Thread, redacted to what the player may know.
+
+    Fate being FIXED is the promise; fate being READABLE was never part of it.
+    A passed event is history and is named. Everything ahead is a mark on the
+    thread with a turn on it - you know something lands, and when, and that
+    you cannot stop it. You do not know what.
+
+    `kills` never crosses this line at any status: it names the character who
+    dies, and it was going out on turn one."""
+    status = ("passed" if f["turn"] <= turn
+              else ("next" if f["turn"] == next_turn else "sealed"))
+    # The id is a SLUG - "F5_the_warden_falls" - so it carries the title it was
+    # meant to hide. An unreached event gets a positional id instead, which is
+    # all a client needs to key a list row on.
+    entry = {"id": f["id"] if status == "passed" else f"sealed_{f['turn']}",
+             "turn": f["turn"], "status": status}
+    if status == "passed":
+        entry["title"] = f["title"]
+        entry["desc"] = f.get("desc", "")
+        entry["location"] = f.get("location", "")
+        return entry
+    # Ahead of the player. Deliberately no title, no description, no location -
+    # a place name is a spoiler too when only one thing happens there.
+    entry["title"] = ""
+    entry["desc"] = ""
+    entry["imminent"] = status == "next"
+    return entry
+
+
 def snapshot(pt_id, player=memory.SOLO):
     pt = _pt(pt_id)
     world = world_for(pt)
@@ -726,9 +756,7 @@ def snapshot(pt_id, player=memory.SOLO):
         })
 
     next_turn = min((x["turn"] for x in world.fated_events if x["turn"] > turn), default=-1)
-    fate = [{**f, "status": "passed" if f["turn"] <= turn
-             else ("next" if f["turn"] == next_turn else "sealed")}
-            for f in world.fated_events]
+    fate = [_fate_entry(f, turn, next_turn) for f in world.fated_events]
 
     scores = director.tension_score(pt, world, {"turn": turn, "present": present}, player)
     session = db.row("SELECT * FROM sessions WHERE playthrough_id=?", (pt_id,))

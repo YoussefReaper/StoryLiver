@@ -1015,6 +1015,12 @@ button { background: none; border: 0; cursor: pointer; }
 .view-chronicle, .view-power { flex-direction: column; }
 .view-room { flex-direction: column; }
 
+/* ------------------------------------------------------- the fate thread */
+.fate-count { margin-left: auto; font-size: 10.5px; color: var(--faint);
+              letter-spacing: .05em; text-transform: uppercase; }
+.fate-sealed { font-style: normal; color: var(--faint); }
+.fate-item.next .fate-sealed { color: var(--ember); }
+
 /* ------------------------------------- the word of somebody already voted out */
 .room-line.from-outside { opacity: .78; border-left: 2px solid var(--line);
                           padding-left: 9px; }
@@ -1293,7 +1299,15 @@ button { background: none; border: 0; cursor: pointer; }
 .echo.k-discovery { border-left-color: var(--verdigris); }
 
 /* --------------------------------------------------------- narrative graph */
-.graph-map { width: 100%; flex: 1; min-height: 0; display: block; }
+.graph-map { width: 100%; flex: 1; min-height: 0; display: block; cursor: grab;
+             touch-action: none; }
+.graph-map:active { cursor: grabbing; }
+.graph-map:focus-visible { outline: 1px solid var(--ember); outline-offset: -2px; }
+.graph-hint, .lg-hint {
+  position: absolute; right: 14px; bottom: 12px; font-size: 10.5px;
+  color: var(--faint); letter-spacing: .04em; pointer-events: none;
+}
+.lg-hint { position: static; margin-left: auto; }
 .g-edge { stroke: var(--line); stroke-width: 1.6; fill: none; }
 .g-edge.future { stroke-dasharray: 4 6; opacity: .5; stroke: var(--ember-deep); }
 .g-node { cursor: pointer; }

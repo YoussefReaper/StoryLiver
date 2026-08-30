@@ -162,7 +162,7 @@
       <section class="card fate-card">
         <div class="card-head">
           <h2>The Fate Thread</h2>
-          <span class="ar" dir="rtl" lang="ar">القدر</span>
+          <span class="fate-count" id="fateCount"></span>
         </div>
         <ol class="fate-list" id="fateList"></ol>
       </section>
@@ -215,6 +215,7 @@
             <span><i class="lg lg-rumour"></i>heard of</span>
             <span><i class="lg lg-hidden"></i>unknown</span>
             <span><i class="lg lg-ruined"></i>ruined</span>
+          <span class="lg-hint">drag to move &middot; scroll to zoom &middot; 0 to reset</span>
           </div>
         </div>
         <aside class="atlas-side">
@@ -225,7 +226,9 @@
 
       <!-- THREADS (narrative graph) -->
       <div class="view view-graph" data-pane="graph">
-        <svg class="graph-map" id="graphMap" preserveAspectRatio="xMinYMid meet"></svg>
+        <svg class="graph-map" id="graphMap" preserveAspectRatio="xMidYMid meet"
+             role="img" aria-label="The narrative graph. Drag to move, scroll to zoom."></svg>
+        <div class="graph-hint">drag to move &middot; scroll to zoom &middot; 0 to reset</div>
         <div class="graph-detail" id="graphDetail"></div>
       </div>
 
