@@ -523,7 +523,7 @@ def _build_districts(brief, *, user_id, spec, setting, personal):
     plan = llm.complete(
         "narrator", DISTRICT_SYSTEM,
         brief + f"\n\nLay out EXACTLY {spec['districts']} districts. JSON only.",
-        user_id=user_id, json_mode=True, max_tokens=2600, temperature=0.9,
+        user_id=user_id, json_mode=True, max_tokens=6000, temperature=1.0,
         stub=lambda: _stub_districts(setting, spec["districts"]))
     districts = [d for d in (plan.get("districts") or []) if d.get("id")]
     return plan, districts[:spec["districts"]]
@@ -543,7 +543,7 @@ def _fill_district(district, others, brief, *, user_id, spec, setting):
     )
     out = llm.complete(
         "narrator", DISTRICT_FILL_SYSTEM, ask, user_id=user_id, json_mode=True,
-        max_tokens=3600, temperature=0.9,
+        max_tokens=7000, temperature=1.0,
         stub=lambda: _stub_fill(district, spec))
     return out.get("locations") or [], out.get("npcs") or []
 
@@ -738,8 +738,8 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if personal:
         brief += (
             "\n\nThis continues an existing setting. This world is the PLAYER'S: it is "
-            "private to them, never listed publicly, and not affiliated with or endorsed "
-            "by any rights holder.\n"
+            "private to them and never listed on the public feed - they play it or invite "
+            "friends by room code.\n"
             "Use the setting's real characters, places and factions - that is the point. "
             "Build them an ORIGINAL situation inside that world: a corner the source never "
             "covers, with its own laws and its own fate.\n"
@@ -775,7 +775,7 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         structure = llm.complete(
             "narrator", STRUCTURE_SYSTEM,
             brief + "\n\nBuild the places and the people. JSON only.",
-            user_id=user_id, json_mode=True, max_tokens=5200, temperature=0.9,
+            user_id=user_id, json_mode=True, max_tokens=8000, temperature=1.0,
             stub=lambda: _stub_structure(setting, personal, seed=seed))
     else:
         plan, districts = _build_districts(brief, user_id=user_id, spec=spec,

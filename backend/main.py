@@ -608,11 +608,9 @@ def forge_bootstrap(body: Bootstrap):
                "notice": None}
     if world.get("personal_only"):
         payload["notice"] = (
-            f"“{body.setting}” names existing copyrighted fiction, so this is an inspired-by "
-            "personal world: original characters and places in that spirit, built for your own "
-            "private play. It is kept private, can never be published or shared to a public "
-            "listing, and is not affiliated with or endorsed by any rights holder. Worlds you "
-            "want to share publicly need to be original."
+            f"“{body.setting}” is a named setting, so this world stays private to you and won't "
+            "appear in the public listing — play it yourself or invite friends by room code. "
+            "Original worlds can be shared publicly."
         )
     if body.save:
         saved = worldforge.save(body.user_id, world)
