@@ -2045,6 +2045,64 @@ function announceReturn() {
   worst.standing < 0 ? 'warn' : '');
 }
 
+/* ---------------------------------------------------------------------------
+   Hidden Mask — the verb the mode was missing.
+
+   Every other sub-mode in the objective panel has a control: Casefile, Post
+   today's score, Take it, Deal sides, Open the raid. Hidden Mask had a
+   sentence saying how many were still hiding and no way to act on it, while
+   the vote endpoint sat implemented and never called. The mechanic existed
+   and could not be played.
+
+   The cost is stated before the click rather than after, because that is the
+   entire tension: guess right and a mask comes off, guess wrong and somebody
+   who actually lived here is dead, the people who cared about them grieve,
+   and the world knows who called for it.
+   ------------------------------------------------------------------------ */
+
+function showMaskCall() {
+  const living = (S.state?.npcs || []).filter((n) => n.alive !== false);
+  showModal(`${head('Call a face out',
+    'Name someone, and the room pulls at their face.')}
+    <div class="modal-body">
+      ${living.length ? `<div class="mask-grid">${living.map((n) => `
+        <button class="mode-card" data-mask-vote="${esc(n.id)}"
+          data-mask-name="${esc(n.name)}">
+          <b>${esc(n.name)}</b>
+          <small>${esc(n.role || 'here')}${n.location_name
+    ? ` · ${esc(n.location_name)}` : ''}</small>
+        </button>`).join('')}</div>`
+    : '<p class="fineprint">Nobody is here to accuse.</p>'}
+      <div class="alert vacuum" style="margin-top:14px">
+        <div class="alert-t">There is no free guess</div>
+        <div class="alert-b">Right, and a mask comes off. Wrong, and a person who
+          actually lived here is dead — the people who cared about them grieve,
+          whatever they held stands empty, and the world records who called
+          for it.</div>
+      </div>
+    </div>`);
+}
+
+async function maskVote(npcId, name) {
+  if (!confirm(`Call out ${name}? If you are wrong they die, and the world `
+    + 'will know it was you.')) return;
+  let r;
+  try {
+    r = await api(`/playthroughs/${S.ptId}/masks/vote/${npcId}`
+      + `?player=${encodeURIComponent(S.playerId)}`, { method: 'POST' });
+  } catch (e) { return toast(e.message, 'err'); }
+  closeOverlays();
+  if (r.pulled) {
+    toast(`${r.name}: ${r.verdict}`, 'warn');
+  } else {
+    const c = r.cost || {};
+    toast(`${r.name}: ${r.verdict}`
+      + (c.mourned_by ? ` ${c.mourned_by} people are grieving.` : '')
+      + (c.succession ? ' Their seat is open.' : ''), 'err');
+  }
+  refreshWorkspace();
+}
+
 function showRules() {
   if (!S.state) return;
   showModal(`${head('The rules of this world', 'Checked before a single word is written.')}
@@ -3156,7 +3214,12 @@ function renderObjective() {
     ? '<button class="tiny-btn" data-raid="open">Open the raid</button>' : ''}
     ${o.mode === 'hidden_mask' ? `<p class="obj-detail">${
   (S.objective.masks || {}).hidden ?? 0} still hiding${
-  (S.objective.masks || {}).mine ? ' — including you.' : '.'}</p>` : ''}`;
+  (S.objective.masks || {}).mine ? ' — including you.' : '.'}</p>
+      <button class="tiny-btn" data-mask-call="1">Call a face out</button>
+      ${((S.objective.masks || {}).pulled || []).length ? `<div class="claimants">${
+  S.objective.masks.pulled.map((p) => `<div class="claimant">
+          <b>${esc(p.name)}</b><span class="cl-why">unmasked, turn ${p.turn}</span>
+        </div>`).join('')}</div>` : ''}` : ''}`;
 }
 
 /* ===========================================================================
@@ -4143,6 +4206,9 @@ document.addEventListener('click', async (ev) => {
   if (pick('[data-solo-go]')) return startSolo();
   if (pick('[data-daily-submit]')) return submitDaily();
   if (pick('[data-au-save]')) return saveAU();
+  if (pick('[data-mask-call]')) return showMaskCall();
+  const mv = pick('[data-mask-vote]');
+  if (mv) return maskVote(mv.dataset.maskVote, mv.dataset.maskName);
 
   const con = pick('[data-contest]');
   if (con) return contestNode(con.dataset.contest);

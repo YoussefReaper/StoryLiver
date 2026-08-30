@@ -30,6 +30,7 @@ mechanic stopped being the mechanic:
 Run:  python -m tests.test_competitive
 """
 import os
+import pathlib
 import shutil
 import tempfile
 
@@ -798,6 +799,43 @@ def test_everything_is_reachable_from_the_client():
            f"[{handler}] is both rendered and handled")
 
 
+def test_every_mode_with_a_mechanic_has_a_control():
+    section("the objective panel - a mode you cannot play is not a mode")
+    # Hidden Mask shipped with a sentence and no verb. The panel said "3 still
+    # hiding" and the vote endpoint - fully implemented, published over the
+    # websocket, covered by the test above - had nothing in the client that
+    # called it. Every other sub-mode in the same panel had a button.
+    root = pathlib.Path(__file__).resolve().parent.parent
+    js = (root / "frontend" / "assets" / "app.js").read_text(encoding="utf-8")
+
+    # The verb each mode's mechanic needs, and the attribute that carries it.
+    verbs = {
+        "detective": "data-case",
+        "daily": "data-daily-submit",
+        "king_of_hill": "data-contest",
+        "teams": "data-sides",
+        "hunt": "data-sides",
+        "battle_royale": "data-sides",
+        "raid": "data-raid",
+        "hidden_mask": "data-mask-call",
+    }
+    for mode, attr in verbs.items():
+        ok(attr in js and mode in js,
+           f"{mode}: the panel names the mode AND carries {attr}, so the "
+           "mechanic can be reached rather than only described")
+
+    # The picker renders from the server's tree rather than a hardcoded list,
+    # so a mode id appearing in app.js is the exception (a special-cased verb),
+    # not the rule. What has to hold is that the tree the client renders offers
+    # every mode - a mode missing from it has no front door at all.
+    offered = {m["id"] for fam in modetree.catalogue()["families"] for m in fam["modes"]}
+    missing = sorted(set(modetree.SUB_MODES) - offered)
+    ok(not missing,
+       f"all {len(modetree.SUB_MODES)} sub-modes are offered by the tree the "
+       "picker renders from"
+       + (" - missing " + ", ".join(missing) if missing else ""))
+
+
 def _all():
     return (test_the_frame_is_frozen,
             test_the_invariant_check_catches_what_a_prompt_cannot,
@@ -813,6 +851,7 @@ def _all():
             test_the_case_is_emergent_and_solvable,
             test_an_accusation_needs_proof_not_luck,
             test_both_mask_outcomes_are_real,
+            test_every_mode_with_a_mechanic_has_a_control,
             test_solo_modes_are_reachable_and_staged,
             test_one_resolver_answers_what_mode_this_is,
             test_a_talk_only_mode_is_talk_only_alone_too,

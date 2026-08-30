@@ -2054,6 +2054,14 @@ button { background: none; border: 0; cursor: pointer; }
 .cardvote-r i { flex: 0 0 44px; font-style: normal; color: var(--faint); }
 .cardvote .input.sm { margin-top: 9px; font-size: 12px; padding: 7px 9px; }
 .cardvote .row { margin-top: 8px; justify-content: flex-end; }
+
+/* Every living face, to pick one out of. Wider than .mode-pick's three
+   columns because the list is people, and a name wants room to be read. */
+.mask-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+@media (max-width: 620px) { .mask-grid { grid-template-columns: 1fr 1fr; } }
 .mode-card.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
