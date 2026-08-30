@@ -2214,7 +2214,11 @@ def forge_session_zero(setting: str = Query(min_length=2, max_length=160),
     the world's real arcs and its real power system - so the player picks
     "start at the Mugen Train arc" instead of typing a guess. Research is
     cached, so opening this and then building costs one lookup, not two."""
-    found = (research.dossier(setting) if mode != "original"
+    # premise_dossier, not dossier: a crossover premise carries `imports`, and
+    # the plain lookup drops them - which is why a world built from "Charlie
+    # from Hazbin Hotel, inside The Last of Us" was never asked the two
+    # questions that premise actually raises.
+    found = (research.premise_dossier(setting) if mode != "original"
              else {"found": False, "setting": setting})
     return sessionzero.questions(found)
 

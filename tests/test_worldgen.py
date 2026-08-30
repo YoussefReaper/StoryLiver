@@ -331,6 +331,42 @@ def test_the_price_of_a_world_is_quoted_correctly():
        "moment the player is committing")
 
 
+def test_a_crossover_is_asked_crossover_questions():
+    section("session zero - the two questions a crossover actually raises")
+    # Session Zero asked about entry point, role and power level: setting
+    # questions. A premise that carries somebody IN from elsewhere raises two
+    # different ones - how they got here, and whether what they could do still
+    # works - and neither is answerable from the host world's research, so
+    # neither was being asked. The endpoint also called research.dossier(),
+    # which drops the premise's imports entirely.
+    from backend import sessionzero
+    d = research.premise_dossier(
+        "I and Charlie from Hazbin Hotel are inside the world of The Last of Us")
+    q = sessionzero.questions(d)
+    ids = [x["id"] for x in q["questions"]]
+    ok(q.get("crossover") is True, "the premise is recognised as a crossover")
+    ok("arrival" in ids and "keeps" in ids,
+       f"and both crossover questions are asked ({', '.join(ids)})")
+    arrival = next(x for x in q["questions"] if x["id"] == "arrival")
+    ok("Charlie" in arrival["q"],
+       "the question names the character being carried in, not 'your character'")
+    ok({o["id"] for o in arrival["options"]} == {"always", "torn", "hidden"},
+       "with the three answers that actually change the world: always here, "
+       "torn through recently, or arrived and hiding it")
+
+    b = sessionzero.brief({"arrival": "hidden", "keeps": "weakened"}, d)
+    ok("HIDING" in b and "suspicious" in b,
+       "and the answer reaches the builder as an instruction it can act on")
+    ok("WHAT CARRIED OVER" in b and "fails when it matters" in b,
+       "including what still works, so the builder neither nerfs them quietly "
+       "nor leaves the world with no answer")
+
+    plain = sessionzero.questions(research.premise_dossier("a drowned lighthouse colony"))
+    ok(not plain.get("crossover")
+       and "arrival" not in [x["id"] for x in plain["questions"]],
+       "an original setting is not asked how it got here")
+
+
 def _all():
     return (test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
@@ -340,7 +376,8 @@ def _all():
             test_the_dark_systems_actually_light_up,
             test_the_daily_is_genuinely_the_same_world,
             test_the_fate_thread_does_not_spoil_itself,
-            test_the_price_of_a_world_is_quoted_correctly)
+            test_the_price_of_a_world_is_quoted_correctly,
+            test_a_crossover_is_asked_crossover_questions)
 
 
 def main():

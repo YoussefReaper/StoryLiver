@@ -255,6 +255,31 @@ def check(ctx):
        "and the objector's reason travels with it, so the change asked for is "
        "knowable rather than a guess")
 
+    # 12c ------------------------------------------------ the seed nobody passed
+    # sessions.create computes a seed - "a Daily is the same world for
+    # everybody today, and everything else is seeded from the session so a
+    # rematch is genuinely a new world rather than the same ground with the
+    # score reset" - stores it on the session row, and passed it to NOTHING.
+    # The playthrough it created was seeded 0, so the promise in that comment
+    # was false in both directions.
+    d1 = sessions.create("seed-a", world_id="emberfall", mode="coop",
+                         session_type="daily", host_name="A")
+    d2 = sessions.create("seed-b", world_id="emberfall", mode="coop",
+                         session_type="daily", host_name="B")
+    seed_of = (lambda s: db.row("SELECT seed FROM playthroughs WHERE id=?",
+                                (s["playthrough_id"],))["seed"])
+    ok(seed_of(d1) and seed_of(d1) == seed_of(d2),
+       f"two Dailies opened today land on the same seeded world ({seed_of(d1)}) "
+       "- which is the entire premise of a daily challenge")
+
+    m1 = sessions.create("seed-c", world_id="emberfall", mode="chaos",
+                         session_type="duel", host_name="C")
+    m2 = sessions.create("seed-d", world_id="emberfall", mode="chaos",
+                         session_type="duel", host_name="D")
+    ok(seed_of(m1) != seed_of(m2),
+       "two matches do not, so a rematch is a new world rather than the same "
+       "ground with the score reset")
+
     # 13 ------------------------------------- player worlds + copyright boundary
     forged = worldforge.bootstrap("a drowned lighthouse colony", user_id=HOST)
     ok(len(forged["rules"]) >= worldkit.MIN_RULES and len(forged["fated_events"]) == worldkit.MIN_FATED,

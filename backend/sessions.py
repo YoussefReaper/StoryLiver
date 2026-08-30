@@ -44,8 +44,14 @@ def create(user_id, *, world_id="emberfall", mode="coop", host_name="Host",
     # everything else is seeded from the session so a rematch is genuinely a
     # new world rather than the same ground with the score reset.
     seed = modetree.seed_for(session_type, day=day or db.today(), session_id=session_id)
+    # Both handed on. The seed was computed here, stored on the session row and
+    # passed to NOTHING - so a multiplayer Daily was not the same world for
+    # everybody today, and a rematch was the same ground with the score reset,
+    # which is the exact opposite of what the comment above promises. The mode
+    # went the same way: the playthrough could not tell what game it was in.
     pt_id = engine.create_playthrough(user_id, world_id, protagonist, title,
-                                      session_id=session_id, world_json=world_json)
+                                      session_id=session_id, world_json=world_json,
+                                      session_type=session_type, seed=seed)
     pt = db.row("SELECT world_id FROM playthroughs WHERE id=?", (pt_id,))
     seats = modetree.spec(session_type)["max_players"]
     db.run(

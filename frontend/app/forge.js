@@ -252,7 +252,11 @@ function youStep(f) {
   }
   return `
     ${heading('Where you stand', z.canon ? 'grounded in the real setting' : '')}
-    ${note('This is the question canon worlds live or die on. A protagonist with '
+    ${note(z.crossover
+    ? 'A crossover lives or dies on two answers: how they got here, and whether '
+      + 'what they could do still works. Neither is in the source, so the world '
+      + 'is built around whatever you say — and the people in it react to it.'
+    : 'This is the question canon worlds live or die on. A protagonist with '
       + 'no defined place in the power system becomes either a god or a '
       + 'bystander, and both are boring.')}
     ${(z.questions || []).map((q) => `

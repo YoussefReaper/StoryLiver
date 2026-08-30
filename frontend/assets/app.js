@@ -153,7 +153,7 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   refreshStreak();
   refreshObjective();
   announceReturn();
-  if (sessionId) refreshPendingCards();
+  if (sessionId) { refreshPendingCards(); loadWhispers(); }
   if (sessionId) connectWS();
   $('#actionInput').focus();
 
@@ -3675,6 +3675,26 @@ function renderCardBadge() {
   if (el) el.hidden = !S.cardsPending;
 }
 
+/** Whispers sent before this tab was open. They were rendered only as they
+    arrived over the socket, so a reconnect lost every one of them. */
+async function loadWhispers() {
+  let rows = [];
+  try {
+    rows = (await api(`/sessions/${S.sessionId}/whispers`
+      + `?player=${encodeURIComponent(S.playerId)}`)).whispers || [];
+  } catch { return; }
+  if (!rows.length) return;
+  // Replayed exactly the way the socket renders a live one, so a whisper
+  // read after a reconnect looks like the whisper you were sent.
+  renderFeed(rows.map((w) => ({
+    kind: 'whisper', turn: w.turn || 0, text: '',
+    meta: { payload: w,
+      label: w.from_player === S.playerId
+        ? `You to ${w.to_name || playerName(w.to_id)}`
+        : `${playerName(w.from_player)} to you` },
+  })));
+}
+
 function renderOocBadge() {
   const el = $('#oocBadge');
   if (el) el.textContent = S.oocUnread > 0 ? String(Math.min(99, S.oocUnread)) : '';
@@ -3921,6 +3941,7 @@ async function showFastForward() {
         <div class="ff-with">${present.map((n) => `
           <button class="chip" data-ff-with="${esc(n.id)}">${esc(n.name)}</button>`).join('')}</div>
         </div>` : ''}
+      <div id="ff-skills"></div>
       <div id="ff-preview" class="ff-preview"></div>
       <div class="row" style="margin-top:14px">
         <button class="btn btn-ghost" id="ff-plan">Preview</button>
@@ -3930,6 +3951,24 @@ async function showFastForward() {
         hunters get closer. The narrator then reports what already happened — it never decides it.</p>
     </div>`);
   S.ffKind = S.ffCatalogue.kinds[0].id; S.ffWith = [];
+  loadFfSkills();
+}
+
+/** What skipping ahead has already bought. The panel promises "skills
+    improve" and there was nowhere in the app that showed one. */
+async function loadFfSkills() {
+  const box = $('#ff-skills');
+  if (!box) return;
+  let rows = [];
+  try { rows = (await api(`/playthroughs/${S.ptId}/skills`)).skills || []; } catch { return; }
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const top = Math.max(1, ...rows.map((s) => s.value));
+  box.innerHTML = `<div class="pf-head">What the training has bought</div>
+    ${rows.slice(0, 8).map((s) => `<div class="skill-row">
+      <span>${esc(s.name || s.id)}</span>
+      <span class="skill-bar"><i style="width:${Math.round((s.value / top) * 100)}%"></i></span>
+      <span class="skill-v">${s.value}</span>
+    </div>`).join('')}`;
 }
 
 function ffBody() {
