@@ -367,6 +367,33 @@ def test_a_crossover_is_asked_crossover_questions():
        "an original setting is not asked how it got here")
 
 
+def test_the_forge_sends_what_the_endpoint_requires():
+    section("the forge - a POST body that satisfies its own model")
+    # Every build failed with a 422. api() appends `user_id` to the QUERY
+    # STRING, and FastAPI reads a Pydantic model from the BODY alone - so
+    # `Bootstrap.user_id`, which is required, arrived empty on every request
+    # the rebuilt forge made. The console said "[object Object]", because a
+    # 422's `detail` is a LIST of field errors and the error handler stringified
+    # it whole, so the one message that would have named the field was the one
+    # message the app could not print.
+    from backend import main as api_main
+    forge_js = (ROOT / "frontend" / "app" / "forge.js").read_text(encoding="utf-8")
+    app_js = (ROOT / "frontend" / "assets" / "app.js").read_text(encoding="utf-8")
+
+    required = [n for n, fl in api_main.Bootstrap.model_fields.items() if fl.is_required()]
+    ok("user_id" in required, "Bootstrap declares user_id as required")
+    body = forge_js[forge_js.index("/forge/bootstrap"):][:600]
+    missing = [n for n in required if f"{n}:" not in body]
+    ok(not missing,
+       "and the forge's build body carries every required field"
+       + (" - missing " + ", ".join(missing) if missing else ""))
+
+    ok("Array.isArray(d)" in app_js,
+       "a 422 reports which field failed instead of '[object Object]' - the "
+       "detail is a list, and stringifying it whole hid every validation error "
+       "this app has ever raised")
+
+
 def _all():
     return (test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
@@ -377,7 +404,8 @@ def _all():
             test_the_daily_is_genuinely_the_same_world,
             test_the_fate_thread_does_not_spoil_itself,
             test_the_price_of_a_world_is_quoted_correctly,
-            test_a_crossover_is_asked_crossover_questions)
+            test_a_crossover_is_asked_crossover_questions,
+            test_the_forge_sends_what_the_endpoint_requires)
 
 
 def main():

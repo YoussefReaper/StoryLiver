@@ -50,11 +50,13 @@ const BUILD_MODES = [
 ];
 
 let api = null;          // injected, so this module has no transport of its own
+let whoami = () => '';   // and no idea who the player is except through the bridge
 let onBuilt = null;
 let peekTimer = null;
 
-export function init({ apiFn, onWorldBuilt }) {
+export function init({ apiFn, userId, onWorldBuilt }) {
   api = apiFn;
+  whoami = userId || (() => '');
   onBuilt = onWorldBuilt;
 }
 
@@ -443,6 +445,10 @@ async function build() {
     const world = await api('/forge/bootstrap', {
       method: 'POST',
       body: {
+        // Required by the endpoint's own model. api() only puts it on the
+        // query string, so leaving it out of the body failed every build
+        // with a 422 that reported nothing.
+        user_id: whoami(),
         setting: f.setting, tone: f.tone, mode: f.mode, scale: f.scale,
         answers: f.answers,
       },
