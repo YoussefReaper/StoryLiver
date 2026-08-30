@@ -100,6 +100,13 @@ def _mode(family, name, blurb, **kw):
         # is torn down the moment it is true.
         "objective": "",
         "permadeath": False,
+        # World dials this mode implies, applied once at creation and editable
+        # afterwards. Empty for every mode that has no opinion.
+        "dials": {},
+        # Fate is the spine of a Story. A Sandbox says there is no main quest,
+        # and a Sandbox whose seven fated events fire on schedule is a Story
+        # with the label filed off.
+        "suppress_fate": False,
     }
     spec.update(kw)
     spec["disposable"] = not spec["persistent"]
@@ -113,10 +120,13 @@ MODE_TREE = {
         objective="the last fated event lands"),
     "ironman": _mode(
         "solo", "Ironman", "One life. When it ends, an heir picks it up.",
-        permadeath=True, objective="death, or the last fated event"),
+        permadeath=True, objective="death, or the last fated event",
+        # The dial that actually enforces it. Without this the mode was a
+        # label and death still had resolutions.
+        dials={"stakes": "hardcore"}),
     "sandbox": _mode(
         "solo", "Sandbox", "No main quest. The world simply runs.",
-        scoring=None, objective=""),
+        scoring=None, objective="", suppress_fate=True),
     "detective": _mode(
         "solo", "Detective",
         "A death nobody explains. The proof is in who saw what.",
@@ -141,7 +151,7 @@ MODE_TREE = {
     "shared_sandbox": _mode(
         "multiplayer", "Shared Sandbox",
         "Several builders in one world, trading and getting in each other's way.",
-        scoring=None, objective=""),
+        scoring=None, objective="", suppress_fate=True),
     "social_hub": _mode(
         "multiplayer", "Social Hub",
         "A room of characters who remember you for as long as the run lasts.",
@@ -243,6 +253,15 @@ def is_persistent(mode_id: str) -> bool:
 
 def is_disposable(mode_id: str) -> bool:
     return spec(mode_id)["disposable"]
+
+
+def dials_for(mode_id: str) -> dict:
+    """World dials this mode implies. A starting position, not a lock."""
+    return dict(spec(mode_id)["dials"])
+
+
+def suppresses_fate(mode_id: str) -> bool:
+    return bool(spec(mode_id)["suppress_fate"])
 
 
 def turn_policy(mode_id: str) -> str:
@@ -446,6 +465,7 @@ def public(mode_id: str) -> dict:
         "turn_policy": s["turn_policy"], "actions": s["actions"],
         "scoring": s["scoring"], "objective": s["objective"],
         "asymmetric": s["asymmetric"], "permadeath": s["permadeath"],
+        "dials": s["dials"], "suppress_fate": s["suppress_fate"],
         "min_players": s["min_players"], "max_players": s["max_players"],
         # Said plainly, because a player about to spend an evening in a world
         # deserves to know whether it will be there tomorrow.

@@ -2362,6 +2362,28 @@ def room_ai(session_id: str, seat_id: str, user_id: str = Query(default="")):
     return line
 
 
+class RoomTestify(BaseModel):
+    text: str = Field(min_length=1, max_length=room.MAX_SAY)
+
+
+@app.post("/api/rooms/{session_id}/testify")
+def room_testify(session_id: str, body: RoomTestify, player: str = Query(...)):
+    """A banished player's one line a round, from outside the table.
+
+    Elimination that leaves somebody watching in silence is what stops people
+    joining these games; this is influence without a vote."""
+    _room_session(session_id)
+    seat_id = room.seat_of(session_id, player)
+    if not seat_id:
+        raise HTTPException(400, "you have no seat")
+    try:
+        line = room.testify(session_id, seat_id, body.text, player_id=player)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "line", "line": line})
+    return line
+
+
 @app.post("/api/rooms/{session_id}/advance")
 def room_advance(session_id: str):
     _room_session(session_id)
@@ -2497,6 +2519,59 @@ def submit_daily(pt_id: str, body: DailySubmit, user_id: str = Query(default="")
 # ---------------------------------------------------------------------------
 # Sub-mode mechanics - the objective, and the modes that have their own verbs
 # ---------------------------------------------------------------------------
+
+class Contest(BaseModel):
+    place_id: str = Field(min_length=1, max_length=60)
+
+
+@app.post("/api/playthroughs/{pt_id}/contest")
+def contest_node(pt_id: str, body: Contest, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    """Make a move on a place. Public by construction - the people who see you
+    take it are the people whose opinion decides whether you keep it."""
+    pt = _own(pt_id, user_id)
+    try:
+        out = submodes.contest(pt_id, engine.world_for(pt), place_id=body.place_id,
+                               player=player, session_id=pt["session_id"],
+                               turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+    _publish(pt["session_id"], {"type": "contest", "result": out})
+    return out
+
+
+@app.post("/api/sessions/{session_id}/sides")
+def deal_sides(session_id: str, user_id: str = Query(default="")):
+    """Deal sides for Teams, Hunt or Battle Royale. Once, and deterministically."""
+    row = db.row("SELECT host_user_id FROM sessions WHERE id=?", (session_id,))
+    if not row:
+        raise HTTPException(404, "no such room")
+    if user_id and row["host_user_id"] != user_id:
+        raise HTTPException(403, "only the host deals sides")
+    mode_id = sessions.type_of(session_id)
+    dealt = submodes.assign_sides(session_id, mode_id)
+    if not dealt:
+        raise HTTPException(400, f"{mode_id} does not have sides")
+    _publish(session_id, {"type": "sides", "sides": submodes.sides(session_id)})
+    return submodes.sides(session_id)
+
+
+@app.get("/api/sessions/{session_id}/sides")
+def get_sides(session_id: str):
+    return submodes.sides(session_id)
+
+
+@app.post("/api/playthroughs/{pt_id}/raid/open")
+def open_raid(pt_id: str, user_id: str = Query(default="")):
+    """Give a Raid something to actually raid."""
+    pt = _own(pt_id, user_id)
+    try:
+        out = submodes.open_raid(pt_id, engine.world_for(pt), turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+    _publish(pt["session_id"], {"type": "raid", "result": out})
+    return out
+
 
 @app.get("/api/playthroughs/{pt_id}/objective")
 def get_objective(pt_id: str, user_id: str = Query(default=""),

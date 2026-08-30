@@ -66,6 +66,11 @@ SPEAK_CAP = 3
 
 MAX_SAY = 400
 
+# A banished player speaks once a round, from outside the table. One line is
+# influence; unlimited lines would let the dead run the room they are no
+# longer in, which is the opposite failure.
+TESTIMONY_CAP = 1
+
 PHASES = ("lobby", "talk", "vote", "over")
 
 
@@ -338,7 +343,38 @@ def say(session_id, seat_id, text, *, player_id="") -> dict:
     return _record_line(session_id, seat, st["round_no"], body, source="player")
 
 
-def ai_say(session_id, seat_id, *, user_id="", beat="") -> dict:
+def testify(session_id, seat_id, text, *, player_id="") -> dict:
+    """A banished player says one thing, from outside the room.
+
+    Kept apart from `say` on purpose: it is not a seat at the table any more,
+    it does not count toward the speaking cap, and it is marked so the living
+    can weigh it as what it is - the word of somebody the room already voted
+    out, who now knows what they were."""
+    st = _require_phase(session_id, "talk")
+    seat = _seat(session_id, seat_id)
+    if not seat:
+        raise RoomError("no such seat")
+    if seat["status"] != "banished":
+        raise RoomError("you are still at the table - just talk")
+    if player_id and seat["occupant"] != player_id:
+        raise RoomError("that seat is not yours")
+
+    check = modetree.check_action("room", text)
+    if not check["allowed"]:
+        raise RoomError(check["reason"])
+    body = (text or "").strip()[:MAX_SAY]
+    if not body:
+        raise RoomError("say something")
+
+    said = db.row("SELECT COUNT(*) AS n FROM room_lines WHERE session_id=? AND"
+                  " round_no=? AND seat_id=? AND source='testimony'",
+                  (session_id, st["round_no"], seat_id))
+    if said and said["n"] >= TESTIMONY_CAP:
+        raise RoomError("You have had your say this round.")
+    return _record_line(session_id, seat, st["round_no"], body, source="testimony")
+
+
+def ai_say(session_id, seat_id, *, user_id="", beat="", _generate=None) -> dict:
     """An AI-occupied seat speaks. One model call, guarded on both sides, and
     at most one regeneration before it clamps."""
     st = _require_phase(session_id, "talk")
@@ -356,13 +392,22 @@ def ai_say(session_id, seat_id, *, user_id="", beat="") -> dict:
         f"You are {seat['name']}. Say your piece.",
     ])
 
+    # `_generate` exists so an ADVERSARIAL model can be substituted in a test.
+    # Without it the regenerate-then-clamp path could only ever be reasoned
+    # about: the offline stub is well behaved, so the guard's actual failure
+    # handling had never run once.
+    def _default_generate(p):
+        return llm.complete(
+            "room", SYSTEM, p, user_id=user_id or session_id,
+            max_tokens=140, temperature=0.85,
+            stub=lambda: _stub(session_id, seat, st["round_no"]))
+
+    generate = _generate or _default_generate
+
     text, tries, failures = "", 0, []
     while tries < 2:
         tries += 1
-        raw = llm.complete(
-            "room", SYSTEM, prompt, user_id=user_id or session_id,
-            max_tokens=140, temperature=0.85,
-            stub=lambda: _stub(session_id, seat, st["round_no"]))
+        raw = generate(prompt)
         checked = validate(raw, present_names=present, speaker=seat["name"])
         if checked["ok"]:
             text = checked["text"]
@@ -690,11 +735,16 @@ def state(session_id, *, viewer_seat="") -> dict:
         return {"set": False}
     rows = seats(session_id)
     over = st["phase"] == "over"
+    # Somebody already voted out knows what they were, and the room knows too.
+    # Keeping the rest hidden from them buys nothing and costs them the only
+    # thing they have left to be interested in.
+    mine_row = _seat(session_id, viewer_seat) if viewer_seat else None
+    watching = bool(mine_row and mine_row["status"] == "banished")
     out = {
         "set": True, "phase": st["phase"], "round": st["round_no"],
         "rounds": st["rounds"], "over": over,
         "winner": st["ends_reason"] if over else "",
-        "seats": [_public_seat(s, reveal=over) for s in rows],
+        "seats": [_public_seat(s, reveal=over or watching) for s in rows],
         "speak_cap": SPEAK_CAP,
         "living": len([s for s in rows if s["status"] == "seated"]),
         # Counted, never located. The room knows how many are hiding; that is
@@ -717,6 +767,16 @@ def state(session_id, *, viewer_seat="") -> dict:
                 # means sitting in silence is a game people stop joining.
                 "can_speak": mine["status"] == "seated" and st["phase"] == "talk",
                 "can_vote": mine["status"] == "seated" and st["phase"] == "vote",
+                # Banished, not gone. One line a round from outside the table:
+                # a player who is voted out and can then only watch is a
+                # player who stops joining these games.
+                "can_testify": (mine["status"] == "banished"
+                                and st["phase"] == "talk"
+                                and not over),
+                "testimony_left": max(0, TESTIMONY_CAP - (db.row(
+                    "SELECT COUNT(*) AS n FROM room_lines WHERE session_id=? AND"
+                    " round_no=? AND seat_id=? AND source='testimony'",
+                    (session_id, st["round_no"], viewer_seat)) or {"n": 0})["n"]),
             }
     return out
 

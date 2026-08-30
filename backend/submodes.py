@@ -88,6 +88,21 @@ def objective(pt_id, world, mode_id, *, player=memory.SOLO, session_id="") -> di
                 "done": turn >= DAILY_TURN_CAP,
                 "detail": f"Turn {turn} of {DAILY_TURN_CAP}. Score is what you built."}
 
+    if mode_id in SIDE_RULES:
+        state = sides(session_id) if session_id else {"sides": {}, "assigned": False}
+        if not state["assigned"]:
+            return {**base, "detail": "Sides not dealt yet."}
+        if mode_id == "hunt":
+            you_are = "the quarry" if state["quarry"] == player else "hunting"
+            return {**base, "detail": f"You are {you_are}.",
+                    "asymmetric": True, "quarry": state["quarry"]}
+        mine = next((t for t, members in state["sides"].items()
+                     if any(m["player_id"] == player for m in members)), "")
+        return {**base,
+                "detail": (f"{len(state['sides'])} sides. You are on {mine}."
+                           if mode_id == "teams"
+                           else f"{len(state['sides'])} still in it.")}
+
     if mode_id == "raid":
         v = legacy.current_vacuum(pt_id, world)
         unrest = bool(v.get("unrest"))
@@ -105,6 +120,13 @@ def objective(pt_id, world, mode_id, *, player=memory.SOLO, session_id="") -> di
         alive = not _dead(pt_id, player)
         return {**base, "done": not alive, "progress": min(1.0, turn / 40.0),
                 "detail": "One life." if alive else "That life is over."}
+
+    # A mode with no main quest has no progress bar to show, and inventing
+    # one out of the turn counter would be the same lie the fate check used
+    # to tell.
+    if modetree.suppresses_fate(mode_id):
+        return {**base, "detail": "No main quest. The world simply runs.",
+                "open_ended": True}
 
     # Story, co-op, chaos, and the plain race modes all end on fate.
     fated = world.fated_events
@@ -533,12 +555,179 @@ def nodes(pt_id, world, session_id="") -> list:
     return out
 
 
+# What it takes to take a place, and what taking it costs. Deliberately not a
+# capture bar: holding is standing with the faction that owns the ground, so a
+# node is won the same way anything else in this engine is won - by being
+# somebody those people will side with - and can be lost the same way.
+CONTEST_GAIN = 14.0
+CONTEST_COST = 6.0
+
+
+def contest(pt_id, world, *, place_id, player=memory.SOLO, session_id="", turn=0) -> dict:
+    """Make a move on a place.
+
+    Public by construction: it goes through the ordinary witness path, so
+    taking a node is something the world SEES you do, and the people who see
+    it are the people whose opinion decides whether you hold it. Trying to
+    take somewhere quietly is a contradiction, and the engine treats it as one.
+    """
+    loc = world.loc_by_id.get(place_id)
+    if not loc:
+        raise SubmodeError("no such place")
+
+    faction = next((f for f in awareness.factions(world)
+                    if f.get("seat") == place_id), None)
+    if not faction:
+        faction = next(iter(awareness.factions(world)), None)
+    if not faction:
+        raise SubmodeError("nobody here holds anything")
+
+    before = float(awareness.rep(pt_id, faction["id"], player)["standing"])
+    held = [n for n in nodes(pt_id, world, session_id) if n["place_id"] == place_id]
+    holder = held[0]["holder"] if held else ""
+
+    # Standing with the owning faction rises for you and falls for whoever
+    # held it - taking a place is taken personally by the people who lose it.
+    db.run("UPDATE faction_rep SET standing=?, known_events=known_events+1, last_turn=?"
+           " WHERE playthrough_id=? AND faction_id=? AND player_id=?",
+           (min(100.0, before + CONTEST_GAIN), turn, pt_id, faction["id"], player))
+    if holder and holder != player:
+        prior = float(awareness.rep(pt_id, faction["id"], holder)["standing"])
+        db.run("UPDATE faction_rep SET standing=?, last_turn=? WHERE playthrough_id=?"
+               " AND faction_id=? AND player_id=?",
+               (max(-100.0, prior - CONTEST_COST), turn, pt_id, faction["id"], holder))
+
+    recorded = legacy.record_world_event(
+        pt_id, world, turn=turn, kind="contest",
+        label=f"{world.loc_name(place_id)} changes hands",
+        detail=f"A move was made on {world.loc_name(place_id)}.",
+        actor=player, place_id=place_id, weight=4, severity=3,
+        subject=player, told=[player] + ([holder] if holder else []))
+
+    after = [n for n in nodes(pt_id, world, session_id) if n["place_id"] == place_id]
+    return {
+        "place_id": place_id, "place": world.loc_name(place_id),
+        "faction": faction["name"],
+        "was": holder, "now": after[0]["holder"] if after else "",
+        "took_it": bool(after) and after[0]["holder"] == player,
+        "standing": round(after[0]["standing"], 1) if after else 0.0,
+        "witnesses": recorded["fact"]["witnesses"],
+        "node_id": recorded["node_id"],
+    }
+
+
 def _players(session_id):
     if not session_id:
         return [memory.SOLO]
     return [r["player_id"] for r in db.rows(
         "SELECT player_id FROM session_players WHERE session_id=? AND role!='spectator'",
         (session_id,))] or [memory.SOLO]
+
+
+# ---------------------------------------------------------------------------
+# SIDES - who is with whom, and who is the quarry
+# ---------------------------------------------------------------------------
+# Teams needs sides. Hunt needs one player to BE the thing being hunted.
+# Battle Royale needs everyone on their own. All three are the same question -
+# what side is this seat on - and it lives on session_players.team, which was
+# added as a migration and then written by nothing.
+
+SIDE_RULES = {
+    "teams": {"sides": 2, "quarry": False},
+    "hunt": {"sides": 2, "quarry": True},
+    "battle_royale": {"sides": 0, "quarry": False},   # 0 = everyone alone
+}
+
+
+def assign_sides(session_id, mode_id, *, seed="") -> list:
+    """Deal sides once, deterministically, so a reconnect cannot reroll them.
+
+    Hunt is the asymmetric one: exactly one seat is the QUARRY and everybody
+    else hunts it. That seat is not a disadvantage - it is the other half of
+    the mode, and it is dealt before anyone can ask for it."""
+    rule = SIDE_RULES.get(mode_id)
+    if not rule:
+        return []
+    seats = [r["player_id"] for r in db.rows(
+        "SELECT player_id FROM session_players WHERE session_id=? AND role!='spectator'"
+        " ORDER BY joined_at, player_id", (session_id,))]
+    if not seats:
+        return []
+    rng = llm.rng(session_id, "sides", mode_id, seed)
+    order = list(seats)
+    rng.shuffle(order)
+
+    out = []
+    if rule["quarry"]:
+        quarry = order[0]
+        for pid in seats:
+            side = "quarry" if pid == quarry else "hunters"
+            role = "quarry" if pid == quarry else "hunter"
+            db.run("UPDATE session_players SET team=?, seat_role=? WHERE session_id=?"
+                   " AND player_id=?", (side, role, session_id, pid))
+            out.append({"player_id": pid, "team": side, "seat_role": role})
+        return out
+
+    sides = rule["sides"]
+    for i, pid in enumerate(order):
+        # 0 sides means Battle Royale: everybody is their own faction, which
+        # is what "last faction standing" means when nobody is allied.
+        side = pid if sides == 0 else f"side_{i % sides + 1}"
+        db.run("UPDATE session_players SET team=?, seat_role='' WHERE session_id=?"
+               " AND player_id=?", (side, session_id, pid))
+        out.append({"player_id": pid, "team": side, "seat_role": ""})
+    return out
+
+
+def sides(session_id) -> dict:
+    rows = db.rows("SELECT player_id, name, team, seat_role FROM session_players"
+                   " WHERE session_id=? AND role!='spectator'", (session_id,))
+    grouped = {}
+    for r in rows:
+        grouped.setdefault(r["team"] or "unassigned", []).append(
+            {"player_id": r["player_id"], "name": r["name"],
+             "seat_role": r["seat_role"]})
+    return {"sides": grouped,
+            "quarry": next((r["player_id"] for r in rows
+                            if r["seat_role"] == "quarry"), ""),
+            "assigned": all(r["team"] for r in rows) and bool(rows)}
+
+
+# ---------------------------------------------------------------------------
+# RAID - the world event a party is actually raiding
+# ---------------------------------------------------------------------------
+
+def open_raid(pt_id, world, *, turn=0) -> dict:
+    """Give a Raid something to put down.
+
+    The objective read legacy.current_vacuum for unrest, so a Raid that nobody
+    had died in reported itself finished on turn one. This kills the figure
+    with the most standing and lets the succession machinery do the rest - the
+    unrest IS the raid, and it is the same unrest any death produces."""
+    from . import death as _death
+    if legacy.current_vacuum(pt_id, world).get("unrest"):
+        return {"opened": False, "reason": "something is already tearing this world open"}
+
+    states = {st["npc_id"]: st for st in memory.all_npc_states(pt_id)}
+    candidates = [n for n in world.npcs
+                  if n.get("role") and states.get(n["id"], {}).get("alive", 1)]
+    if not candidates:
+        raise SubmodeError("nobody here holds anything worth fighting over")
+
+    # Whoever the most people defer to. Scored, not random: a raid that opened
+    # on a well-digger would not read as a raid.
+    def weight(npc):
+        peers = db.rows("SELECT respect, fear FROM relationships WHERE playthrough_id=?"
+                        " AND dst=? AND src!=?", (pt_id, npc["id"], memory.SOLO))
+        return sum(float(p["respect"] or 0) + float(p["fear"] or 0) for p in peers)
+
+    target = max(candidates, key=weight)
+    memory.kill_npc(pt_id, target["id"])
+    out = _death.world_event(pt_id, who=target["id"], killer="", world=world)
+    return {"opened": True, "who": target["id"], "name": target["name"],
+            "role": target.get("role", ""),
+            "succession": out.get("succession"),
+            "note": "The seat is open and the world is coming apart over it."}
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +774,8 @@ def public(pt_id, world, mode_id, *, player=memory.SOLO, session_id="") -> dict:
         out["masks"] = masks_public(session_id, world, viewer=player)
     if mode_id == "king_of_hill":
         out["nodes"] = nodes(pt_id, world, session_id)
+    if mode_id in SIDE_RULES and session_id:
+        out["sides"] = sides(session_id)
     if mode_id == "daily":
         out["daily"] = daily_score(pt_id, world, player)
     return out

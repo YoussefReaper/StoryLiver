@@ -989,6 +989,18 @@ function handleWS(msg) {
         toast(`${b.name}: ${b.verdict}`, b.was_imposter ? '' : 'warn');
       }
       break;
+    case 'contest':
+      toast(`${msg.result.place} changed hands.`);
+      refreshObjective();
+      break;
+    case 'sides':
+      toast('Sides have been dealt.');
+      refreshObjective();
+      break;
+    case 'raid':
+      if (msg.result.opened) toast(`${msg.result.name} is dead. The seat is open.`, 'warn');
+      refreshObjective();
+      break;
     case 'mask':
       toast(msg.result.pulled
         ? `${msg.result.name}: ${msg.result.verdict}`
@@ -2554,8 +2566,10 @@ function renderRoom() {
     ? `<button class="btn btn-ghost sm" data-room-ai="${esc(s.seat_id)}">Let them speak</button>` : ''}
     </div>`).join('');
 
-  const lines = (r.transcript || []).map((l) => `<div class="room-line">
+  const lines = (r.transcript || []).map((l) => `<div class="room-line${
+  l.source === 'testimony' ? ' from-outside' : ''}">
       <b>${esc(l.name)}</b><span>${esc(l.text)}</span>
+      ${l.source === 'testimony' ? '<em class="room-clamped">banished</em>' : ''}
       ${l.clamped ? '<em class="room-clamped" title="This seat broke frame twice and was clamped">held back</em>' : ''}
     </div>`).join('') || `<p class="fineprint">Nothing said yet.</p>`;
 
@@ -2578,6 +2592,14 @@ function renderRoom() {
       <form class="ooc-composer" id="roomForm">
         <input id="roomSay" maxlength="400" placeholder="Say it as ${esc(you.name)} — talk only.">
         <button type="submit" class="btn btn-ghost">Say</button>
+      </form>` : ''}
+    ${you && you.can_testify ? `
+      <form class="ooc-composer" id="roomTestifyForm">
+        <span class="room-from-outside">From outside the table${
+  you.testimony_left ? '' : ' — you have had your say this round'}</span>
+        <input id="roomTestify" maxlength="400" ${you.testimony_left ? '' : 'disabled'}
+               placeholder="One line. They may weigh it or ignore it.">
+        <button type="submit" class="btn btn-ghost" ${you.testimony_left ? '' : 'disabled'}>Say it</button>
       </form>` : ''}
     ${r.phase === 'vote' ? `<div class="power-head"><h3>The vote</h3>
       <span class="ph-n">${r.tally.cast} of ${r.tally.living} cast</span></div>
@@ -2613,6 +2635,25 @@ function renderRoom() {
       roomSay(v);
     });
   }
+  const tform = $('#roomTestifyForm');
+  if (tform) {
+    tform.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = $('#roomTestify').value;
+      if (!v.trim()) return;
+      $('#roomTestify').value = '';
+      roomTestify(v);
+    });
+  }
+}
+
+async function roomTestify(text) {
+  try {
+    await api(`/rooms/${S.sessionId}/testify?player=${encodeURIComponent(S.playerId)}`, {
+      method: 'POST', body: { text },
+    });
+    await loadRoom();
+  } catch (e) { toast(e.message, 'warn'); }
 }
 
 async function roomSay(text) {
@@ -2852,6 +2893,41 @@ async function caseOpen() {
 
 /* -------------------------------------------------------- the objective */
 
+async function contestNode(placeId) {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/contest`
+      + `?player=${encodeURIComponent(S.playerId)}`,
+    { method: 'POST', body: { place_id: placeId } });
+    toast(r.took_it
+      ? `${r.place} is yours — ${r.witnesses.length} saw you take it.`
+      : `${r.place} did not turn. ${r.faction} is not convinced.`,
+    r.took_it ? '' : 'warn');
+    await refreshObjective();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function dealSides() {
+  try {
+    const r = await api(`/sessions/${S.sessionId}/sides`
+      + `?user_id=${encodeURIComponent(S.userId)}`, { method: 'POST' });
+    toast(r.quarry
+      ? `Sides dealt. One of you is the quarry.`
+      : `Sides dealt — ${Object.keys(r.sides).length} of them.`);
+    await refreshObjective();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openRaid() {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/raid/open`
+      + `?user_id=${encodeURIComponent(S.userId)}`, { method: 'POST' });
+    if (!r.opened) return toast(r.reason, 'warn');
+    toast(`${r.name} is dead. ${r.note}`, 'warn');
+    await refreshObjective();
+    await refreshLegacy();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function refreshObjective() {
   try {
     S.objective = await api(`/playthroughs/${S.ptId}/objective`
@@ -2879,7 +2955,20 @@ function renderObjective() {
   (S.objective.nodes || []).slice(0, 6).map((n) => `<div class="claimant">
         <b>${esc(n.name)}</b><span class="cl-why">${
   n.holder ? (n.holder === S.playerId ? 'yours' : 'held') : 'open'}</span>
-        <span class="cl-num">${n.standing}</span></div>`).join('')}</div>` : ''}
+        <span class="cl-num">${n.standing}</span>
+        ${n.holder === S.playerId ? ''
+    : `<button class="tiny-btn" data-contest="${esc(n.place_id)}">Take it</button>`}
+      </div>`).join('')}</div>` : ''}
+    ${(S.objective.sides && S.objective.sides.assigned) ? `<div class="claimants">${
+  Object.entries(S.objective.sides.sides).map(([side, members]) => `<div class="claimant">
+        <b>${esc(side === S.playerId ? 'you' : side)}</b>
+        <span class="cl-why">${members.map((mm) => esc(mm.name)).join(', ')}</span>
+      </div>`).join('')}</div>` : ''}
+    ${(o.mode === 'teams' || o.mode === 'hunt' || o.mode === 'battle_royale')
+    && !(S.objective.sides && S.objective.sides.assigned) && S.role === 'host'
+    ? '<button class="tiny-btn" data-sides="1">Deal sides</button>' : ''}
+    ${o.mode === 'raid' && o.done && S.role === 'host'
+    ? '<button class="tiny-btn" data-raid="open">Open the raid</button>' : ''}
     ${o.mode === 'hidden_mask' ? `<p class="obj-detail">${
   (S.objective.masks || {}).hidden ?? 0} still hiding${
   (S.objective.masks || {}).mine ? ' — including you.' : '.'}</p>` : ''}`;
@@ -3788,6 +3877,11 @@ document.addEventListener('click', async (ev) => {
   }
   if (pick('[data-solo-go]')) return startSolo();
   if (pick('[data-daily-submit]')) return submitDaily();
+
+  const con = pick('[data-contest]');
+  if (con) return contestNode(con.dataset.contest);
+  if (pick('[data-sides]')) return dealSides();
+  if (pick('[data-raid]')) return openRaid();
 
   const bd = pick('[data-board]');
   if (bd) return showBoard(bd.dataset.board);

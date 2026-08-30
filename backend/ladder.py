@@ -159,7 +159,7 @@ def _roll_season(kind, owner, pvp, season) -> dict:
                                "wins": pvp.get("wins", 0),
                                "matches": pvp.get("matches", 0)}])[-12:]
     fresh = {"season": season, "points": 0, "wins": 0, "losses": 0, "matches": 0,
-             "streak": 0,
+             "streak": 0, "by_mode": {},
              # Prestige is the thing that survives, and it only ever goes up.
              "prestige": int(pvp.get("prestige", 0)) + (1 if pvp.get("points", 0) >= 200 else 0),
              "history": history}
@@ -203,6 +203,19 @@ def record_match(*, account_id="", player_id="", session_id="", mode, outcome,
         pvp["losses"] = int(pvp.get("losses", 0)) + 1
         pvp["streak"] = min(0, int(pvp.get("streak", 0))) - 1
     pvp["season"] = season
+    # Per-mode tallies, so a Duel board is a Duel board. The leaderboard took
+    # a `mode` argument, echoed it back in the response, and never filtered on
+    # anything - so every "per-mode" board was the global one wearing a label.
+    by_mode = pvp.get("by_mode") or {}
+    entry = by_mode.get(mode) or {"points": 0, "wins": 0, "losses": 0, "matches": 0}
+    entry["points"] = max(PVP_FLOOR, int(entry["points"]) + delta)
+    entry["matches"] = int(entry["matches"]) + 1
+    if outcome == "win":
+        entry["wins"] = int(entry["wins"]) + 1
+    elif outcome == "loss":
+        entry["losses"] = int(entry["losses"]) + 1
+    by_mode[mode] = entry
+    pvp["by_mode"] = by_mode
 
     db.run("UPDATE profiles SET pvp=?, updated_at=? WHERE owner_kind=? AND owner_id=?",
            (json.dumps(pvp), db.now(), kind, owner))
@@ -357,6 +370,9 @@ def percentile(owner, kind, points, season) -> float:
 def leaderboard(*, board="pvp", mode="", day="", limit=50) -> dict:
     """Global, per-mode, or the daily seed.
 
+    `mode` filters to one sub-mode's own tally rather than decorating the
+    global list with a label.
+
     Only ACCOUNT profiles are listed. A session-scoped score is real to the
     player who earned it and meaningless to everyone else, and putting it on a
     public board would make the board look padded."""
@@ -369,7 +385,16 @@ def leaderboard(*, board="pvp", mode="", day="", limit=50) -> dict:
         if board == "pvp":
             if pvp.get("season") != season:
                 continue
-            value, matches = int(pvp.get("points", 0)), int(pvp.get("matches", 0))
+            if mode:
+                # A board for one mode reads that mode's own tally. Absent
+                # means they have not played it, which is not a zero - it is
+                # not being on this board at all.
+                entry = (pvp.get("by_mode") or {}).get(mode)
+                if not entry:
+                    continue
+                value, matches = int(entry.get("points", 0)), int(entry.get("matches", 0))
+            else:
+                value, matches = int(pvp.get("points", 0)), int(pvp.get("matches", 0))
         elif board == "legacy":
             value, matches = r["legacy"], 0
         elif board == "coop":

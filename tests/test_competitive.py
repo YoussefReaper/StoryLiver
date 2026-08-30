@@ -562,6 +562,220 @@ def test_every_witness_is_findable():
        f"dead end, and a mystery with no dead ends is a checklist")
 
 
+# ================================================== the B list, closed out
+def test_b1_ironman_actually_takes_your_life():
+    section("B1 - a mode that lied about its own rules")
+    db.init()
+    from backend import modes
+    iron = engine.create_playthrough("b1-iron", session_type="ironman")
+    story = engine.create_playthrough("b1-story", session_type="story")
+    ok(modes.permadeath_on(iron),
+       "Ironman enforces permadeath - it set a LABEL, while modes.permadeath_on "
+       "read a stakes dial the mode tree never touched, so 'one life' was "
+       "enforced by nothing and the objective card said it anyway")
+    ok(not modes.permadeath_on(story), "and Story is untouched")
+    ok(modes.get(iron)["stakes"] == "hardcore",
+       "via the world's own dial, which stays editable afterwards - a mode "
+       "sets a starting position, it does not seize the panel")
+
+
+def test_b7_a_sandbox_has_no_main_quest():
+    section("B7 - 'no main quest' with seven fated events firing on schedule")
+    db.init()
+    sand = engine.create_playthrough("b7", session_type="sandbox")
+    world = engine.world_for(engine._pt(sand))
+    last = world.fated_events[-1]["turn"]
+    db.run("UPDATE playthroughs SET current_turn=? WHERE id=?", (last - 1, sand))
+    r = engine.take_turn(sand, "I look around and take stock.")
+    ok(not r.get("ending"),
+       "a Sandbox does not end on the last fated event - it promised no main "
+       "quest and then ran the Story's spine to completion")
+    ok(not [e for e in r["entries"] if e.get("kind") == "fate"],
+       "and no fated event fires at all")
+    ok(submodes.objective(sand, world, "sandbox")["detail"].startswith("No main quest"),
+       "and the objective says so rather than inventing a progress bar out of "
+       "the turn counter")
+
+
+def test_b3_a_banished_player_still_matters():
+    section("B3 - elimination that makes a spectator is what empties the genre")
+    s = _room("b3", count=4)
+    db.run("UPDATE room_seats SET status='banished' WHERE session_id=? AND seat_id='s1'",
+           (s["id"],))
+    view = room.state(s["id"], viewer_seat="s1")
+    ok(view["you"]["can_testify"] and not view["you"]["can_speak"],
+       "a banished player has a voice but not a seat - before this they had "
+       "can_speak=false, can_vote=false and nothing else, and a comment "
+       "claiming they kept an OOC voice that was simply untrue")
+    ok(all("is_imposter" in seat for seat in view["seats"]),
+       "and they can see everything, because there is nothing left to protect "
+       "them from and watching blind is the boring half")
+
+    line = room.testify(s["id"], "s1", "I was telling the truth. Look at Corvin.",
+                        player_id="host")
+    ok(line["source"] == "testimony",
+       "their line is marked as coming from outside the table, so the living "
+       "can weigh it as the word of somebody already voted out")
+    try:
+        room.testify(s["id"], "s1", "And another thing.", player_id="host")
+        ok(False, "a banished player spoke twice in one round")
+    except room.RoomError:
+        ok(True, "one line a round - influence, not running the room they are "
+                 "no longer in")
+
+
+def test_b4_a_per_mode_board_is_per_mode():
+    section("B4 - the parameter was accepted, echoed back, and never filtered")
+    db.init()
+    for _ in range(3):
+        ladder.record_match(account_id="b4-duel", mode="duel", outcome="win")
+    for _ in range(3):
+        ladder.record_match(account_id="b4-room", mode="room", outcome="win")
+
+    # Asserted as a FILTER rather than as the whole board: earlier tests in
+    # this process leave their own profiles behind, and a board that happens
+    # to be empty is not evidence the filter works.
+    duel = [e["owner"] for e in ladder.leaderboard(board="pvp", mode="duel")["entries"]]
+    everyone = [e["owner"] for e in ladder.leaderboard(board="pvp")["entries"]]
+    ok("b4-duel" in duel and "b4-room" not in duel,
+       f"a Duel board carries the Duel player and NOT the Room player "
+       f"({duel}) - every 'per-mode' board was the global one wearing a label")
+    ok("b4-duel" in everyone and "b4-room" in everyone,
+       f"while the global board carries both ({everyone})")
+
+    prof = ladder.profile(account_id="b4-duel")
+    ok((prof["pvp"].get("by_mode") or {}).get("duel", {}).get("wins") == 3,
+       "because each mode keeps its own tally")
+
+
+def test_b5_you_can_actually_take_a_place():
+    section("B5 - King of the Hill was read-only")
+    db.init()
+    pt = engine.create_playthrough("b5", session_type="king_of_hill")
+    world = engine.world_for(engine._pt(pt))
+    node = submodes.nodes(pt, world)[0]
+    ok(not node["holder"], f"{node['name']} starts unheld")
+
+    out = submodes.contest(pt, world, place_id=node["place_id"], turn=1)
+    ok(out["took_it"],
+       f"and can be taken ({out['place']}, standing {out['standing']}) - there "
+       f"was no verb at all, so control moved only as a side effect of "
+       f"reputation drifting")
+    ok(out["node_id"],
+       "the move is witnessed like anything else, so taking a place is "
+       "something the world SEES - and the people who see it are the ones "
+       "whose opinion decides whether you keep it")
+
+
+def test_b6_the_asymmetric_modes_are_asymmetric():
+    section("B6 - Teams had no teams, Hunt had no quarry, BR had no factions")
+    db.init()
+    s = sessions.create("b6-hunt", mode="coop", session_type="hunt", host_name="H")
+    sessions.join(s["id"], "b6-h1", "A")
+    sessions.join(s["id"], "b6-h2", "B")
+    submodes.assign_sides(s["id"], "hunt")
+    state = submodes.sides(s["id"])
+    ok(state["quarry"], f"exactly one seat IS the quarry ({state['quarry']})")
+    ok(len([m for members in state["sides"].values() for m in members
+            if m["seat_role"] == "hunter"]) == 2,
+       "and everyone else hunts it")
+
+    again = submodes.sides(s["id"])
+    ok(again["quarry"] == state["quarry"],
+       "dealt once - a reconnect that could reroll who is the quarry would "
+       "make the mode unplayable")
+
+    t = sessions.create("b6-teams", mode="coop", session_type="teams", host_name="H")
+    for i in range(3):
+        sessions.join(t["id"], f"b6-t{i}", f"P{i}")
+    submodes.assign_sides(t["id"], "teams")
+    ok(len(submodes.sides(t["id"])["sides"]) == 2, "Teams deals two sides")
+
+    b = sessions.create("b6-br", mode="coop", session_type="battle_royale", host_name="H")
+    for i in range(2):
+        sessions.join(b["id"], f"b6-b{i}", f"P{i}")
+    submodes.assign_sides(b["id"], "battle_royale")
+    ok(len(submodes.sides(b["id"])["sides"]) == 3,
+       "and Battle Royale puts everybody on their own, which is what 'last "
+       "faction standing' means when nobody is allied")
+
+
+def test_b6_a_raid_has_something_to_raid():
+    section("B6 - a Raid session reported itself finished on turn one")
+    db.init()
+    pt = engine.create_playthrough("b6-raid", session_type="raid")
+    world = engine.world_for(engine._pt(pt))
+    before = submodes.objective(pt, world, "raid")
+    ok(before["done"],
+       "an unopened Raid reads as already done - the objective looked for "
+       "unrest, and a world nobody had died in had none")
+
+    out = submodes.open_raid(pt, world, turn=1)
+    ok(out["opened"] and out["role"],
+       f"opening one kills whoever the world most defers to ({out['name']}, "
+       f"{out['role']}) - scored rather than random, because a raid that "
+       f"opened on a well-digger would not read as a raid")
+    ok(not submodes.objective(pt, world, "raid")["done"],
+       "and now there is something to put down")
+    ok((out.get("succession") or {}).get("opened"),
+       "the unrest IS the raid, produced by the same succession machinery any "
+       "death produces")
+
+
+def test_b8_the_guard_holds_against_a_hostile_model():
+    section("B8 - the loop, not just the checker")
+    s = _room("b8", count=4)
+    present = list(NAMES[:4])
+
+    calls = {"n": 0}
+
+    def hostile(_prompt):
+        calls["n"] += 1
+        return ["As an AI language model, I punch Corvin. *grins* Gandalf agrees.",
+                "I stab him and walk out of the room. As an AI I cannot lie."][
+            min(calls["n"] - 1, 1)]
+
+    line = room.ai_say(s["id"], "s2", _generate=hostile)
+    ok(line["guard"]["attempts"] == 2,
+       "a model that breaks frame is regenerated once - in mock mode the stub "
+       "is well behaved, so this path had never executed and the guard's "
+       "actual failure handling was only ever reasoned about")
+    ok(line["guard"]["clamped"],
+       "and a model that breaks it twice is clamped rather than shown")
+    ok(room.validate(line["text"], present_names=present, speaker="X")["ok"],
+       f"what the player sees passes the same invariant check "
+       f"({line['text']!r}) - a clamp that could itself break frame would be "
+       f"worse than nothing")
+
+    calls2 = {"n": 0}
+
+    def recovers(_prompt):
+        calls2["n"] += 1
+        return ("As an AI I cannot help." if calls2["n"] == 1
+                else "I was at the well. Ask Tamsin where she was.")
+
+    line2 = room.ai_say(s["id"], "s3", _generate=recovers)
+    ok(not line2["guard"]["clamped"] and "well" in line2["text"],
+       "while a model that recovers on the retry is used as written - the "
+       "guard costs a second call, never the character's own words")
+
+
+def test_b9_the_dead_columns_are_alive():
+    section("B9 - schema I added and never wrote to")
+    db.init()
+    s = sessions.create("b9", mode="coop", session_type="hunt", host_name="H")
+    sessions.join(s["id"], "b9-a", "A")
+    sessions.join(s["id"], "b9-b", "B")
+    submodes.assign_sides(s["id"], "hunt")
+    rows = db.rows("SELECT team, seat_role FROM session_players WHERE session_id=?",
+                   (s["id"],))
+    ok(all(r["team"] for r in rows),
+       "session_players.team is written - I added it in a migration and "
+       "nothing ever set it")
+    ok(any(r["seat_role"] == "quarry" for r in rows),
+       "and so is seat_role, which is what makes Hunt asymmetric at all")
+
+
 # ------------------------------------------------------------- reachable
 def test_everything_is_reachable_from_the_client():
     section("nothing built here is left unused")
@@ -571,13 +785,15 @@ def test_everything_is_reachable_from_the_client():
     html = (root / "frontend" / "index.html").read_text(encoding="utf-8")
 
     for path in ("/rooms/", "/profile/standing", "/leaderboard", "/case/ask/",
-                 "/case/accuse/", "/objective", "/modes/tree"):
+                 "/case/accuse/", "/objective", "/modes/tree",
+                 "/testify", "/contest", "/sides", "/raid/open"):
         ok(path in ui, f"the client calls {path}")
     for hook in ("roomWrap", "objective", "roomTab"):
         ok(f'id="{hook}"' in html and hook in ui,
            f"#{hook} exists in the markup AND something writes to it")
     for handler in ("data-room-seat", "data-room-vote", "data-room-ai",
-                    "data-case-ask", "data-case-accuse", "data-board"):
+                    "data-case-ask", "data-case-accuse", "data-board",
+                    "data-contest", "data-sides", "data-raid"):
         ok(ui.count(handler) >= 2,
            f"[{handler}] is both rendered and handled")
 
@@ -604,6 +820,15 @@ def _all():
             test_a_settled_match_scores_the_table,
             test_solo_trophies_can_unlock,
             test_every_witness_is_findable,
+            test_b1_ironman_actually_takes_your_life,
+            test_b7_a_sandbox_has_no_main_quest,
+            test_b3_a_banished_player_still_matters,
+            test_b4_a_per_mode_board_is_per_mode,
+            test_b5_you_can_actually_take_a_place,
+            test_b6_the_asymmetric_modes_are_asymmetric,
+            test_b6_a_raid_has_something_to_raid,
+            test_b8_the_guard_holds_against_a_hostile_model,
+            test_b9_the_dead_columns_are_alive,
             test_everything_is_reachable_from_the_client)
 
 

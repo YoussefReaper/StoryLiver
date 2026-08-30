@@ -126,10 +126,19 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     authority.seed_from_memory(pt_id, world, account_id=user_id, player=memory.SOLO)
     _feed(pt_id, 0, "opening", world.get("opening") or world.get("premise"), actor=None,
           meta={"location": start})
+    # The world dials this mode implies. Applied once, here, so Ironman
+    # actually IS one life rather than a label over a world where death still
+    # has resolutions. They stay editable - a mode sets a starting position.
+    resolved_mode = modetree.normalise(session_type or "") if session_type else ""
+    if resolved_mode:
+        dials = modetree.dials_for(resolved_mode)
+        if dials:
+            modes.set_modes(pt_id, dials)
+
     # Whatever this mode needs staged before it is playable. Solo modes only:
     # a room stages itself when the host sets the table.
     if session_type and not session_id:
-        mode_setup(pt_id, world, modetree.normalise(session_type), turn=0)
+        mode_setup(pt_id, world, resolved_mode, turn=0)
     return pt_id
 
 
@@ -137,6 +146,10 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
 
 def _apply_fate(pt, world, turn, entries):
     fired = []
+    # A Sandbox promises no main quest. Firing the seven fated events on
+    # schedule anyway makes it a Story with the label filed off.
+    if modetree.suppresses_fate(mode_of(pt)):
+        return fired
     for f in world.fated_events:
         if f["turn"] != turn:
             continue
@@ -574,7 +587,8 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
     # actual ending with a payout - and the `closed` flag is idempotent, so a
     # story cannot pay out twice.
     ending = None
-    if turn >= world.fated_events[-1]["turn"] and world.fated_events:
+    if (world.fated_events and turn >= world.fated_events[-1]["turn"]
+            and not modetree.suppresses_fate(mode_id)):
         row = _pt(pt_id)
         if row["run_state"] != "ended":
             from . import aftermath
