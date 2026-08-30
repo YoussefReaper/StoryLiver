@@ -308,7 +308,12 @@ def canon_pressure(pt_id: str) -> str:
     """Extra instruction appended to the World Master under STRICT. Empty
     under LOOSE, so the default prompt is unchanged."""
     from . import modes
-    return CANON_PRESSURE if modes.guardrail_action(pt_id) == "cancel" else ""
+    base = CANON_PRESSURE if modes.guardrail_action(pt_id) == "cancel" else ""
+    # Per-domain strictness on top of the single dial: a table that wants the
+    # lore sacred but the physics negotiable can say so, and only the domains
+    # that differ from the default are sent - an untouched world adds nothing.
+    spectrum = modes.domain_directive(pt_id)
+    return "\n\n".join(x for x in (base, spectrum) if x)
 
 
 # ---------------------------------------------------------------------------

@@ -25,8 +25,8 @@ os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-mp-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import (config, db, engine, mana, memory, sessions, sharecard,  # noqa: E402
-                     streaks, worldforge, worldkit)
+from backend import (config, db, engine, identity, mana, memory, sessions,  # noqa: E402
+                     sharecard, streaks, worldforge, worldkit)
 from backend import worlds as world_registry  # noqa: E402
 
 HOST = "host-user-account"
@@ -208,6 +208,77 @@ def check(ctx):
     ok(len(svg) > 1200, f"the card has real content ({len(svg)} bytes)")
     recap = sharecard.text_recap(pt_id)
     ok(room["code"] in recap, "the one-tap post text carries the room code")
+
+    # 12b -------------------------------------------- the card the table votes on
+    # The card panel has always told players that "every seated player approves
+    # a card before it enters play, and an approved anomaly becomes a world
+    # rule". The vote existed, was published over the websocket and was tested
+    # here - and NOTHING in the client ever rendered it, so a submitted card
+    # sat at `pending` for the life of the session and no anomaly ever became
+    # canon. A promise that only the backend could keep.
+    table = [p["player_id"] for p in engine._party_context(session_id)[0]]
+    mine = table[0]
+    card = identity.save(pt_id, {"player_id": mine, "name": "Sabel",
+                                 "concept": "a smuggler with a debt",
+                                 "aspects": {"voice": "quiet"},
+                                 "anomaly": "Sabel can read a lie on sight."},
+                         session_id=session_id)
+    identity.submit(pt_id, card["id"])
+    ok(identity.get(card["id"])["status"] == "pending",
+       "a submitted card waits rather than entering play unasked")
+
+    others = [p for p in table if p != mine]
+    for i, voter in enumerate(others):
+        state = identity.approve(pt_id, card["id"], voter, ok=True, table=table)
+        last = i == len(others) - 1
+        ok((state["status"] == "approved") == last,
+           f"seat {i + 1} of {len(others)} agrees — "
+           + ("the card enters play only once everyone has" if last
+              else "and the card is still waiting"))
+    ok(identity.get(card["id"])["status"] == "approved",
+       "the loop actually closes: a card the table agreed on is in play")
+
+    world_data = dict(engine.world_for(engine._pt(pt_id)).data)
+    ok(identity.anomaly_to_canon(pt_id, world_data, identity.get(card["id"])),
+       "and the approved anomaly becomes a world rule the World Master will "
+       "enforce, which is the whole reason the vote is worth asking for")
+
+    objected = identity.save(pt_id, {"player_id": mine, "name": "Torr",
+                                     "concept": "a rival"}, session_id=session_id)
+    identity.submit(pt_id, objected["id"])
+    identity.approve(pt_id, objected["id"], others[0], ok=False,
+                     note="Too close to my character.", table=table)
+    state = identity.get(objected["id"])
+    ok(state["status"] == "changes_requested",
+       "a single objection sends a card back — approval is unanimous, not a majority")
+    ok(state["approvals"][others[0]]["note"] == "Too close to my character.",
+       "and the objector's reason travels with it, so the change asked for is "
+       "knowable rather than a guess")
+
+    # 12c ------------------------------------------------ the seed nobody passed
+    # sessions.create computes a seed - "a Daily is the same world for
+    # everybody today, and everything else is seeded from the session so a
+    # rematch is genuinely a new world rather than the same ground with the
+    # score reset" - stores it on the session row, and passed it to NOTHING.
+    # The playthrough it created was seeded 0, so the promise in that comment
+    # was false in both directions.
+    d1 = sessions.create("seed-a", world_id="emberfall", mode="coop",
+                         session_type="daily", host_name="A")
+    d2 = sessions.create("seed-b", world_id="emberfall", mode="coop",
+                         session_type="daily", host_name="B")
+    seed_of = (lambda s: db.row("SELECT seed FROM playthroughs WHERE id=?",
+                                (s["playthrough_id"],))["seed"])
+    ok(seed_of(d1) and seed_of(d1) == seed_of(d2),
+       f"two Dailies opened today land on the same seeded world ({seed_of(d1)}) "
+       "- which is the entire premise of a daily challenge")
+
+    m1 = sessions.create("seed-c", world_id="emberfall", mode="chaos",
+                         session_type="duel", host_name="C")
+    m2 = sessions.create("seed-d", world_id="emberfall", mode="chaos",
+                         session_type="duel", host_name="D")
+    ok(seed_of(m1) != seed_of(m2),
+       "two matches do not, so a rematch is a new world rather than the same "
+       "ground with the score reset")
 
     # 13 ------------------------------------- player worlds + copyright boundary
     forged = worldforge.bootstrap("a drowned lighthouse colony", user_id=HOST)

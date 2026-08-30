@@ -97,6 +97,10 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
             parts.append(f'Address the passage to {actor_name} as "you". Name the other players only where they act.')
     if verdict.get("consequence"):
         parts.append(f"WHAT ACTUALLY RESULTS (narrate this, do not change it): {verdict['consequence']}")
+    # The world moved on its own this turn. Given as fact, like every other
+    # consequence: the narrator reports it and never decides it.
+    if verdict.get("legacy_line"):
+        parts.append(verdict["legacy_line"])
     if forbidden:
         parts.append("\nFORBIDDEN OPENINGS (do not begin with any of these constructions):\n" +
                      "\n".join("  - " + f for f in forbidden))

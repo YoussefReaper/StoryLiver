@@ -190,8 +190,18 @@ def close_story(pt_id, world, *, reason="victory", turn=None) -> dict:
     from . import authority
     remembered = authority.remember_across_runs(
         pt_id, world, account_id=_user_id(pt_id), player=memory.SOLO, turn=turn)
+    # A finished run is where a Legacy or Co-op score is actually earned. It
+    # was computed nowhere before this, so two of the three scores on a
+    # player's profile could never move at all.
+    from . import ladder, modetree
+    from . import engine as _engine
+    mode_id = _engine.mode_of(pt_id)
+    scored = ladder.score_run(
+        pt_id, world, player=memory.SOLO, account_id=_user_id(pt_id),
+        session_id=_row(pt_id).get("session_id", ""),
+        family=modetree.family(mode_id))
     return {"closed": True, "reason": reason, "run": result,
-            "town_memory": remembered,
+            "town_memory": remembered, "scored": scored,
             "meta": runs.progress(_user_id(pt_id), _world_id(pt_id))}
 
 

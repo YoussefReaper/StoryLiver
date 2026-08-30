@@ -202,7 +202,8 @@ def test_world_scale():
 
 def _all():
     return (test_callbacks, test_banter, test_npc_initiative,
-            test_session_zero, test_world_scale)
+            test_session_zero, test_world_scale, test_ooc_channel,
+            test_canon_spectrum, test_severity_bites, test_default_lines)
 
 
 def main():
@@ -226,6 +227,134 @@ def test_all_depth():
     for fn in _all():
         fn()
     assert not FAILS, "\n".join(FAILS)
+
+
+
+
+# ---------------------------------------------------------------- OOC channel
+def test_ooc_channel():
+    section("OOC — the table talks about the story, outside the story")
+    from backend import memory as _m, ooc
+    db.init()
+    pt = engine.create_playthrough("depth-ooc")
+    world = engine.world_for(engine._pt(pt))
+
+    ooc.post("", pt, player=_m.SOLO, name="Yusuf", text="wait, is the gate still barred?")
+    ok(len(ooc.history("", pt)) == 1, "a player-to-player line is recorded")
+    ok(not any("gate still barred" in (e["action"] or "") for e in _m.timeline(pt)),
+       "and it NEVER enters the story timeline — asking a question must not "
+       "become a scene the world reacts to")
+
+    ruling = ooc.ask_world_master(engine._pt(pt), world, "where am I?",
+                                  user_id="depth-ooc", player=_m.SOLO)
+    ok(ruling and len(ruling.split()) <= 14,
+       f"the World Master answers in one clause ({ruling!r})")
+    ok(ooc.MAX_ANSWER_TOKENS <= 60,
+       f"hard-capped at {ooc.MAX_ANSWER_TOKENS} tokens — a request to be brief "
+       f"is not a cap, and an answer that runs long has become narration")
+
+
+# ------------------------------------------------------------- canon spectrum
+def test_canon_spectrum():
+    section("canon spectrum — strict lore, loose physics, per table")
+    from backend import modes
+    db.init()
+    pt = engine.create_playthrough("depth-spec")
+
+    ok(modes.domain_directive(pt) == "",
+       "an untouched world sends NOTHING extra — the default prompt is "
+       "byte-identical to what it always was")
+
+    modes.set_domains(pt, levels={"lore": 2, "physics": 0}, sev="harsh")
+    by_id = {d["id"]: d for d in modes.domain_public(pt)["domains"]}
+    ok(by_id["lore"]["level_label"] == "Strict" and by_id["physics"]["level_label"] == "Loose",
+       "lore can be absolute while physics is bendable — one dial could not "
+       "express the position most tables actually hold")
+
+    d = modes.domain_directive(pt)
+    ok("Lore and history: is absolute" in d and "may be bent freely" in d,
+       "and only the domains that DIFFER are sent to the World Master")
+
+    modes.set_domains(pt, levels={"people": 0})
+    ok(modes.domains(pt)["people"] == 2 and by_id["people"]["locked"],
+       "'who characters are' cannot be loosened at all — persona drift is a "
+       "product failure, not a freedom a table opted into")
+
+    ok(modes.severity_mult(pt) == 1.6, "the severity slider scales what a mistake costs")
+    ok(modes.get(pt)["canon"] in ("loose", "strict"),
+       "and the original single dial still works, untouched")
+
+
+# ------------------------------------------------------------ severity slider
+def test_severity_bites():
+    """The slider used to be a number nothing read. It returned 1.6 for
+    'harsh' and no code path multiplied by it, so three tables that had chosen
+    three different answers to "how hard should this land?" all played the
+    identical game. A setting the engine ignores is worse than no setting."""
+    section("severity — the slider changes what a mistake COSTS")
+    from backend import memory as _m, modes, world_master
+    db.init()
+
+    action = "I take from Nessa Quill"
+    verdict = {"valid": True, "importance": 4, "kind": "action",
+               "consequence": "She does not let go quietly.", "new_location": None}
+
+    def play(sev, what):
+        pt_id = engine.create_playthrough(f"depth-sev-{sev}-{abs(hash(what)) % 9999}")
+        modes.set_domains(pt_id, sev=sev)
+        pt = engine._pt(pt_id)
+        world = engine.world_for(pt)
+        out = engine._deterministic_tick(
+            pt, world, turn=1, player=_m.SOLO, actor_name="Yusuf", action=what,
+            verdict=verdict, state=world_master.build_state(pt, world),
+            session_id="", moved_to=None)
+        rel = db.row("SELECT trust, affinity FROM relationships"
+                     " WHERE playthrough_id=? AND dst='nessa'", (pt_id,))
+        return out, (rel["trust"] if rel else 0.0)
+
+    gentle, g_trust = play("gentle", action)
+    normal, n_trust = play("normal", action)
+    harsh, h_trust = play("harsh", action)
+
+    ok(h_trust < n_trust < g_trust,
+       f"the same theft costs more on a harsh table than a gentle one "
+       f"(trust {g_trust:.2f} / {n_trust:.2f} / {h_trust:.2f})")
+
+    seen = [(bool(o["witness"]), (o["witness"] or {}).get("severity"),
+             tuple((o["witness"] or {}).get("witnesses") or ()))
+            for o in (gentle, normal, harsh)]
+    ok(len(set(seen)) == 1 and seen[0][0],
+       f"but all three tables SAW exactly the same thing happen ({seen[0][1]}, "
+       f"{seen[0][2]}) — the slider scales the cost, never the perception, or "
+       f"a gentle table would quietly become one where nobody notices you")
+
+    kind = "I help Nessa Quill carry it"
+    _, g_kind = play("gentle", kind)
+    _, h_kind = play("harsh", kind)
+    ok(abs(g_kind - h_kind) < 0.01,
+       f"and a kindness is worth the same on both ({g_kind:.2f} / {h_kind:.2f}) — "
+       f"a world that forgives slowly must not also reward you faster")
+
+
+# --------------------------------------------------------------- safety lines
+def test_default_lines():
+    section("Session Zero — the table starts with lines already drawn")
+    from backend import canon
+    db.init()
+    pt = engine.create_playthrough("depth-lines")
+    lines = canon.safety(pt)["lines"]
+    ok(len(lines) >= 4, f"a new world starts with real lines, not an empty list ({len(lines)})")
+    ok(any("child" in l.lower() for l in lines) and any("sexual" in l.lower() for l in lines),
+       "covering the boundaries the spec requires by default")
+
+    try:
+        canon.safety_gate(pt, "a graphic torture scene")
+        ok(False, "a default line did not actually cancel anything")
+    except canon.Cancelled:
+        ok(True, "and they are ENFORCED, not decorative")
+
+    ok(canon.set_safety(pt, lines=["Only this one"])["lines"] == ["Only this one"],
+       "every one stays editable — a starting position, not a policy")
 
 
 if __name__ == "__main__":

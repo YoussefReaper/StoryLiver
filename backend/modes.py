@@ -252,3 +252,131 @@ def public(pt_id: str) -> dict:
         "combat_enabled": combat_enabled(pt_id),
         "wego": wego_enabled(pt_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# Canon strictness as a SPECTRUM, not one switch
+# ---------------------------------------------------------------------------
+# A single strict/loose dial is too blunt for how people actually play. The
+# common table position is "the lore is sacred, but I do not want the physics
+# argued with" - or the reverse for a hard-SF setting. The blueprint asks for
+# strictness PER DOMAIN plus a consequence-severity slider, which is what this
+# adds. The single `canon` axis stays exactly as it was and acts as the
+# DEFAULT for every domain, so a world that never opens this panel behaves
+# byte-identically to before.
+
+DOMAINS = {
+    "lore":    {"name": "Lore and history",
+                "blurb": "What happened, who is who, what is already true."},
+    "powers":  {"name": "Powers and their rules",
+                "blurb": "How abilities work, what they cost, what they cannot do."},
+    "physics": {"name": "Physics and the ordinary world",
+                "blurb": "Distance, injury, fire, water - the parts nobody wrote down."},
+    "tone":    {"name": "Tone and register",
+                "blurb": "How grim, how funny, how the world sounds."},
+    "people":  {"name": "Who characters are",
+                "blurb": "Persona, voice, values. Never relaxed below 'strict'."},
+}
+
+# 0 = anything goes, 1 = the world pushes back, 2 = cancelled outright.
+DOMAIN_LEVELS = {
+    0: {"id": "loose",  "label": "Loose",  "blurb": "Bend it freely."},
+    1: {"id": "firm",   "label": "Firm",   "blurb": "The world argues, then allows."},
+    2: {"id": "strict", "label": "Strict", "blurb": "Cancelled before it happens."},
+}
+
+# How hard a consequence lands. Multiplies deterministic severity - it never
+# changes WHETHER something is witnessed, only how much it costs.
+SEVERITY = {
+    "gentle": {"mult": 0.5, "label": "Gentle",
+               "blurb": "Mistakes sting. They do not end things."},
+    "normal": {"mult": 1.0, "label": "Normal", "default": True,
+               "blurb": "What you did is what it costs."},
+    "harsh":  {"mult": 1.6, "label": "Harsh",
+               "blurb": "The world remembers hard and forgives slowly."},
+}
+
+
+def domain_defaults(pt_id: str) -> dict:
+    """Every domain inherits the single canon dial until it is set explicitly.
+    'people' is the exception and is never below strict - a character breaking
+    their own persona is a product failure, not a freedom a table opted into."""
+    base = 2 if get(pt_id)["canon"] == "strict" else 1
+    out = {d: base for d in DOMAINS}
+    out["people"] = 2
+    return out
+
+
+def _blob(pt_id: str) -> dict:
+    row = db.row("SELECT modes FROM playthroughs WHERE id=?", (pt_id,))
+    return db.jload(row["modes"], {}) if row else {}
+
+
+def domains(pt_id: str) -> dict:
+    stored = (_blob(pt_id).get("_domains") or {})
+    out = domain_defaults(pt_id)
+    for k, v in (stored or {}).items():
+        if k in DOMAINS and k != "people":
+            try:
+                out[k] = max(0, min(2, int(v)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def severity(pt_id: str) -> str:
+    val = _blob(pt_id).get("_severity") or ""
+    return val if val in SEVERITY else "normal"
+
+
+def severity_mult(pt_id: str) -> float:
+    return SEVERITY[severity(pt_id)]["mult"]
+
+
+def set_domains(pt_id: str, *, levels=None, sev=None) -> dict:
+    """Stored under reserved keys in the same modes blob, so the spectrum
+    travels with the world and no schema change is needed. The leading
+    underscore keeps them out of validate(), which would reject them as
+    unknown axes."""
+    blob = _blob(pt_id)
+    if levels is not None:
+        blob["_domains"] = {k: max(0, min(2, int(v))) for k, v in levels.items()
+                            if k in DOMAINS and k != "people"}
+    if sev is not None:
+        if sev not in SEVERITY:
+            raise ValueError(f"severity must be one of {sorted(SEVERITY)}")
+        blob["_severity"] = sev
+    db.run("UPDATE playthroughs SET modes=? WHERE id=?", (json.dumps(blob), pt_id))
+    rt.invalidate_playthrough(pt_id)
+    return domain_public(pt_id)
+
+
+def domain_public(pt_id: str) -> dict:
+    lv = domains(pt_id)
+    return {
+        # DOMAIN_LEVELS carries its own "id", which silently overwrote the
+        # domain's id when splatted in - so every domain came back identified
+        # as its own level. Namespaced instead.
+        "domains": [{"id": d, **DOMAINS[d], "level": lv[d],
+                     "level_id": DOMAIN_LEVELS[lv[d]]["id"],
+                     "level_label": DOMAIN_LEVELS[lv[d]]["label"],
+                     "level_blurb": DOMAIN_LEVELS[lv[d]]["blurb"],
+                     "locked": d == "people"} for d in DOMAINS],
+        "levels": [{"value": k, **v} for k, v in DOMAIN_LEVELS.items()],
+        "severity": severity(pt_id),
+        "severities": [{"id": k, **v} for k, v in SEVERITY.items()],
+    }
+
+
+def domain_directive(pt_id: str) -> str:
+    """What the World Master is told about where this table is flexible.
+    Empty when every domain sits at its default, so an untouched world sends
+    exactly the bytes it always did."""
+    lv = domains(pt_id)
+    base = domain_defaults(pt_id)
+    if lv == base:
+        return ""
+    words = {0: "may be bent freely", 1: "should be argued before allowed",
+             2: "is absolute"}
+    lines = [f"- {DOMAINS[d]['name']}: {words[lv[d]]}." for d in DOMAINS if lv[d] != base[d]]
+    return "THIS TABLE'S CANON SPECTRUM:\n" + "\n".join(lines)

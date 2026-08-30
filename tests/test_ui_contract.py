@@ -34,6 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CSS = (ROOT / "frontend" / "assets" / "styles.css").read_text(encoding="utf-8")
 HTML = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+JS = (ROOT / "frontend" / "assets" / "app.js").read_text(encoding="utf-8")
 
 FAILS, NOTES = [], []
 
@@ -134,12 +135,117 @@ def test_assets_are_cache_busted():
     ok(re.search(r'Cache-Control["\']?\s*:\s*["\']no-store', main),
        "the HTML itself is no-store — it is the one document that has to be "
        "re-read for a client to learn the new asset hashes at all")
+    # The rebuilt panels are ES modules under /app, and a module's imports are
+    # resolved by the BROWSER relative to the importing file - so the ?v= hash
+    # on the entry point cannot reach forge.js or viewport.js. They were served
+    # by the catch-all with no cache header at all.
+    ok(re.search(r"Cache-Control[\"']?\s*:\s*[\"']no-cache", main),
+       "and the un-hashed ES module tree revalidates rather than trusting the "
+       "browser's heuristic cache, which can otherwise pair a new entry point "
+       "with a months-old import")
+
+
+# The palette splits cleanly in two: tokens that name a SURFACE and tokens
+# that name INK on a surface. Both themes redefine both halves, so a rule that
+# takes its text colour from the surface half is invisible in every theme at
+# once - which is exactly how it shipped.
+GROUNDS = ("--void", "--ink", "--panel", "--panel-2", "--panel-3",
+           "--line", "--line-soft")
+
+
+def test_text_is_never_painted_in_a_ground_colour():
+    section("contrast — a label painted in a background token is invisible")
+    # `.mode-chip` set `background: var(--panel); color: var(--ink)`. Those are
+    # one shade apart in ink AND one shade apart in parchment, so the name of
+    # every unselected option ("Loose", "Strict") did not render in either
+    # theme. Only the blurb showed, because `small` names --muted explicitly.
+    # Nothing caught it: the element existed, carried text, and had a colour.
+    offenders = []
+    for sel, block in re.findall(r"([^{}]+)\{([^{}]*)\}", CSS):
+        colour = re.search(r"(?<!-)\bcolor:\s*var\((--[a-z0-9-]+)\)", block)
+        ground = re.search(r"\bbackground(?:-color)?:\s*var\((--[a-z0-9-]+)\)", block)
+        if not colour or not ground:
+            continue
+        if colour.group(1) in GROUNDS and ground.group(1) in GROUNDS:
+            offenders.append(f"{sel.strip().splitlines()[-1].strip()} "
+                             f"({colour.group(1)} on {ground.group(1)})")
+    ok(not offenders,
+       "no rule paints text in a surface token on top of another surface token"
+       + (" — found " + "; ".join(offenders[:4]) if offenders else ""))
+
+    m = re.search(r"\.mode-chip\s*\{([^}]*)\}", CSS, re.S)
+    ok(m and "color: var(--vellum)" in m.group(1),
+       "and the chip that shipped the bug names a real foreground token")
+    m_on = re.search(r"\.mode-chip\.on\s*\{([^}]*)\}", CSS, re.S)
+    ok(m_on and "color:" in m_on.group(1),
+       "its selected state, which paints a LIGHT ground in both themes, sets "
+       "its own text colour rather than inheriting the one meant for a dark chip")
+
+
+def test_every_colour_token_exists():
+    section("tokens — var(--nope) paints nothing and raises nothing")
+    # A misspelt custom property is the quietest failure CSS has: no error, no
+    # warning, no paint. `.lib-x:hover { color: var(--danger) }` was written
+    # against a palette whose red is called `--crimson`, so the one affordance
+    # for removing a character from your library had no hover state at all.
+    # Every other check here reads the rules that exist; this one reads the
+    # names they use.
+    declared = set(re.findall(r"(--[a-z0-9-]+)\s*:", CSS))
+    used = set(re.findall(r"var\(\s*(--[a-z0-9-]+)", CSS))
+    # Set from a style attribute in app.js rather than declared in the sheet.
+    inline = set(re.findall(r"--([a-z0-9-]+)\s*:", JS))
+    missing = sorted(u for u in used - declared if u.lstrip("-") not in inline)
+    ok(not missing,
+       "every var() in the stylesheet names a token that is actually declared"
+       + (" — found " + ", ".join(missing) if missing else ""))
+
+
+# Classes that carry no styling of their own on purpose: JS uses them as
+# selectors, or they sit beside a base class that does the painting.
+SEMANTIC_ONLY = {
+    "entry-narration",   # selected by app.js to find prose nodes
+    "fate-card", "obj-card", "party-card", "tension-card", "you-card",
+    "acct-name", "ib-facts",
+}
+
+
+def test_every_class_written_is_a_class_that_paints():
+    section("classes — a name no rule matches is a control with no clothes")
+    # `.input` was written on 36 controls and matched NO rule anywhere. Every
+    # one of them was painted by an ancestor (`.field input`, `.big-field
+    # textarea`), so a control that happened to sit somewhere else rendered as
+    # a raw browser widget - the profile's "About you" was a white box in a
+    # dark theme, because `.field input` does not cover a textarea. Same family
+    # as var(--danger) and `.alert.bad`: a name that paints nothing, raises
+    # nothing, and is invisible to every test that only asks whether an element
+    # exists.
+    css = CSS + (ROOT / "frontend" / "app" / "forge.css").read_text(encoding="utf-8")
+    declared = set(re.findall(r"\.([a-zA-Z][\w-]*)", css))
+    used = {}
+    for src, where in ((JS, "app.js"), (HTML, "index.html")):
+        # Only static class attributes - a template-built name cannot be
+        # checked here without guessing what it interpolates to.
+        for m in re.finditer(r'class="([^"$]*)"', src):
+            for cl in m.group(1).split():
+                used.setdefault(cl, where)
+    missing = sorted(c for c in used
+                     if c not in declared and c not in SEMANTIC_ONLY)
+    ok(not missing,
+       "every class name written on an element is matched by a rule, or is "
+       "listed as deliberately semantic"
+       + (" — found " + ", ".join(f"{c} ({used[c]})" for c in missing[:6])
+          if missing else ""))
+    ok("input" in declared,
+       "and `.input`, the most-written class in the app, is one of them")
 
 
 def _all():
     return (test_hidden_actually_hides, test_scroll_containers_can_shrink,
             test_mobile_overrides_come_after_base_rules,
-            test_responsive_panels_stay_reachable, test_assets_are_cache_busted)
+            test_responsive_panels_stay_reachable, test_assets_are_cache_busted,
+            test_text_is_never_painted_in_a_ground_colour,
+            test_every_colour_token_exists,
+            test_every_class_written_is_a_class_that_paints)
 
 
 def main():

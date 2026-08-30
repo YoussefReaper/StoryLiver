@@ -12,6 +12,9 @@ const S = {
   economy: null, ethics: null, streak: null, worlds: [], forge: null,
   atlas: null, graph: null, knowledge: null, board: null, safety: null, budgetTable: null,
   combat: null, combatMove: null, combatTarget: null,
+  ooc: null, oocUnread: 0, spectrum: null,
+  legacy: null, chronUnseen: 0, modeTree: null, pickedMode: null,
+  room: null, objective: null,
   view: 'story', prefs: { theme: 'ink', density: 'comfortable', power: false, atlasStyle: 'map' },
   selectedPlace: null,
 };
@@ -64,6 +67,35 @@ function applyPrefs() {
 }
 
 /* ================================================================ THRESHOLD */
+async function loadModeTree() {
+  if (S.modeTree) return S.modeTree;
+  try { S.modeTree = await api('/modes/tree'); } catch { S.modeTree = null; }
+  return S.modeTree;
+}
+
+/* The kind of game, which is a different question from the kind of world.
+   `modes.py` dials are canon/tone/stakes and can change mid-run; this is
+   chosen once and decides whether the world is still here tomorrow. */
+function renderModePicker() {
+  const box = $('#modePick');
+  if (!box || !S.modeTree) return;
+  const fam = S.modeTree.families.find((f) => f.id === (S.pickedFamily || 'multiplayer'))
+    || S.modeTree.families[0];
+  box.innerHTML = `
+    <div class="mode-fams">${S.modeTree.families.map((f) => `
+      <button class="chip ${f.id === fam.id ? 'on' : ''}" data-family="${esc(f.id)}"
+              title="${esc(f.blurb)}">${esc(f.name)}</button>`).join('')}</div>
+    <p class="fineprint">${esc(fam.blurb)}</p>
+    <div class="mode-pick">${fam.modes.map((m) => `
+      <button class="mode-card ${m.id === S.pickedMode ? 'on' : ''}" data-gamemode="${esc(m.id)}">
+        <b>${esc(m.name)}</b><small>${esc(m.blurb)}</small>
+        <small class="mode-meta">${m.persistent ? 'kept' : 'ends when the match does'}
+          &middot; ${m.min_players === m.max_players ? `${m.max_players}` :
+    `${m.min_players}\u2013${m.max_players}`} player${m.max_players === 1 ? '' : 's'}
+          ${m.actions === 'talk' ? '&middot; talk only' : ''}</small>
+      </button>`).join('')}</div>`;
+}
+
 async function initThreshold() {
   const [worlds, saves, econ] = await Promise.all([
     api('/worlds'), api('/playthroughs'), api('/economy'),
@@ -111,12 +143,17 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   localStorage.setItem('storyliver.last', JSON.stringify({ id, sessionId, playerId, role }));
   absorb(ws);
   S.lastFeedId = 0; lastRenderedTurn = -1;
+  S.ooc = null; S.oocUnread = 0; renderOocBadge();
+  S.legacy = null; S.chronUnseen = 0;
   $('#feed').innerHTML = '';
   renderFeed(feed);
   renderAll();
   $('#threshold').hidden = true;
   $('#app').hidden = false;
   refreshStreak();
+  refreshObjective();
+  announceReturn();
+  if (sessionId) { refreshPendingCards(); loadWhispers(); }
   if (sessionId) connectWS();
   $('#actionInput').focus();
 
@@ -148,6 +185,11 @@ function absorb(ws) {
   if (ws.board) S.board = ws.board;
   if (ws.safety) S.safety = ws.safety;
   if (ws.budget) S.budgetTable = ws.budget;
+  if (ws.legacy) {
+    S.legacy = ws.legacy;
+    S.chronUnseen = ws.legacy.unseen || 0;
+    renderLegacyBadges();
+  }
 }
 
 async function refreshWorkspace() {
@@ -166,6 +208,10 @@ async function refreshStreak() {
 }
 
 function renderAll() {
+  // The Room tab is a control that only exists in a Room. Everywhere else it
+  // would be a dead button, which is worse than no button.
+  const roomTab = $('#roomTab');
+  if (roomTab) roomTab.hidden = (S.state?.mode?.id !== 'room');
   renderTopbar();
   renderYouCard();
   renderParty();
@@ -238,7 +284,15 @@ function renderTopbar() {
   if (st.session) {
     chip.hidden = false;
     $('#roomCode').textContent = st.session.code;
-    $('#roomMode').textContent = st.session.mode === 'chaos' ? 'chaos' : 'co-op';
+    // The sub-mode is the useful label: "Duel" tells a player the world ends
+  // when the match does, which "co-op" never could. The persistence note goes
+  // on the hover, because "will this be here tomorrow" is the question a
+  // player actually has and nowhere else answers it.
+  // st.mode is present for every world; st.session only exists in a room.
+  const ms = st.mode || st.session.mode_spec;
+  $('#roomMode').textContent = (ms && ms.name)
+    || (st.session.mode === 'chaos' ? 'chaos' : 'co-op');
+  $('#roomChip').title = ms ? `${ms.name} - ${ms.persistence_note}` : 'Room code';
     S.sessionId = st.session.id;
   } else chip.hidden = true;
 
@@ -309,6 +363,15 @@ function renderParty() {
       ${p.player_id !== S.playerId && p.role !== 'spectator'
         ? `<button class="whisper-to" data-whisper-player="${p.player_id}" data-name="${esc(p.name)}" title="Whisper">&#9998;</button>` : ''}
     </div>`).join('');
+  const spec = S.state?.session?.mode_spec;
+  const seats = S.state?.session?.seats || [];
+  if (spec && spec.turn_policy === 'round_robin' && seats.length) {
+    const whose = seats[(S.state.turn || 0) % seats.length];
+    $('#partyNote').textContent = whose === S.playerId
+      ? 'Your turn.'
+      : `Waiting on ${playerName(whose)}.`;
+    return;
+  }
   $('#partyNote').textContent = S.session.mode === 'chaos'
     ? 'Chaos: contested moves go to the World Master — state first, then a roll.'
     : 'Co-op: one world, one timeline. Every character remembers each of you separately.';
@@ -316,10 +379,22 @@ function renderParty() {
 
 function renderFate() {
   const st = S.state; if (!st) return;
+  // What has happened is named. What is coming is a mark and a turn - the
+  // server does not send the title of an event you have not reached, so this
+  // cannot leak it even by accident.
+  const ahead = st.fate.filter((f) => f.status !== 'passed').length;
+  const count = $('#fateCount');
+  if (count) {
+    count.textContent = ahead ? `${ahead} still to come` : 'all of it, now';
+    count.title = 'Fate is fixed. What it is, you find out when it lands.';
+  }
   $('#fateList').innerHTML = st.fate.map((f) => `
     <li class="fate-item ${f.status}">
       <span class="ft">T${f.turn}${f.status === 'next' ? ' · next' : ''}</span>
-      <span class="fx">${esc(f.title)}</span>
+      <span class="fx">${f.title
+    ? esc(f.title)
+    : `<em class="fate-sealed">${f.status === 'next'
+      ? 'Something lands here.' : 'Sealed.'}</em>`}</span>
     </li>`).join('');
 }
 
@@ -365,6 +440,9 @@ function renderAtlas() {
   const a = S.atlas; const svg = $('#atlasMap');
   if (!a) { svg.innerHTML = ''; return; }
   const W = 1000, H = 1000, PAD = 90;
+  // Re-attached on every redraw with the same base extent, so the view the
+  // player had panned to survives the map growing under them.
+  if (window.__viewport) window.__viewport.attach(svg, [0, 0, W, H]);
   const px = (n) => PAD + n.x * (W - PAD * 2);
   const py = (n) => PAD + n.y * (H - PAD * 2);
   const byId = Object.fromEntries(a.nodes.map((n) => [n.id, n]));
@@ -445,8 +523,16 @@ function renderGraph() {
   });
   const futureBase = 40 + (nodes.length ? (nodes[nodes.length - 1].seq - startSeq + 1) : 0) * GAPX;
   const width = futureBase + (g.futures.length ? g.futures.length * GAPX : 0) + NW + 60;
-  svg.setAttribute('viewBox', `0 0 ${Math.max(width, 900)} 400`);
-  svg.style.minWidth = `${Math.max(width, 900)}px`;
+  const fullWidth = Math.max(width, 900);
+  // The old panel widened the viewBox as nodes accumulated and left the far
+  // end unreachable. It is a pannable canvas now, so it stays the size of the
+  // frame and the player moves around inside it.
+  if (window.__viewport) {
+    window.__viewport.attach(svg, [0, 0, fullWidth, 400]);
+  } else {
+    svg.setAttribute('viewBox', `0 0 ${fullWidth} 400`);
+    svg.style.minWidth = `${fullWidth}px`;
+  }
 
   const parts = [];
   for (const e of g.edges) {
@@ -798,7 +884,13 @@ async function submitAction(text) {
       // A dead character is a different kind of "blocked": there is something
       // to DO about it, so offer the resolutions instead of a warning toast.
       if (r.dead) { toast(r.reason, 'warn'); await offerResolutions(); return; }
-      toast(r.reason, 'warn'); return;
+      // The server says WHOSE turn it is and the client used to drop that on
+      // the floor, leaving "Not your turn - wait for the table" with no way to
+      // know who anyone is waiting on.
+      toast(r.whose_turn
+        ? `Not your turn — ${playerName(r.whose_turn)} is up.`
+        : r.reason, 'warn');
+      return;
     }
     const { feed } = await api(`/playthroughs/${S.ptId}?player=${encodeURIComponent(S.playerId)}`);
     renderFeed(feed.filter((e) => e.id > S.lastFeedId));
@@ -806,6 +898,18 @@ async function submitAction(text) {
     if (r.note) toast(r.note, 'warn');
     refreshStreak();
     await refreshAwareness();
+    await refreshLegacy();
+    await refreshObjective();
+    // The climax reveal fires inside the turn. Solo has no socket, so without
+    // this the biggest beat in the campaign would exist only in the prose.
+    const fired = (r.tick && r.tick.legacy) || {};
+    if (fired.sabotage) {
+      // Damage without a name on it. That gap is the whole mechanic.
+      toast('Something you built came apart. Nobody will say who.', 'warn');
+    }
+    (fired.intel || []).forEach((i) => toast(
+      `${i.name}, inside ${i.inside}: ${i.summary}`));
+    if (fired.reveal) showTraitorReveal(fired.reveal);
     if (r.ending) showEnding(r.ending);
   } catch (err) {
     toast(`The world stalled: ${err.message}`, 'err');
@@ -876,7 +980,7 @@ function handleWS(msg) {
       renderFeed(msg.entries || []);
       S.busy = false; thinking(false);
       if (msg.note && msg.by === S.playerId) toast(msg.note, 'warn');
-      refreshWorkspace(); refreshStreak();
+      refreshWorkspace(); refreshStreak(); refreshLegacy(); refreshObjective();
       break;
     case 'whisper': {
       const w = msg.payload || {};
@@ -907,12 +1011,81 @@ function handleWS(msg) {
     case 'xcard':
       toast('Someone touched the X-card. The scene is struck.', 'warn');
       break;
+    case 'room':
+      // Every seat sees the table change at the same moment. A room where one
+      // player is a turn behind is a room where the timing itself is a tell.
+      loadRoom();
+      if (msg.event === 'resolved' && msg.result && msg.result.banished) {
+        const b = msg.result.banished;
+        toast(`${b.name}: ${b.verdict}`, b.was_imposter ? '' : 'warn');
+      }
+      break;
+    case 'contest':
+      toast(`${msg.result.place} changed hands.`);
+      refreshObjective();
+      break;
+    case 'sides':
+      toast('Sides have been dealt.');
+      refreshObjective();
+      break;
+    case 'raid':
+      if (msg.result.opened) toast(`${msg.result.name} is dead. The seat is open.`, 'warn');
+      refreshObjective();
+      break;
+    case 'mask':
+      toast(msg.result.pulled
+        ? `${msg.result.name}: ${msg.result.verdict}`
+        : `${msg.result.name}: ${msg.result.verdict} That is on you.`,
+      msg.result.pulled ? '' : 'err');
+      refreshObjective();
+      break;
+    case 'chronicle':
+      // A new KNOWN node is a notification, not a story beat. It never enters
+      // the narrative feed - that would put a world event in the middle of a
+      // scene the player is standing in.
+      S.chronUnseen += 1; renderLegacyBadges();
+      if (msg.reveal) toast(`You learn: ${msg.reveal.label}`, 'warn');
+      if (S.view === 'chronicle') openChronicle();
+      break;
+    case 'org':
+      if (msg.event === 'founded') toast(`${msg.org.name} exists now.`);
+      if (msg.event === 'order' && msg.result?.carried) {
+        toast(`${msg.result.attributed_to} did it.`);
+      }
+      if (S.view === 'power') loadPower();
+      break;
+    case 'traitor':
+      showTraitorReveal(msg.reveal);
+      refreshLegacy().then(() => { if (S.view === 'chronicle') renderChronicle(); });
+      break;
+    case 'ooc': {
+      const m = msg.message || {};
+      // Never renderFeed'd. Table talk that leaked into the story feed would
+      // be indistinguishable from something the world had heard.
+      S.ooc = [...(S.ooc || []).filter((x) => x.id !== m.id), m];
+      if (S.view === 'ooc') renderOoc();
+      else if (m.player_id !== S.playerId) { S.oocUnread += 1; renderOocBadge(); }
+      break;
+    }
     case 'safety':
       S.safety = msg.payload; toast('Safety lines updated.');
       break;
-    case 'card':
-      toast(`Character card ${msg.event}.`);
+    case 'card': {
+      // A toast saying "card submitted" and nothing else is how this sat for
+      // as long as the vote endpoint went uncalled. Somebody else's card
+      // arriving is a thing you have to DO something about.
+      const c = msg.card || {};
+      if (msg.event === 'submitted' && c.player_id !== S.playerId) {
+        S.cardsPending = true; renderCardBadge();
+        toast(`${c.name || 'A character'} is waiting on the table's approval.`, 'warn');
+      } else if (msg.event === 'vote' && c.player_id === S.playerId) {
+        toast(c.status === 'approved' ? 'Your card is approved and in play.'
+          : c.status === 'changes_requested' ? 'The table asked for changes to your card.'
+            : 'A seat has voted on your card.');
+      }
+      loadPendingCards();
       break;
+    }
     case 'queued':
       S.busy = false; thinking(false); toast(msg.message || 'Another player is mid-turn.', 'warn');
       break;
@@ -945,6 +1118,10 @@ function setView(view) {
   if (view === 'graph') renderGraph();
   if (view === 'known') renderKnown();
   if (view === 'combat') loadCombat().then(renderCombat);
+  if (view === 'ooc') { S.oocUnread = 0; renderOocBadge(); loadOoc(); }
+  if (view === 'chronicle') openChronicle();
+  if (view === 'power') loadPower();
+  if (view === 'room') loadRoom();
 }
 
 /* --------------------------------------------------------- slash commands */
@@ -967,6 +1144,17 @@ const COMMANDS = [
   { cmd: '/settings', desc: 'Theme, density, power mode', cost: 'free', run: showSettings },
   { cmd: '/share', desc: 'Make a story card', cost: 'free', run: () => showShare() },
   { cmd: '/xcard', desc: 'Strike this scene. No reason needed.', cost: 'free', run: doXCard },
+  { cmd: '/ooc', desc: 'Talk to the table, outside the story', cost: 'free', arg: 'anything' },
+  { cmd: '/ask', desc: 'One short ruling from the World Master', cost: '~1 line', arg: 'question' },
+  { cmd: '/spectrum', desc: 'Strict lore, loose physics — per domain', cost: 'free', run: showSpectrum },
+  { cmd: '/chronicle', desc: 'What the world knows you know', cost: 'free', run: () => setView('chronicle') },
+  { cmd: '/power', desc: 'Skills, who answers you, who owns your name', cost: 'free', run: () => setView('power') },
+  { cmd: '/found', desc: 'Found an organisation', cost: 'free', run: showFoundOrg, arg: 'name' },
+  { cmd: '/recall', desc: 'Learn one thing that happened without you', cost: 'free', run: doSurfaceReveal },
+  { cmd: '/standing', desc: 'Your scores, rank and trophies', cost: 'free', run: showStanding },
+  { cmd: '/board', desc: 'The leaderboard', cost: 'free', run: () => showBoard('pvp') },
+  { cmd: '/case', desc: 'The casefile, if there is one', cost: 'free', run: showCase },
+  { cmd: '/room', desc: 'The table', cost: 'free', run: () => setView('room') },
 ];
 
 function openPalette(prefill = '') {
@@ -998,6 +1186,12 @@ async function runCommand(raw) {
   if (word === '/go') {
     if (!arg) { setView('atlas'); return toast('Pick a place on the map.'); }
     return submitAction(`I make my way to ${arg}.`);
+  }
+  if (word === '/found') return showFoundOrg(arg);
+  if (word === '/ooc' || word === '/ask') {
+    setView('ooc');
+    if (!arg) return toast(word === '/ask' ? 'Ask the World Master what?' : 'Say what?');
+    return sendOoc(arg, word === '/ask');
   }
   if (word === '/whisper') {
     const npc = (S.state?.npcs || []).find((n) => n.present &&
@@ -1110,10 +1304,34 @@ async function showSafety() {
     </div>`);
 }
 
+/* Every character on the account, cached for the session. Fetched once because
+   it is read by the card panel, the profile and the join flow, and none of
+   them should pay for it twice. */
+async function roster(force) {
+  if (!S.account) return [];
+  if (S.roster && !force) return S.roster;
+  try { S.roster = (await api('/cards')).cards || []; } catch { S.roster = []; }
+  return S.roster;
+}
+
+/** Bring somebody from the library into this world. */
+async function adoptCard(cardId) {
+  try {
+    await api(`/cards/${cardId}/adopt`, { method: 'POST',
+      body: { playthrough_id: S.ptId, player_id: S.playerId } });
+  } catch (e) { return toast(e.message, 'err'); }
+  await roster(true);
+  await showCard();
+  toast('They are here. Change anything you like — this world gets its own copy.');
+}
+
 async function showCard() {
   const cards = await api(`/playthroughs/${S.ptId}/cards`);
   const mine = (cards.cards || []).find((c) => c.player_id === S.playerId);
   const a = mine?.aspects || {};
+  // The library, shown only when it can actually save you the typing: signed
+  // in, somebody in it, and no character standing here yet.
+  const lib = mine ? [] : await roster();
   // Remembered so the identity panel can be opened straight from the menu
   // without making the player find their card again first.
   S.cardId = mine?.id || null;
@@ -1121,6 +1339,20 @@ async function showCard() {
   if (mine?.avatar_url) S.identityAvatar = mine.avatar_url;
   showModal(`${head('Your character card', 'Leave anything blank and roll it, or let the cheapest model fill it in.')}
     <div class="modal-body">
+      ${lib.length ? `<div class="lib">
+        <div class="lib-head">Someone you have already made</div>
+        <div class="lib-row">${lib.map((c) => `
+          <button class="lib-card" data-adopt="${esc(c.id)}">
+            <span class="lib-av">${c.avatar_url
+              ? `<img src="${esc(c.avatar_url)}" alt="" />`
+              : esc((c.name || '?')[0])}</span>
+            <span class="lib-n">${esc(c.name || 'unnamed')}</span>
+            <span class="lib-c">${esc(c.concept || '')}</span>
+          </button>`).join('')}</div>
+        <p class="fineprint">This world gets its own copy of them — what happens
+          here never rewrites the one in your library, or the one in any other
+          story they are standing in.</p>
+      </div>` : ''}
       <label class="big-field"><span>Name</span><input id="cdName" maxlength="40" value="${esc(mine?.name || '')}"></label>
       <label class="big-field"><span>Concept</span><input id="cdConcept" maxlength="120" value="${esc(mine?.concept || '')}" placeholder="a courier who stopped running"></label>
       <label class="big-field"><span>Voice</span><textarea id="cdVoice" rows="2" placeholder="How you speak.">${esc(a.voice || '')}</textarea></label>
@@ -1384,7 +1616,8 @@ async function showShare() {
       <p class="fineprint">One self-contained SVG. No tracker, no font fetch, nothing phones home.</p></div>`);
 }
 
-function showHost() {
+async function showHost() {
+  await loadModeTree();
   const opts = [...S.worlds.filter((w) => w.kind === 'starter'), ...S.worlds.filter((w) => w.kind === 'mine')];
   showModal(`${head('Host a room', 'A six-character code. Anyone with it is playing inside a minute.')}
     <div class="modal-body">
@@ -1402,9 +1635,12 @@ function showHost() {
           <svg viewBox="0 0 16 16" class="ico"><path d="M3 13 13 3M6 3H3v3M10 13h3v-3"/></svg>
           <div><b>Chaos</b><span>Competing goals. Contested moves are settled on state, then a roll. Splitting and betrayal are on.</span></div></button>
       </div>
+      <div class="mode-tree-pick"><span class="big-label">What kind of game</span>
+        <div id="modePick"></div></div>
       <div class="notice calm"><svg viewBox="0 0 16 16" class="ico"><path d="M8 1.5 4 8.6h3L6.5 14.5 12 7h-3z"/></svg>
         <div><b>Your wallet funds the room.</b> Up to ${(S.economy && S.economy.free_friends_per_host) || 5} friends play free.</div></div>
       <button class="btn btn-primary btn-lg" id="hostGo">Open the room</button></div>`);
+  renderModePicker();
 }
 
 async function createRoom() {
@@ -1414,7 +1650,8 @@ async function createRoom() {
   try {
     const r = await api('/sessions', { method: 'POST', body: {
       user_id: S.userId, world_id: $('#hostWorld').value,
-      mode: $('.mode-opt.on')?.dataset.mode || 'coop', host_name: name } });
+      mode: $('.mode-opt.on')?.dataset.mode || 'coop',
+      session_type: S.pickedMode || '', host_name: name } });
     S.session = r.session;
     closeOverlays();
     await openPlaythrough(r.session.playthrough_id, { sessionId: r.session.id, playerId: 'host', role: 'host' });
@@ -1443,6 +1680,10 @@ async function showLibrary() {
 }
 
 async function showForge() {
+  // The rebuilt forge lives in /app/forge.js. This shell stays because the
+  // old world list and editor still hang off it; the BUILD flow - the part
+  // that matters and the part that was a text box - is the module's.
+  if (window.__forge) return window.__forge.openModal();
   const worlds = await api('/forge/worlds');
   const suggestions = ['a frozen post-collapse Earth', 'a cyberpunk megacity in 2200',
     'a lighthouse at the end of the world', 'a generation ship 200 years in',
@@ -1502,17 +1743,33 @@ async function peekResearch() {
     const r = await api(`/forge/research?setting=${encodeURIComponent(setting)}`);
     if ($('#bootSetting')?.value.trim() !== setting) return;   // the player moved on
     if (!r.enabled) { box.innerHTML = ''; return; }
+    // What we UNDERSTOOD, before what we could look up. A crossover that no
+    // wiki confirms is still a crossover, and telling the player "nothing
+    // found" about a request the model knows perfectly well reads as broken.
+    const p = r.premise || {};
+    const understood = (p.host || (p.imports || []).length) ? `
+      <div class="rp-read">
+        ${p.host ? `<div class="rp-line"><i>World</i><b>${esc(p.host)}</b></div>` : ''}
+        ${(p.imports || []).map((im) => `<div class="rp-line">
+          <i>Bringing in</i><b>${esc(im.character)}</b>
+          <span>from ${esc(im.from)}</span></div>`).join('')}
+      </div>` : '';
+
     if (!r.found) {
-      // Saying so is the point: an invented setting and a real one should not
-      // look identical right up until the world is built.
-      box.innerHTML = `<div class="rp rp-none"><b>Nothing found for that name.</b>
-        <span>It will be built from imagination — which is exactly right for an
-        original setting.</span></div>`;
+      box.innerHTML = `<div class="rp rp-none">
+        ${understood || '<b>An original setting.</b>'}
+        <span>${understood
+    ? 'No wiki confirmed these, so the build will lean on what the model already knows about them. Names you wrote are used as you wrote them.'
+    : 'It will be built from imagination — which is exactly right for an original setting.'}</span>
+      </div>`;
       return;
     }
     box.innerHTML = `<div class="rp rp-found">
       <b>Found it — ${esc(r.canonical_name || r.setting)}</b>
+      ${understood}
       <span>Your world will use the real names from this setting.</span>
+      ${(r.ungrounded || []).length ? `<span class="rp-partial">Not confirmed by a wiki:
+        ${r.ungrounded.map(esc).join(', ')} — built from what the model knows.</span>` : ''}
       ${r.characters.length ? `<div class="rp-tags">${r.characters.slice(0, 8)
         .map((c) => `<i>${esc(c)}</i>`).join('')}</div>` : ''}
       ${r.places.length ? `<div class="rp-tags rp-dim">${r.places.slice(0, 5)
@@ -1679,11 +1936,18 @@ function showMenu() {
       ${item('cost', 'chart', 'Running cost', 'What this story has actually cost')}
       ${item('ethics', 'shield', 'Your data is yours', 'No training, no guilt hooks, export any time')}
       ${item('modes', 'scale', 'World modes', 'Canon, tone, stakes, pacing, difficulty')}
+      ${item('spectrum', 'scale', 'Canon spectrum', 'Strict lore, loose physics — and how hard it lands')}
+      ${item('chronicle', 'list', 'The Chronicle', 'What the world has become, as far as you know it')}
+      ${item('power', 'shield', 'Your power', 'Skills, who answers you, who owns your name')}
+      ${item('found', 'forge', 'Found an organisation', 'Command through people instead of alone')}
+      ${item('standing', 'flame', 'Your standing', 'Scores, season rank, trophies, and who remembers you')}
+      ${item('board', 'chart', 'Leaderboards', 'Global, and today&rsquo;s shared world')}
+      ${item('case', 'list', 'The casefile', 'What you can actually show')}
       ${item('arc', 'list', 'Timeline &amp; premise', 'Where you begin, and any alternate universe')}
       ${item('identity', 'book', 'Who they are', 'The card that keeps a character sounding like themselves')}
       ${item('boss', 'flame', 'Design a boss', 'A fight that has to be worked out, not out-damaged')}
       ${item('report', 'shield', 'Report this world', 'Worlds here are written by players')}
-      ${item('explain', 'book', 'What is StoryLiver?', 'The five things that make this not a chatbot')}
+      ${item('explain', 'book', 'What is StoryLiver?', 'What this actually is, and what it does not do')}
       ${item('profile', 'gear', S.account ? 'Your profile' : 'Sign in', S.account
           ? 'Mana, runs, and the towns that remember you'
           : 'Keep your Mana and reputation across devices')}
@@ -1694,6 +1958,8 @@ function showMenu() {
       ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
       ${item('forge', 'forge', 'World Forge', 'Build a world, or name a setting')}
       ${item('rules', 'scale', 'The rules of this world', 'What the World Master enforces')}
+      ${item('canonlog', 'shield', 'Where the world pushed back', 'Every time a rule stopped something')}
+      ${item('au', 'book', 'Change one thing', 'An alternate premise this world diverges on')}
       ${item('switch', 'book', 'Your stories', 'Return to the threshold')}
       ${item('delete', 'trash', 'Delete this story', 'Permanent. There is no undo.', true)}
     </div></div>`);
@@ -1715,6 +1981,134 @@ async function showCost() {
       arithmetic and costs nothing.</p></div>`);
 }
 
+async function showCanonLog() {
+  // The safety layer working, made visible. Every one of these is a moment the
+  // world refused to contradict itself, and a player who never sees them has
+  // no reason to believe the rules are real.
+  let entries = [];
+  try {
+    entries = (await api(`/playthroughs/${S.ptId}/canonlog`)).entries || [];
+  } catch { return toast('Could not read the log.', 'err'); }
+  showModal(`${head('Where the world pushed back',
+    'Every time something tried to contradict this world and was stopped.')}
+    <div class="modal-body">
+      ${entries.length ? `<div class="mem-list">${entries.slice().reverse().map((c) => `
+        <div class="mem">
+          <div class="mem-meta"><span>turn ${c.turn}</span>
+            <span>${esc(c.kind || 'checked')}</span>
+            ${c.rule_ref ? `<span>${esc(c.rule_ref)}</span>` : ''}</div>
+          ${esc(c.detail || c.text || '')}
+        </div>`).join('')}</div>`
+    : `<p class="fineprint">Nothing has been stopped yet. That is the usual state —
+        the rules are checked before every passage, and most passages do not
+        try anything.</p>`}
+      <p class="fineprint">Checked in code before a word is written, which is why
+        breaking a rule costs you nothing: the attempt never happened.</p>
+    </div>`);
+}
+
+async function showAU() {
+  const current = S.state?.arc?.au_premise || '';
+  showModal(`${head('Change one thing',
+    'One sentence this world diverges on. Everything else stays as it is.')}
+    <div class="modal-body">
+      ${current ? `<div class="alert owed"><div class="alert-t">Currently</div>
+        <div class="alert-b">${esc(current)}</div></div>` : ''}
+      <label class="big-field"><span>What is different here</span>
+        <input class="input" id="auPremise" maxlength="200"
+          value="${esc(current)}"
+          placeholder="The Warden never took the post."></label>
+      <p class="fineprint">The narrator is told this from now on, and it never
+        drifts — it sits with the world's tone rather than in a turn's prompt.
+        Leave it empty to go back to the world as written.</p>
+      <div class="alert-act">
+        <button class="btn btn-primary" data-au-save="1">Set it</button>
+      </div>
+    </div>`);
+}
+
+async function saveAU() {
+  const premise = $('#auPremise')?.value || '';
+  try {
+    await api(`/playthroughs/${S.ptId}/au?user_id=${encodeURIComponent(S.userId)}`,
+      { method: 'POST', body: { premise } });
+    closeOverlays();
+    toast(premise ? 'This world diverges there now.' : 'Back to the world as written.');
+    refreshWorkspace();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/** A town that remembers you is the payoff for having played here before. */
+function announceReturn() {
+  const r = S.state?.returned;
+  if (!r || !r.seeded || !(r.factions || []).length) return;
+  if (sessionStorage.getItem(`returned:${S.ptId}`)) return;
+  sessionStorage.setItem(`returned:${S.ptId}`, '1');
+  const worst = [...r.factions].sort((a, b) => a.standing - b.standing)[0];
+  toast(worst.standing < 0
+    ? `${worst.faction} has not forgotten you. Standing ${Math.round(worst.standing)}.`
+    : `${worst.faction} remembers you kindly. Standing ${Math.round(worst.standing)}.`,
+  worst.standing < 0 ? 'warn' : '');
+}
+
+/* ---------------------------------------------------------------------------
+   Hidden Mask — the verb the mode was missing.
+
+   Every other sub-mode in the objective panel has a control: Casefile, Post
+   today's score, Take it, Deal sides, Open the raid. Hidden Mask had a
+   sentence saying how many were still hiding and no way to act on it, while
+   the vote endpoint sat implemented and never called. The mechanic existed
+   and could not be played.
+
+   The cost is stated before the click rather than after, because that is the
+   entire tension: guess right and a mask comes off, guess wrong and somebody
+   who actually lived here is dead, the people who cared about them grieve,
+   and the world knows who called for it.
+   ------------------------------------------------------------------------ */
+
+function showMaskCall() {
+  const living = (S.state?.npcs || []).filter((n) => n.alive !== false);
+  showModal(`${head('Call a face out',
+    'Name someone, and the room pulls at their face.')}
+    <div class="modal-body">
+      ${living.length ? `<div class="mask-grid">${living.map((n) => `
+        <button class="mode-card" data-mask-vote="${esc(n.id)}"
+          data-mask-name="${esc(n.name)}">
+          <b>${esc(n.name)}</b>
+          <small>${esc(n.role || 'here')}${n.location_name
+    ? ` · ${esc(n.location_name)}` : ''}</small>
+        </button>`).join('')}</div>`
+    : '<p class="fineprint">Nobody is here to accuse.</p>'}
+      <div class="alert vacuum" style="margin-top:14px">
+        <div class="alert-t">There is no free guess</div>
+        <div class="alert-b">Right, and a mask comes off. Wrong, and a person who
+          actually lived here is dead — the people who cared about them grieve,
+          whatever they held stands empty, and the world records who called
+          for it.</div>
+      </div>
+    </div>`);
+}
+
+async function maskVote(npcId, name) {
+  if (!confirm(`Call out ${name}? If you are wrong they die, and the world `
+    + 'will know it was you.')) return;
+  let r;
+  try {
+    r = await api(`/playthroughs/${S.ptId}/masks/vote/${npcId}`
+      + `?player=${encodeURIComponent(S.playerId)}`, { method: 'POST' });
+  } catch (e) { return toast(e.message, 'err'); }
+  closeOverlays();
+  if (r.pulled) {
+    toast(`${r.name}: ${r.verdict}`, 'warn');
+  } else {
+    const c = r.cost || {};
+    toast(`${r.name}: ${r.verdict}`
+      + (c.mourned_by ? ` ${c.mourned_by} people are grieving.` : '')
+      + (c.succession ? ' Their seat is open.' : ''), 'err');
+  }
+  refreshWorkspace();
+}
+
 function showRules() {
   if (!S.state) return;
   showModal(`${head('The rules of this world', 'Checked before a single word is written.')}
@@ -1724,6 +2118,25 @@ function showRules() {
     </div><p class="fineprint">Break one and the world pushes back in character, cites the rule, and charges
     you nothing for the attempt.</p></div>`);
 }
+
+/* The rebuilt panels are ES modules and cannot see this file's scope, so the
+   two things they need - the transport, and what to do with a built world -
+   are handed over explicitly rather than reached for. */
+window.__appBridge = {
+  api: (path, opts) => api(path, opts),
+  esc: (s) => esc(s),
+  toast: (m, k) => toast(m, k),
+  closeOverlays: () => closeOverlays(),
+  showModal: (html) => showModal(html),
+  head: (t, s) => head(t, s),
+  onWorldBuilt: async (payload) => {
+    const world = payload.world || payload;
+    S.forgeWorld = world;
+    closeOverlays();
+    if (payload.notice) toast(payload.notice, 'warn');
+    openEditor(world, world.id, payload.notice || 'Built. Edit anything before you play.');
+  },
+};
 
 /* ==================================================================== WIRE */
 function autosize(ta) {
@@ -1850,6 +2263,21 @@ function wire() {
   $('#tableTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view);
   });
+
+  $('#oocForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('#oocInput');
+    const toWm = $('#oocToWm').checked;
+    const text = input.value;
+    if (!text.trim()) return;
+    input.value = '';
+    sendOoc(text, toWm);
+  });
+  $('#oocToWm').addEventListener('change', (e) => {
+    $('#oocInput').placeholder = e.target.checked
+      ? 'Ask the World Master — one clause back, never a scene.'
+      : 'Talk to the table — free, and never part of the story.';
+  });
   $('#souls').addEventListener('click', (e) => {
     const b = e.target.closest('[data-soul]'); if (b) showSoul(b.dataset.soul);
   });
@@ -1861,10 +2289,13 @@ function wire() {
     if (b) startWhisper('player', b.dataset.whisperPlayer, b.dataset.name);
   });
   $('#atlasMap').addEventListener('click', (e) => {
+    if (window.__viewport && window.__viewport.wasDrag(e.currentTarget)) return;
     const g = e.target.closest('[data-place]');
     if (g) { S.selectedPlace = g.dataset.place; renderAtlas(); }
   });
   $('#graphMap').addEventListener('click', (e) => {
+    // A pan that happens to start on a node would otherwise open that node.
+    if (window.__viewport && window.__viewport.wasDrag(e.currentTarget)) return;
     const g = e.target.closest('[data-gnode],[data-gfuture]');
     if (!g) return;
     const id = g.dataset.gnode ? Number(g.dataset.gnode) : g.dataset.gfuture;
@@ -1898,7 +2329,7 @@ function wire() {
     if (e.key === '/' && !typing && !$('#app').hidden) { e.preventDefault(); openPalette('/'); }
     if (e.key === 'Tab' && !typing && !$('#app').hidden) {
       e.preventDefault();
-      const views = ['story', 'atlas', 'graph', 'known'];
+      const views = ['story', 'atlas', 'graph', 'known', 'chronicle', 'power', 'ooc'];
       setView(views[(views.indexOf(S.view) + 1) % views.length]);
     }
   });
@@ -2026,6 +2457,15 @@ async function onGlobalClick(e) {
     closeOverlays(); return toast('Saved. Lines outrank everything, including canon.');
   }
   if (t.closest('[data-xcard]')) { closeOverlays(); return doXCard(); }
+  const adopt = t.closest('[data-adopt]');
+  if (adopt) return adoptCard(adopt.dataset.adopt);
+  const forget = t.closest('[data-forget-card]');
+  if (forget) {
+    try { await api(`/cards/${forget.dataset.forgetCard}`, { method: 'DELETE' }); }
+    catch (e) { return toast(e.message, 'err'); }
+    await roster(true); await showProfile();
+    return toast('Out of your library. Any story they are already in keeps them.');
+  }
   if (t.closest('[data-card-roll]')) {
     const r = await api(`/playthroughs/${S.ptId}/card-roll?player=${encodeURIComponent(S.playerId)}`
       + `&name=${encodeURIComponent($('#cdName').value)}`);
@@ -2135,6 +2575,7 @@ async function onGlobalClick(e) {
     if (navigator.clipboard) await navigator.clipboard.writeText(text).catch(() => {});
     return toast('Sharing unavailable here — the post is on your clipboard.');
   }
+  if (t.closest('[data-open="play"]')) return showSoloModes();
   if (t.closest('[data-share-streak]')) { closeOverlays(); return showShare(); }
 
   const menu = t.closest('[data-menu]');
@@ -2145,6 +2586,15 @@ async function onGlobalClick(e) {
     streak: showStreak, forge: showForge, safety: showSafety, card: showCard, settings: showSettings,
     modes: showModes, run: showRun, skip: showFastForward, party: showParty, report: showReport,
     arc: showTimelinePicker, identity: openIdentity, boss: showBossEditor,
+    spectrum: showSpectrum,
+    chronicle: () => { closeOverlays(); setView('chronicle'); },
+    power: () => { closeOverlays(); setView('power'); },
+    found: () => { closeOverlays(); showFoundOrg(); },
+    standing: showStanding,
+    canonlog: showCanonLog,
+    au: showAU,
+    board: () => showBoard('pvp'),
+    case: showCase,
     explain: () => showExplainer(true), profile: showProfile,
   };
   if (routes[k]) return routes[k]();
@@ -2245,6 +2695,1133 @@ async function showModes() {
       <p class="fineprint">Cozy always outranks Hardcore — if a table asked not to lose anyone,
         that promise wins. Modes change what the world <em>does</em>; they never change what a turn costs.</p>
     </div>`);
+}
+
+/* ---------------------------------------------------------- solo modes ----
+   Six of the nineteen sub-modes are solo, and until this existed the only way
+   to reach any of them was to host a multiplayer room - so a player alone got
+   Story and never learned the rest were there. This is their front door. */
+
+async function showSoloModes() {
+  await loadModeTree();
+  const fam = (S.modeTree?.families || []).find((f) => f.id === 'solo');
+  if (!fam) return toast('Could not read the modes.', 'err');
+  const worlds = [...S.worlds.filter((w) => w.kind === 'starter'),
+    ...S.worlds.filter((w) => w.kind === 'mine')];
+  showModal(`${head('Play it differently',
+    'Same worlds. Very different evenings.')}
+    <div class="modal-body">
+      <div class="mode-pick">${fam.modes.map((m) => `
+        <button class="mode-card ${m.id === 'story' ? 'on' : ''}" data-solomode="${esc(m.id)}">
+          <b>${esc(m.name)}</b><small>${esc(m.blurb)}</small>
+          <small class="mode-meta">${m.objective ? esc(m.objective) : 'no set ending'}${
+  m.permadeath ? ' &middot; one life' : ''}${
+  m.seed === 'daily' ? ' &middot; same world for everyone today' : ''}</small>
+        </button>`).join('')}</div>
+      <label class="big-field"><span>World</span>
+        <select id="soloWorld" class="input">
+          ${worlds.map((w) => `<option value="${esc(w.id)}">${esc(w.name)}${
+  w.kind === 'mine' ? ' (yours)' : ''}</option>`).join('')}
+        </select></label>
+      <button class="btn btn-primary btn-lg" data-solo-go="1">Begin</button>
+      <p class="fineprint">Every one of these keeps its world. Leave and come
+        back to it — only the competitive modes throw the world away.</p>
+    </div>`);
+}
+
+async function startSolo() {
+  const mode = $('.mode-card.on[data-solomode]')?.dataset.solomode || 'story';
+  const worldId = $('#soloWorld')?.value || 'emberfall';
+  try {
+    const { id } = await api('/playthroughs', {
+      method: 'POST',
+      body: { user_id: S.userId, world_id: worldId, session_type: mode },
+    });
+    closeOverlays();
+    await openPlaythrough(id);
+    if (mode === 'detective') showCase();
+    if (mode === 'daily') toast('Everyone is playing this same world today.');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function submitDaily() {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/daily/submit`
+      + `?user_id=${encodeURIComponent(S.userId)}&player=${encodeURIComponent(S.playerId)}`,
+    { method: 'POST', body: { name: localStorage.getItem('storyliver.name') || '' } });
+    if (!r.submitted) return toast(r.note, 'warn');
+    toast(`Posted: ${r.score}.`);
+    showBoard('daily');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ===========================================================================
+   P8 The Room, the competitive standing, and the Detective casefile.
+
+   The Room is its own screen because it is its own game: one table, talk only,
+   and a vote. Everything a client shows here is already redacted server-side -
+   who is an imposter is never in the payload for anyone but themselves, so
+   this file cannot leak it even by accident.
+   ========================================================================= */
+
+async function loadRoom() {
+  if (!S.sessionId) return;
+  try {
+    S.room = await api(`/rooms/${S.sessionId}?player=${encodeURIComponent(S.playerId)}`);
+  } catch { S.room = null; }
+  renderRoom();
+}
+
+const ROOM_PHASE = {
+  lobby: 'Waiting to start', talk: 'Talking', vote: 'Voting', over: 'Over',
+};
+
+function renderRoom() {
+  const box = $('#roomWrap');
+  if (!box) return;
+  const r = S.room;
+  if (!r || !r.set) {
+    box.innerHTML = `<div class="ooc-empty"><b>The table is not set.</b>
+      The host chooses who is present — people from this world, or characters
+      they wrote. One of those seats will be a real person wearing that face.
+      ${S.role === 'host' ? '' : 'Wait for them.'}</div>
+      ${S.role === 'host' ? '<div class="alert-act"><button class="btn btn-primary" data-room="setup">Set the table</button></div>' : ''}`;
+    return;
+  }
+
+  const you = r.you;
+  const mine = you ? `<div class="alert ${you.is_imposter ? 'traitor' : ''}">
+      <div class="alert-t">You are ${esc(you.name)}</div>
+      <div class="alert-b">${you.is_imposter
+    ? 'You are not who they think. Talk your way to the end of the last vote.'
+    : 'You are exactly who you say you are. Find the ones who are not.'}</div>
+      <div class="alert-s">${you.status === 'banished'
+    ? 'You have been banished. You can still watch, and still talk out of character.'
+    : `${r.speak_cap - you.said_this_round} of ${r.speak_cap} left to say this round.`}</div>
+    </div>` : '';
+
+  const seats = r.seats.map((s) => `<div class="seat ${s.status}">
+      <div class="seat-name">${esc(s.name)}</div>
+      <div class="seat-meta">${s.occupied ? 'a person' : 'the house'}${
+  s.status === 'banished' ? ' · banished' : ''}${
+  s.is_imposter === true ? ' · was an imposter' : ''}${
+  s.is_imposter === false ? ' · was exactly who they said' : ''}</div>
+      ${r.phase === 'vote' && you && you.can_vote && s.status === 'seated'
+    && s.seat_id !== you.seat_id
+    ? `<button class="btn btn-ghost sm" data-room-vote="${esc(s.seat_id)}">Banish</button>` : ''}
+      ${r.phase === 'lobby' && !s.occupied
+    ? `<button class="btn btn-ghost sm" data-room-seat="${esc(s.seat_id)}">Sit here</button>` : ''}
+      ${r.phase === 'talk' && !s.occupied && s.status === 'seated'
+    ? `<button class="btn btn-ghost sm" data-room-ai="${esc(s.seat_id)}">Let them speak</button>` : ''}
+    </div>`).join('');
+
+  const lines = (r.transcript || []).map((l) => `<div class="room-line${
+  l.source === 'testimony' ? ' from-outside' : ''}">
+      <b>${esc(l.name)}</b><span>${esc(l.text)}</span>
+      ${l.source === 'testimony' ? '<em class="room-clamped">banished</em>' : ''}
+      ${l.clamped ? '<em class="room-clamped" title="This seat broke frame twice and was clamped">held back</em>' : ''}
+    </div>`).join('') || `<p class="fineprint">Nothing said yet.</p>`;
+
+  const tallyRows = (r.tally && r.tally.counts || []).map((c) => `<div class="claimant">
+      <b>${esc(c.name)}</b><span class="cl-num">${c.votes}</span></div>`).join('');
+
+  box.innerHTML = `
+    ${mine}
+    <div class="power-head"><h3>${esc(ROOM_PHASE[r.phase] || r.phase)}</h3>
+      <span class="ph-n">round ${r.round} of ${r.rounds} · ${r.living} at the table
+        · ${r.imposters} not who they say</span></div>
+    <div class="seats">${seats}</div>
+    ${r.phase === 'over' ? `<div class="alert vacuum">
+      <div class="alert-t">${r.winner === 'faithful' ? 'The faithful hold' : 'They got away with it'}</div>
+      <div class="alert-b">${r.winner === 'faithful'
+    ? 'Every imposter was put out.' : 'At least one of them was still sitting there.'}</div></div>` : ''}
+    <div class="power-head"><h3>What was said</h3></div>
+    <div class="room-log">${lines}</div>
+    ${r.phase === 'talk' && you && you.can_speak ? `
+      <form class="ooc-composer" id="roomForm">
+        <input id="roomSay" maxlength="400" placeholder="Say it as ${esc(you.name)} — talk only.">
+        <button type="submit" class="btn btn-ghost">Say</button>
+      </form>` : ''}
+    ${you && you.can_testify ? `
+      <form class="ooc-composer" id="roomTestifyForm">
+        <span class="room-from-outside">From outside the table${
+  you.testimony_left ? '' : ' — you have had your say this round'}</span>
+        <input id="roomTestify" maxlength="400" ${you.testimony_left ? '' : 'disabled'}
+               placeholder="One line. They may weigh it or ignore it.">
+        <button type="submit" class="btn btn-ghost" ${you.testimony_left ? '' : 'disabled'}>Say it</button>
+      </form>` : ''}
+    ${r.phase === 'vote' ? `<div class="power-head"><h3>The vote</h3>
+      <span class="ph-n">${r.tally.cast} of ${r.tally.living} cast</span></div>
+      <div class="claimants">${tallyRows || '<p class="fineprint">Nobody yet.</p>'}</div>` : ''}
+    ${Object.keys(r.accusations || {}).length ? `
+      <div class="power-head"><h3>Who has been named</h3>
+        <span class="ph-n">from what was actually said</span></div>
+      ${Object.entries(r.accusations).map(([sid, list]) => {
+    const seat = r.seats.find((x) => x.seat_id === sid) || {};
+    return `<div class="drift-row"><b class="sub-name">${esc(seat.name || sid)}</b>
+        <span class="cl-num">${list.length}</span>
+        <div class="drift-why">${list.slice(0, 2).map((a) =>
+      `${esc(a.by_name)}: “${esc(a.said)}”`).join('<br>')}</div></div>`;
+  }).join('')}` : ''}
+    <div class="alert-act">
+      ${S.role === 'host' && r.phase === 'lobby' ? '<button class="btn btn-primary" data-room="begin">Begin</button>' : ''}
+      ${S.role === 'host' && r.phase === 'talk' ? `
+        <button class="btn btn-ghost" data-room="everyone">Let the table answer</button>
+        <button class="btn btn-ghost" data-room="advance">Call the vote</button>` : ''}
+      ${S.role === 'host' && r.phase === 'vote' ? '<button class="btn btn-primary" data-room="resolve">Resolve</button>' : ''}
+    </div>
+    <p class="fineprint">Talk only. The engine refuses anything else before a
+      model ever sees it, and a seat that breaks the frame twice is held back
+      rather than shown to you broken.</p>`;
+
+  const form = $('#roomForm');
+  if (form) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = $('#roomSay').value;
+      if (!v.trim()) return;
+      $('#roomSay').value = '';
+      roomSay(v);
+    });
+  }
+  const tform = $('#roomTestifyForm');
+  if (tform) {
+    tform.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = $('#roomTestify').value;
+      if (!v.trim()) return;
+      $('#roomTestify').value = '';
+      roomTestify(v);
+    });
+  }
+}
+
+async function roomTestify(text) {
+  try {
+    await api(`/rooms/${S.sessionId}/testify?player=${encodeURIComponent(S.playerId)}`, {
+      method: 'POST', body: { text },
+    });
+    await loadRoom();
+  } catch (e) { toast(e.message, 'warn'); }
+}
+
+async function roomSay(text) {
+  try {
+    await api(`/rooms/${S.sessionId}/say?player=${encodeURIComponent(S.playerId)}`, {
+      method: 'POST', body: { text },
+    });
+    await loadRoom();
+  } catch (e) { toast(e.message, 'warn'); }
+}
+
+async function roomAction(what, arg) {
+  try {
+    const q = `?user_id=${encodeURIComponent(S.userId)}`;
+    if (what === 'setup') return showRoomSetup();
+    if (what === 'begin') await api(`/rooms/${S.sessionId}/begin${q}`, { method: 'POST' });
+    if (what === 'advance') await api(`/rooms/${S.sessionId}/advance`, { method: 'POST' });
+    if (what === 'everyone') {
+      // One at a time and in seat order, so the table reads as a conversation
+      // rather than four things arriving at once.
+      const open = (S.room?.seats || []).filter((x) => !x.occupied && x.status === 'seated');
+      for (const seat of open) {
+        try {
+          await api(`/rooms/${S.sessionId}/ai/${seat.seat_id}${q}`, { method: 'POST' });
+          await loadRoom();
+        } catch { /* one silent seat does not stop the round */ }
+      }
+    }
+    if (what === 'resolve') {
+      const r = await api(`/rooms/${S.sessionId}/resolve`, { method: 'POST' });
+      if (r.banished) {
+        toast(`${r.banished.name}: ${r.banished.verdict}`,
+          r.banished.was_imposter ? '' : 'warn');
+      } else {
+        toast('A tie. Nobody is banished, and you have lost the round.', 'warn');
+      }
+    }
+    if (what === 'seat') {
+      await api(`/rooms/${S.sessionId}/seat/${arg}?player=${encodeURIComponent(S.playerId)}`,
+        { method: 'POST' });
+    }
+    if (what === 'ai') {
+      const line = await api(`/rooms/${S.sessionId}/ai/${arg}${q}`, { method: 'POST' });
+      if (line.guard && line.guard.clamped) {
+        toast(`${line.name} was held back — the frame broke twice.`, 'warn');
+      }
+    }
+    if (what === 'vote') {
+      await api(`/rooms/${S.sessionId}/vote?player=${encodeURIComponent(S.playerId)}`,
+        { method: 'POST', body: { target: arg } });
+    }
+    await loadRoom();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function showRoomSetup() {
+  const npcs = (S.state?.npcs || []).slice(0, 12);
+  showModal(`${head('Set the table',
+    'Pick who is present. At least one seat will be a real person wearing that face.')}
+    <div class="modal-body">
+      <div class="mem-list" id="roomPick">
+        ${npcs.map((n) => `<label class="sub-row" style="cursor:pointer">
+          <div><div class="sub-name">${esc(n.name)}</div>
+            <div class="sub-meta">${esc(n.role)}</div></div>
+          <input type="checkbox" data-room-char="${esc(n.id)}" data-room-name="${esc(n.name)}"
+                 checked style="accent-color:var(--ember)"></label>`).join('')}
+      </div>
+      <div class="mode-axis">
+        <div class="mode-axis-name">How many are lying</div>
+        <div class="mode-opts">
+          ${[1, 2, 3].map((n, i) => `<button class="mode-chip ${i === 0 ? 'on' : ''}"
+            data-room-imp="${n}"><b>${n}</b><small>${n === 1 ? 'One imposter.' : `${n} imposters.`}</small></button>`).join('')}
+        </div>
+      </div>
+      <div class="alert-act"><button class="btn btn-primary" data-room-go="1">Seat them</button></div>
+      <p class="fineprint">Who is the imposter is decided now and never again —
+        a reconnect cannot reroll anybody's role.</p>
+    </div>`);
+}
+
+async function doRoomSetup() {
+  const chars = [...document.querySelectorAll('[data-room-char]:checked')].map((c) => ({
+    id: c.dataset.roomChar, name: c.dataset.roomName,
+    card: { name: c.dataset.roomName },
+  }));
+  if (chars.length < 3) return toast('Pick at least three.', 'warn');
+  const imposters = Number($('.mode-chip.on[data-room-imp]')?.dataset.roomImp || 1);
+  try {
+    await api(`/rooms/${S.sessionId}/setup?user_id=${encodeURIComponent(S.userId)}`, {
+      method: 'POST', body: { characters: chars, imposters },
+    });
+    closeOverlays();
+    await loadRoom();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---------------------------------------------------- competitive standing */
+
+async function showStanding() {
+  let p;
+  try {
+    p = await api(`/profile/standing?user_id=${encodeURIComponent(S.userId)}`
+      + `&player=${encodeURIComponent(S.playerId)}`
+      + `&session_id=${encodeURIComponent(S.sessionId || '')}`);
+  } catch { return toast('Could not read your standing.', 'err'); }
+
+  const t = p.trophies;
+  showModal(`${head('Your standing', `Season ${esc(p.season)} — ends ${esc(p.season_ends)}`)}
+    <div class="modal-body">
+      ${p.anonymous ? `<div class="alert owed"><div class="alert-t">Not signed in</div>
+        <div class="alert-b">${esc(p.note)}</div>
+        <div class="alert-s">Nothing is blocked. It just will not follow you.</div></div>` : ''}
+      <div class="power-head"><h3>Scores</h3></div>
+      <div class="stand-row"><b>Legacy</b><span>${p.legacy}</span>
+        <span class="stand-tier">solo</span></div>
+      <div class="stand-row"><b>Co-op</b><span>${p.coop}</span>
+        <span class="stand-tier">shared</span></div>
+      <div class="stand-row"><b>PvP</b><span>${p.pvp.points} pts · ${p.pvp.wins}W ${p.pvp.losses}L</span>
+        <span class="stand-tier" data-tier="${esc(p.pvp.tier.id)}"
+              title="${esc(p.pvp.tier.blurb)}">${esc(p.pvp.tier.label)}</span></div>
+      ${p.pvp.prestige ? `<p class="fineprint">Prestige ${p.pvp.prestige} — kept across resets.</p>` : ''}
+
+      ${p.feuds && p.feuds.length ? `<div class="power-head"><h3>People who remember you</h3>
+        <span class="ph-n">across runs</span></div>
+        ${p.feuds.slice(0, 6).map((f) => `<div class="stand-row"><b>${esc(f.name)}</b>
+          <span>${f.wins}–${f.losses} over ${f.met}</span>
+          <span class="stand-tier">${f.standing > 0 ? 'ahead' : f.standing < 0 ? 'behind' : 'even'}</span>
+        </div>`).join('')}
+        <p class="fineprint">Characters do not carry between runs. People do.</p>` : ''}
+
+      <div class="power-head"><h3>Trophies</h3><span class="ph-n">${t.count} of ${t.total}</span></div>
+      <div class="mode-opts">
+        ${t.earned.map((a) => `<span class="mode-chip on" title="${esc(a.blurb)}">
+          <b>${esc(a.name)}</b><small>${esc(a.blurb)}</small></span>`).join('')}
+        ${t.locked.map((a) => `<span class="mode-chip" style="opacity:.5" title="${esc(a.blurb)}">
+          <b>${esc(a.name)}</b><small>${esc(a.blurb)}</small></span>`).join('')}
+      </div>
+      <div class="alert-act"><button class="btn btn-ghost" data-board="pvp">Leaderboard</button>
+        <button class="btn btn-ghost" data-board="daily">Today's board</button></div>
+      <p class="fineprint">${esc(p.halal_note)}</p>
+    </div>`);
+}
+
+async function showBoard(which) {
+  let b;
+  try {
+    b = which === 'daily' ? await api('/leaderboard/daily')
+      : await api(`/leaderboard?board=${encodeURIComponent(which)}`);
+  } catch { return toast('Could not read the board.', 'err'); }
+  const rows = (b.entries || []);
+  showModal(`${head(which === 'daily' ? "Today's board" : 'Leaderboard',
+    which === 'daily'
+      ? 'Everyone played the same world today. This is the one comparison here that is like for like.'
+      : `Season ${esc(b.season || '')} — status only.`)}
+    <div class="modal-body">
+      ${rows.length ? rows.map((e) => `<div class="stand-row">
+        <b>#${e.rank}</b><span>${esc(e.name || e.owner)}</span>
+        <span class="cl-num">${e.score !== undefined ? e.score : e.value}</span>
+        ${e.tier ? `<span class="stand-tier" data-tier="${esc(e.tier.id)}">${esc(e.tier.label)}</span>` : ''}
+      </div>`).join('')
+    : '<p class="fineprint">Nobody on this board yet. Be first.</p>'}
+      <p class="fineprint">${esc(b.halal_note || 'Status only. Points buy nothing and cannot be bought.')}</p>
+    </div>`);
+}
+
+/* ------------------------------------------------------------- the case */
+
+async function showCase() {
+  let c;
+  try {
+    c = await api(`/playthroughs/${S.ptId}/case?player=${encodeURIComponent(S.playerId)}`);
+  } catch { return toast('Could not open the casefile.', 'err'); }
+  if (!c.open) {
+    return showModal(`${head('No case', 'Nothing has happened that needs explaining.')}
+      <div class="modal-body">
+        <p class="fineprint">A Detective world opens with a killing nobody wrote.
+          Who saw it depends on who was standing there.</p>
+        <div class="alert-act"><button class="btn btn-primary" data-case="open">Open a case</button></div>
+      </div>`);
+  }
+  showModal(`${head(`${esc(c.victim)} is dead`,
+    `${esc(c.place)}, in the ${esc(c.phase)} — turn ${c.turn}`)}
+    <div class="modal-body">
+      <div class="power-head"><h3>What you can show</h3>
+        <span class="ph-n">${c.proof_held} proof · ${c.clues.length} lead${c.clues.length === 1 ? '' : 's'}</span></div>
+      ${c.clues.length ? c.clues.map((cl) => `<div class="sub-row">
+        <div><div class="sub-name">${esc(cl.summary)}</div>
+          <div class="sub-meta">${esc(cl.detail || '')} · ${esc(cl.source)} · turn ${cl.turn}</div></div>
+        <span class="sub-stage" data-stage="${cl.is_proof ? 'sworn' : ''}">${
+  cl.is_proof ? `names ${esc(cl.names)}` : 'no face'}</span></div>`).join('')
+    : '<p class="fineprint">You have nothing yet. Somebody saw it. Find them.</p>'}
+
+      <div class="power-head"><h3>Worth asking</h3>
+        <span class="ph-n">their routine put them there</span></div>
+      ${(c.worth_asking || []).map((w) => `<div class="sub-row">
+        <div><div class="sub-name">${esc(w.name)}</div>
+          <div class="sub-meta">${esc(w.why)}</div></div>
+        <button class="btn btn-ghost sm" data-case-ask="${esc(w.id)}">Ask</button></div>`).join('')
+    || '<p class="fineprint">Nobody was on that shift.</p>'}
+
+      <div class="power-head"><h3>Name them</h3>
+        <span class="ph-n">${c.can_accuse ? 'you have something' : 'you have nothing to show'}</span></div>
+      <div class="mode-opts">
+        ${c.suspects.map((sp) => `<button class="mode-chip" data-case-accuse="${esc(sp.id)}">
+          <b>${esc(sp.name)}</b><small>${esc(sp.role)}</small></button>`).join('')}
+      </div>
+      <p class="fineprint">Being right is not enough. Someone has to have put
+        them in that room, or you are guessing out loud.</p>
+    </div>`);
+}
+
+async function caseAsk(npcId) {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/case/ask/${npcId}`
+      + `?player=${encodeURIComponent(S.playerId)}`, { method: 'POST' });
+    toast(r.told ? `${r.name}: ${r.how}` : `${r.name}: ${r.reason}`, r.told ? '' : 'warn');
+    await showCase();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function caseAccuse(npcId) {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/case/accuse/${npcId}`
+      + `?player=${encodeURIComponent(S.playerId)}`, { method: 'POST' });
+    toast(r.verdict, r.correct ? '' : 'warn');
+    if (r.closed) closeOverlays(); else await showCase();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function caseOpen() {
+  try {
+    await api(`/playthroughs/${S.ptId}/case/open?user_id=${encodeURIComponent(S.userId)}`,
+      { method: 'POST' });
+    await showCase();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* -------------------------------------------------------- the objective */
+
+async function contestNode(placeId) {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/contest`
+      + `?player=${encodeURIComponent(S.playerId)}`,
+    { method: 'POST', body: { place_id: placeId } });
+    toast(r.took_it
+      ? `${r.place} is yours — ${r.witnesses.length} saw you take it.`
+      : `${r.place} did not turn. ${r.faction} is not convinced.`,
+    r.took_it ? '' : 'warn');
+    await refreshObjective();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function dealSides() {
+  try {
+    const r = await api(`/sessions/${S.sessionId}/sides`
+      + `?user_id=${encodeURIComponent(S.userId)}`, { method: 'POST' });
+    toast(r.quarry
+      ? `Sides dealt. One of you is the quarry.`
+      : `Sides dealt — ${Object.keys(r.sides).length} of them.`);
+    await refreshObjective();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openRaid() {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/raid/open`
+      + `?user_id=${encodeURIComponent(S.userId)}`, { method: 'POST' });
+    if (!r.opened) return toast(r.reason, 'warn');
+    toast(`${r.name} is dead. ${r.note}`, 'warn');
+    await refreshObjective();
+    await refreshLegacy();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function refreshObjective() {
+  try {
+    S.objective = await api(`/playthroughs/${S.ptId}/objective`
+      + `?player=${encodeURIComponent(S.playerId)}`);
+  } catch { S.objective = null; }
+  renderObjective();
+}
+
+function renderObjective() {
+  const el = $('#objective');
+  if (!el) return;
+  const o = S.objective && S.objective.objective;
+  if (!o || !o.goal) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `<div class="card-head"><h2>${esc(o.name)}</h2>
+      <span class="pill">${Math.round((o.progress || 0) * 100)}%</span></div>
+    <p class="obj-goal">${esc(o.goal)}</p>
+    <div class="tension-track"><div class="tension-fill"
+      style="width:${Math.round((o.progress || 0) * 100)}%"></div></div>
+    <p class="obj-detail">${esc(o.detail || '')}</p>
+    ${o.mode === 'detective' ? '<button class="tiny-btn" data-case="open-file">Casefile</button>' : ''}
+    ${o.mode === 'daily' ? `<button class="tiny-btn" data-daily-submit="1">Post today's score</button>
+      <p class="obj-detail">${esc(String((S.objective.daily || {}).score ?? ''))} points so far.</p>` : ''}
+    ${o.mode === 'king_of_hill' ? `<div class="claimants">${
+  (S.objective.nodes || []).slice(0, 6).map((n) => `<div class="claimant">
+        <b>${esc(n.name)}</b><span class="cl-why">${
+  n.holder ? (n.holder === S.playerId ? 'yours' : 'held') : 'open'}</span>
+        <span class="cl-num">${n.standing}</span>
+        ${n.holder === S.playerId ? ''
+    : `<button class="tiny-btn" data-contest="${esc(n.place_id)}">Take it</button>`}
+      </div>`).join('')}</div>` : ''}
+    ${(S.objective.sides && S.objective.sides.assigned) ? `<div class="claimants">${
+  Object.entries(S.objective.sides.sides).map(([side, members]) => `<div class="claimant">
+        <b>${esc(side === S.playerId ? 'you' : side)}</b>
+        <span class="cl-why">${members.map((mm) => esc(mm.name)).join(', ')}</span>
+      </div>`).join('')}</div>` : ''}
+    ${(o.mode === 'teams' || o.mode === 'hunt' || o.mode === 'battle_royale')
+    && !(S.objective.sides && S.objective.sides.assigned) && S.role === 'host'
+    ? '<button class="tiny-btn" data-sides="1">Deal sides</button>' : ''}
+    ${o.mode === 'raid' && o.done && S.role === 'host'
+    ? '<button class="tiny-btn" data-raid="open">Open the raid</button>' : ''}
+    ${o.mode === 'hidden_mask' ? `<p class="obj-detail">${
+  (S.objective.masks || {}).hidden ?? 0} still hiding${
+  (S.objective.masks || {}).mine ? ' — including you.' : '.'}</p>
+      <button class="tiny-btn" data-mask-call="1">Call a face out</button>
+      ${((S.objective.masks || {}).pulled || []).length ? `<div class="claimants">${
+  S.objective.masks.pulled.map((p) => `<div class="claimant">
+          <b>${esc(p.name)}</b><span class="cl-why">unmasked, turn ${p.turn}</span>
+        </div>`).join('')}</div>` : ''}` : ''}`;
+}
+
+/* ===========================================================================
+   Layer 6 — the Chronicle, succession, the traitor tease, and the Power panel
+
+   Everything rendered here is already witness-gated server-side. The client
+   never filters: it cannot, because it is only ever sent what this player
+   learned. That is deliberate — a client-side filter is one bug away from
+   being the leak the whole layer exists to prevent.
+   ========================================================================= */
+
+function renderLegacyBadges() {
+  const c = $('#chronicleBadge');
+  if (c) c.textContent = S.chronUnseen > 0 ? String(Math.min(99, S.chronUnseen)) : '';
+  // The Power tab badges what is WRONG in your own house: a subordinate who
+  // has drifted is exactly who will refuse the next order.
+  const turned = (S.legacy?.power?.subordinates || [])
+    .filter((x) => ['resentful', 'plotting', 'villain'].includes(x.stage)).length;
+  const p = $('#powerBadge');
+  if (p) p.textContent = turned > 0 ? String(turned) : '';
+}
+
+async function refreshLegacy() {
+  try {
+    S.legacy = await api(`/playthroughs/${S.ptId}/legacy?player=${encodeURIComponent(S.playerId)}`);
+    S.chronUnseen = S.legacy.unseen || 0;
+    renderLegacyBadges();
+  } catch { /* the panel stays as it was */ }
+}
+
+async function openChronicle() {
+  await refreshLegacy();
+  renderChronicle();
+  // Reading it clears the badge — not merely receiving the events.
+  try {
+    await api(`/playthroughs/${S.ptId}/chronicle/read?player=${encodeURIComponent(S.playerId)}`,
+      { method: 'POST' });
+    S.chronUnseen = 0; renderLegacyBadges();
+  } catch { /* badge stays; harmless */ }
+}
+
+const TONE_WORD = { fate: 'fated', tension: 'tense', danger: 'grave', hope: 'hopeful',
+  unknown: 'unclear', calm: '' };
+const SRC_WORD = { lived: 'you were there', witnessed: 'you saw it', 'did-it': 'you did it',
+  heard: 'you were told', overheard: 'overheard', 'learned-late': 'learned late',
+  private: 'privately' };
+
+function renderChronicle() {
+  const box = $('#chronFeed');
+  const alerts = $('#chronAlerts');
+  if (!box || !alerts) return;
+  const L = S.legacy || {};
+
+  alerts.innerHTML = [alertTraitor(L.traitor), alertVacuums(L.vacuums), alertOwed(L.owed),
+    alertDrift(L.drift), alertAllies(L.allies), alertMonuments(L.monuments),
+  ].filter(Boolean).join('');
+
+  const entries = (L.chronicle && L.chronicle.entries) || [];
+  if (!entries.length) {
+    box.innerHTML = `<div class="ooc-empty"><b>Nothing has reached you yet.</b>
+      This is the world's record, and it holds only what you actually learned —
+      what you saw, what you did, and what somebody got round to telling you.
+      Things are happening elsewhere. You will hear about them late, or not at all.</div>`;
+    return;
+  }
+  let lastDay = null;
+  box.innerHTML = entries.map((e) => {
+    const head = e.day !== lastDay ? `<div class="chron-day">Day ${e.day}</div>` : '';
+    lastDay = e.day;
+    const tone = TONE_WORD[e.tone] || '';
+    return `${head}<div class="chron-row tone-${esc(e.tone)}">
+      <div class="chron-t">T${e.turn}</div>
+      <div>
+        <div class="chron-l">${esc(e.label)}</div>
+        ${e.detail ? `<div class="chron-d">${esc(e.detail)}</div>` : ''}
+        <div class="chron-m">
+          <span class="chron-src" data-s="${esc(e.source)}">${esc(SRC_WORD[e.source] || e.source)}</span>
+          ${e.place ? `<span>${esc(e.place)}</span>` : ''}
+          ${e.actor_name && e.actor_name !== 'world' ? `<span>${esc(e.actor_name)}</span>` : ''}
+          ${tone ? `<span>${esc(tone)}</span>` : ''}
+        </div>
+      </div></div>`;
+  }).join('');
+}
+
+function alertTraitor(t) {
+  // The name is never in this payload. There is nothing here to leak.
+  if (!t || !t.active) return '';
+  return `<div class="alert traitor">
+    <div class="alert-t">Somebody is turning</div>
+    <div class="alert-b">${esc(t.hint)}</div>
+    <div class="heat-track"><i class="heat-fill" style="width:${Math.round(t.heat * 100)}%"></i></div>
+    <div class="alert-s">${t.ready
+      ? 'Whoever it is has already decided. You could force it into the open.'
+      : 'Not enough to name anyone. Not yet.'}
+      ${t.open_enemies ? `<br>${t.open_enemies} ${t.open_enemies === 1 ? 'person has' : 'people have'}
+        already stopped hiding it — they are on the board below. This is somebody else.` : ''}</div>
+    ${t.ready ? `<div class="alert-act">
+      <button class="btn btn-ghost" data-traitor="reveal">Force it into the open</button>
+    </div>` : ''}</div>`;
+}
+
+function alertVacuums(list) {
+  const open = (list || []).filter((v) => v.opened && v.unrest);
+  if (!open.length) return '';
+  return open.map((v) => `<div class="alert vacuum">
+    <div class="alert-t">Contested — ${esc(v.role)}</div>
+    <div class="alert-b">${esc(v.dead_name)} is gone. ${v.claimants.length} people have a claim,
+      and nothing is settled${v.unrest_until ? ` until turn ${v.unrest_until}` : ''}.</div>
+    <div class="claimants">${v.claimants.map((c) => `<div class="claimant">
+      <b>${esc(c.name)}</b><span class="cl-why">${esc(c.basis)}</span>
+      <span class="cl-num">${c.claim}</span></div>`).join('')}</div></div>`).join('');
+}
+
+function alertOwed(n) {
+  if (!n) return '';
+  return `<div class="alert owed">
+    <div class="alert-t">You have missed things</div>
+    <div class="alert-b">${n} event${n === 1 ? '' : 's'} happened where you were not standing,
+      and nobody has told you.</div>
+    <div class="alert-s">Ask around, or let time pass — a skip is where news catches up.</div>
+    <div class="alert-act"><button class="btn btn-ghost" data-reveal="one">Ask around</button></div>
+  </div>`;
+}
+
+function alertAllies(list) {
+  // The mirror of the villain board. An engine that renders only the people
+  // you wronged is an engine that remembers only the bad half of what you did.
+  const yours = (list || []).filter((d) => d.toward_you && d.alive);
+  if (!yours.length) return '';
+  return `<div class="alert" style="border-left-color:var(--verdigris)">
+    <div class="alert-t">Who is yours, and why</div>
+    ${yours.map((d) => `<div class="drift-row">
+      <b class="sub-name">${esc(d.name)}</b>
+      <span class="sub-stage" data-stage="${esc(d.stage)}">${esc(d.stage_label)}</span>
+      <span class="cl-num">loyalty ${Math.round(d.loyalty)}</span>
+      ${d.bond ? `<div class="drift-why">T${d.bond.turn} — ${esc(d.bond.label)}</div>`
+    : '<div class="drift-why">They came to you on their own.</div>'}
+    </div>`).join('')}</div>`;
+}
+
+function alertMonuments(list) {
+  if (!(list || []).length) return '';
+  return `<div class="alert owed">
+    <div class="alert-t">What the dead left standing</div>
+    ${list.map((m) => `<div class="drift-row">
+      <b class="sub-name">${esc(m.name)}</b>
+      ${m.built.length ? `<span class="cl-num">${m.built.length} still running</span>` : ''}
+      <div class="drift-why">${esc(m.line)}</div></div>`).join('')}
+    <div class="alert-s">Death is not a reset. This is what carried.</div></div>`;
+}
+
+function alertDrift(list) {
+  const turned = (list || []).filter((d) => d.turned && d.alive);
+  if (!turned.length) return '';
+  return `<div class="alert traitor">
+    <div class="alert-t">Who has turned, and why</div>
+    ${turned.map((d) => `<div class="drift-row">
+      <b class="sub-name">${esc(d.name)}</b>
+      <span class="sub-stage" data-stage="${esc(d.stage)}">${esc(d.stage_label)}</span>
+      <span class="cl-num">trust ${Math.round(d.trust)}</span>
+      ${d.cause ? `<div class="drift-why">T${d.cause.turn} — ${esc(d.cause.label)}
+        ${d.cause.detail ? `<br>${esc(d.cause.detail)}` : ''}</div>`
+    : '<div class="drift-why">Nothing in the record explains it. They drifted on their own.</div>'}
+    </div>`).join('')}</div>`;
+}
+
+/* ------------------------------------------------------------ power panel */
+
+async function loadPower() {
+  await refreshLegacy();
+  renderPower();
+}
+
+function renderPower() {
+  const box = $('#powerWrap');
+  if (!box) return;
+  const p = (S.legacy && S.legacy.power) || null;
+  if (!p) { box.innerHTML = '<div class="ooc-empty">Loading…</div>'; return; }
+
+  const maxSkill = Math.max(1, ...p.skills.map((s) => s.value));
+  const skills = p.skills.length ? p.skills.map((s) => `<div class="skill-row">
+      <span style="min-width:9ch">${esc(s.name)}</span>
+      <span class="skill-bar"><i class="skill-fill" style="width:${Math.round(s.value / maxSkill * 100)}%"></i></span>
+      <span class="skill-v">${s.value}</span></div>`).join('')
+    : `<p class="fineprint">Nothing drilled yet. Time spent training is where these come from —
+       a skip is not a fade to black, it is where the numbers move.</p>`;
+
+  const orgs = p.orgs.length ? p.orgs.map((o) => `<div class="power-head">
+      <h3>${esc(o.name)}</h3><span class="sub-stage">${esc(o.kind_name)}</span>
+      <span class="ph-n">${o.reach} answering · seniority ${o.seniority}</span></div>
+    ${o.charter ? `<p class="fineprint">${esc(o.charter)}</p>` : ''}
+    ${o.members.filter((m) => m.kind === 'npc').map((m) => `<div class="sub-row">
+      <div><div class="sub-name">${esc(m.name)}</div>
+        <div class="sub-meta">${esc(m.rank)}${m.role ? ` · ${esc(m.role)}` : ''}
+          · loyalty ${Math.round(m.loyalty)} · carried ${m.carried}${m.refused ? `, refused ${m.refused}` : ''}</div></div>
+      <span class="sub-stage" data-stage="${esc(m.stage)}">${esc(m.stage)}</span>
+      <div class="sub-cmd">
+        <input data-order-for="${esc(m.id)}" maxlength="300" placeholder="Order ${esc(m.name.split(' ')[0])} to…">
+        <button class="btn btn-ghost" data-order-send="${esc(m.id)}" data-order-org="${esc(o.id)}">Send</button>
+      </div></div>`).join('') || `<p class="fineprint">Nobody has taken a place under you yet.
+        Loyalty is the gate — someone who merely likes you will not take orders from you.</p>`}
+    <div class="alert-act">
+      <button class="btn btn-ghost" data-recruit-org="${esc(o.id)}">Offer someone a place</button>
+      <button class="btn btn-ghost danger" data-dissolve-org="${esc(o.id)}">Dissolve</button>
+    </div>`).join('')
+    : `<p class="fineprint">You lead nothing. Power in this world is not an inventory —
+       it is people who will do what you ask, and an organisation is how that becomes
+       something you can actually give an order through.</p>
+       <div class="alert-act"><button class="btn btn-primary" data-found-org="1">Found something</button></div>`;
+
+  box.innerHTML = `<div class="power-grid">
+    <section>
+      <div class="power-head"><h3>What you can do</h3><span class="ph-n">${p.skills.length} skills</span></div>
+      ${skills}
+    </section>
+    <section>
+      <div class="power-head"><h3>Who answers you</h3>
+        <span class="ph-n">${p.reach} in ${p.orgs.length} organisation${p.orgs.length === 1 ? '' : 's'}</span></div>
+      ${orgs}
+      ${p.orgs.length ? '<div class="alert-act"><button class="btn btn-ghost" data-found-org="1">Found another</button></div>' : ''}
+    </section>
+    <section>
+      <div class="power-head"><h3>Other houses</h3>
+        <span class="ph-n">${(S.legacy?.rivals || []).length} you do not lead</span></div>
+      ${(S.legacy?.rivals || []).length ? (S.legacy.rivals).map((o) => `<div class="sub-row">
+          <div><div class="sub-name">${esc(o.name)}</div>
+            <div class="sub-meta">${esc(o.kind_name)}${o.origin === 'world'
+    ? ' · rose on its own' : ''} · ${o.reach} inside${
+  o.doctrine_name ? ` · ${esc(o.doctrine_name)}` : ''}</div></div>
+          <button class="btn btn-ghost sm" data-infiltrate="${esc(o.id)}">Place someone inside</button>
+        </div>`).join('')
+    : '<p class="fineprint">Nobody else has built anything yet. When a seat is contested and lost, the losers tend to.</p>'}
+    </section>
+    <section>
+      <div class="power-head"><h3>Who owns your name</h3><span class="ph-n">${p.standing.length} watching</span></div>
+      ${p.standing.length ? p.standing.map((f) => `<div class="stand-row">
+          <b>${esc(f.name)}</b>
+          <span>${f.standing > 0 ? '+' : ''}${f.standing}${f.member ? ' · yours' : ''}</span>
+          <span class="stand-tier" data-tier="${esc(f.tier)}" title="${esc(f.tier_blurb)}">${esc(f.tier)}</span>
+        </div>`).join('')
+    : '<p class="fineprint">No institution has an opinion about you yet. That is worth something.</p>'}
+    </section>
+  </div>`;
+}
+
+function showFoundOrg(prefill = '') {
+  const kinds = [['cell', 'Cell', 'Small, quiet, deniable.'],
+    ['house', 'House', 'A name people already know.'],
+    ['company', 'Company', 'Trades, hires, and owes.'],
+    ['order', 'Order', 'Bound by a rule everyone swore to.'],
+    ['crew', 'Crew', 'Loyal to each other before anything.']];
+  showModal(`${head('Found an organisation',
+    'Power here is people who will do what you ask. This is how you get to ask.')}
+    <div class="modal-body">
+      <div class="mode-axis">
+        <div class="mode-axis-name">Name</div>
+        <input class="input" id="org-name" maxlength="60" value="${esc(prefill)}"
+               placeholder="The Quiet Ledger">
+      </div>
+      <div class="mode-axis">
+        <div class="mode-axis-name">What kind</div>
+        <div class="mode-opts">${kinds.map(([id, name, blurb], i) => `
+          <button class="mode-chip ${i === 0 ? 'on' : ''}" data-orgkind="${id}">
+            <b>${name}</b><small>${blurb}</small></button>`).join('')}</div>
+      </div>
+      <div class="mode-axis">
+        <div class="mode-axis-name">Doctrine <em style="color:var(--faint)">optional</em></div>
+        <div class="mode-opts">
+          ${[['pride', 'Pride', 'We will be seen. That is the point.'],
+    ['greed', 'Greed', 'Everything has a price and we set it.'],
+    ['wrath', 'Wrath', 'Somebody is going to answer for it.'],
+    ['envy', 'Envy', 'What they have was ours first.'],
+    ['gluttony', 'Gluttony', 'More. Of everything. Now.'],
+    ['sloth', 'Sloth', 'Let it rot. We will be here after.'],
+    ['lust', 'Lust', 'Wanting is the whole engine.']].map(([id, n, b]) => `
+            <button class="mode-chip" data-doctrine="${id}"><b>${n}</b><small>${b}</small></button>`).join('')}
+        </div>
+      </div>
+      <div class="mode-axis">
+        <div class="mode-axis-name">Charter <em style="color:var(--faint)">optional</em></div>
+        <input class="input" id="org-charter" maxlength="400" placeholder="Debts, collected quietly.">
+      </div>
+      <div class="alert-act"><button class="btn btn-primary" data-found-go="1">Found it</button></div>
+      <p class="fineprint">Founding is witnessed like anything else. Do it in an empty room and
+        nobody knows it exists — which is occasionally the point.</p>
+    </div>`);
+}
+
+async function doFoundOrg() {
+  const name = $('#org-name')?.value.trim();
+  if (!name) return toast('It needs a name.', 'warn');
+  const kind = $('.mode-chip.on[data-orgkind]')?.dataset.orgkind || 'cell';
+  try {
+    const doctrine = $('.mode-chip.on[data-doctrine]')?.dataset.doctrine || '';
+    const o = await api(`/playthroughs/${S.ptId}/orgs?player=${encodeURIComponent(S.playerId)}`, {
+      method: 'POST',
+      body: { name, kind, doctrine, charter: $('#org-charter')?.value || '' },
+    });
+    closeOverlays();
+    toast(`${o.name} exists now.`);
+    setView('power'); await loadPower();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function showInfiltrate(orgId) {
+  const mine = (S.legacy?.power?.subordinates || []);
+  showModal(`${head('Place someone inside',
+    'They pass back what that house knows. Only somebody who is really yours will go.')}
+    <div class="modal-body">
+      ${mine.length ? mine.map((sub) => `<div class="sub-row">
+        <div><div class="sub-name">${esc(sub.name)}</div>
+          <div class="sub-meta">loyalty ${Math.round(sub.loyalty)} · ${esc(sub.org)}</div></div>
+        <button class="btn btn-ghost sm" data-infil-npc="${esc(sub.id)}"
+                data-infil-org="${esc(orgId)}">Send</button></div>`).join('')
+    : '<p class="fineprint">You have nobody loyal enough to ask this of.</p>'}
+      <p class="fineprint">Nothing is announced. An infiltration that published
+        itself would be the one act here that defeats its own purpose.</p>
+    </div>`);
+}
+
+async function doInfiltrate(orgId, npcId) {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/orgs/${orgId}/infiltrate`
+      + `?player=${encodeURIComponent(S.playerId)}`,
+    { method: 'POST', body: { npc_id: npcId } });
+    toast(r.placed ? `${r.name} is inside ${r.org}. ${r.note}` : `${r.name}: ${r.reason}`,
+      r.placed ? '' : 'warn');
+    if (r.placed) { closeOverlays(); await loadPower(); }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function showRecruit(orgId) {
+  const roster = (S.state?.npcs || []).filter((n) => n.alive);
+  if (!roster.length) return toast('Nobody to ask.', 'warn');
+  showModal(`${head('Offer someone a place',
+    'They accept if the ledger says they would. Loyalty is the gate, not charm.')}
+    <div class="modal-body"><div class="mem-list">
+      ${roster.map((n) => `<div class="sub-row">
+        <div><div class="sub-name">${esc(n.name)}</div>
+          <div class="sub-meta">${esc(n.role)} · loyalty ${Math.round(n.loyalty || 0)}
+            · trust ${Math.round(n.trust || 0)} · ${esc(n.disposition)}</div></div>
+        <button class="btn btn-ghost" data-recruit-npc="${esc(n.id)}"
+                data-recruit-into="${esc(orgId)}">Ask</button></div>`).join('')}
+    </div><p class="fineprint">Fear recruits too, and it recruits worse people: an org built on
+      fear carries out fewer orders and refuses louder.</p></div>`);
+}
+
+async function doRecruit(orgId, npcId) {
+  try {
+    const r = await api(
+      `/playthroughs/${S.ptId}/orgs/${orgId}/recruit?player=${encodeURIComponent(S.playerId)}`,
+      { method: 'POST', body: { npc_id: npcId } });
+    if (r.joined) {
+      toast(`${r.name} is yours${r.coerced ? ' — out of fear, not loyalty' : ''}.`);
+      closeOverlays(); await loadPower();
+    } else {
+      toast(`${r.name}: ${r.reason}.`, 'warn');
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function doCommand(orgId, npcId) {
+  const input = $(`[data-order-for="${CSS.escape(npcId)}"]`);
+  const order = input?.value.trim();
+  if (!order) return toast('Order them to do what?', 'warn');
+  try {
+    const r = await api(
+      `/playthroughs/${S.ptId}/orgs/${orgId}/command?player=${encodeURIComponent(S.playerId)}`,
+      { method: 'POST', body: { npc_id: npcId, order } });
+    if (r.carried) {
+      if (input) input.value = '';
+      // The line that matters: the world saw them, not you.
+      toast(`${r.attributed_to} did it${r.witnesses.length
+        ? ` — ${r.witnesses.length} saw them` : ', and nobody saw'}.`);
+    } else {
+      toast(`${r.name} refused: ${r.reason}.`, 'warn');
+    }
+    await loadPower();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function doDissolve(orgId) {
+  if (!confirm('Dissolve it? The people in it go back to their own lives.')) return;
+  try {
+    const r = await api(
+      `/playthroughs/${S.ptId}/orgs/${orgId}?player=${encodeURIComponent(S.playerId)}`,
+      { method: 'DELETE' });
+    toast(`${r.name} is gone.`);
+    await loadPower();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function doSurfaceReveal() {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/catch-up?player=${encodeURIComponent(S.playerId)}`,
+      { method: 'POST' });
+    if (!r.revealed) return toast(r.note || 'Nothing is owed to you right now.');
+    setView('chronicle');
+    await openChronicle();
+    toast(`You learn: ${r.label} — ${r.note}`, 'warn');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function doRevealTraitor() {
+  if (!confirm('Force it into the open? You do not get to un-know this.')) return;
+  try {
+    const r = await api(
+      `/playthroughs/${S.ptId}/traitor/reveal?player=${encodeURIComponent(S.playerId)}`,
+      { method: 'POST' });
+    if (!r.revealed) return toast('Not enough to name anyone yet.', 'warn');
+    showTraitorReveal(r);
+    await refreshLegacy(); renderChronicle();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function showTraitorReveal(r) {
+  showModal(`${head(`It was ${esc(r.name)}`, esc(r.role))}
+      <div class="modal-body">
+        <p class="alert-b">${r.was_hidden
+      ? 'They were still smiling at you yesterday. This is not a twist the world decided — it is the ledger, read out loud.'
+      : 'No surprise, and the world will not pretend otherwise: they had already stopped hiding it.'}</p>
+        <div class="mem-list">${r.because.map((b) => `<div class="mem">
+          <div class="mem-meta"><span>${b.turn >= 0 ? `turn ${b.turn}` : 'the ledger'}</span></div>
+          ${esc(b.label)}${b.detail ? `<br><span class="mem-meta">${esc(b.detail)}</span>` : ''}
+        </div>`).join('')}</div>
+        <p class="fineprint">Trust ${Math.round(r.trust)} · ${r.betrayals} betrayal(s) on record.
+          You did this, one turn at a time.</p>
+      </div>`);
+}
+
+/* ===========================================================================
+   Table talk — the OOC channel
+
+   Two different conversations happen at a table: the story, and the table
+   talking ABOUT the story ("is the gate still barred?", "who has the key?").
+   Forcing the second through the narrator is what makes an AI RPG exhausting —
+   every housekeeping question becomes a paragraph, costs a turn, and drags the
+   scene sideways. So it gets its own surface with its own contract: free
+   between players, and a question to the World Master comes back as ONE
+   clause, never prose.
+   ========================================================================= */
+
+/** A dot on the story menu when something behind it is waiting on you. */
+function renderCardBadge() {
+  const el = $('#menuDot');
+  if (el) el.hidden = !S.cardsPending;
+}
+
+/** Whispers sent before this tab was open. They were rendered only as they
+    arrived over the socket, so a reconnect lost every one of them. */
+async function loadWhispers() {
+  let rows = [];
+  try {
+    rows = (await api(`/sessions/${S.sessionId}/whispers`
+      + `?player=${encodeURIComponent(S.playerId)}`)).whispers || [];
+  } catch { return; }
+  if (!rows.length) return;
+  // Replayed exactly the way the socket renders a live one, so a whisper
+  // read after a reconnect looks like the whisper you were sent.
+  renderFeed(rows.map((w) => ({
+    kind: 'whisper', turn: w.turn || 0, text: '',
+    meta: { payload: w,
+      label: w.from_player === S.playerId
+        ? `You to ${w.to_name || playerName(w.to_id)}`
+        : `${playerName(w.from_player)} to you` },
+  })));
+}
+
+function renderOocBadge() {
+  const el = $('#oocBadge');
+  if (el) el.textContent = S.oocUnread > 0 ? String(Math.min(99, S.oocUnread)) : '';
+}
+
+async function loadOoc() {
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/ooc`);
+    S.ooc = r.messages || [];
+  } catch { S.ooc = S.ooc || []; }
+  renderOoc();
+}
+
+function renderOoc() {
+  const box = $('#oocList');
+  if (!box) return;
+  const msgs = S.ooc || [];
+  if (!msgs.length) {
+    box.innerHTML = `<div class="ooc-empty"><b>Nothing said yet.</b>
+      Anything here stays out of the story — it never enters the timeline, never moves
+      a relationship, and nobody in the world hears it. Tick <em>Ask the World Master</em>
+      for a rules question and you get one short ruling back, not a scene.</div>`;
+    return;
+  }
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = msgs.map((m) => {
+    const mine = m.player_id === S.playerId;
+    const who = mine ? 'You' : (m.name || playerName(m.player_id) || 'someone');
+    const reply = m.to_wm
+      ? (m.reply
+        ? `<div class="ooc-reply">${esc(m.reply)}<em>World Master · not canon</em></div>`
+        : '<div class="ooc-reply ooc-pending">…</div>')
+      : '';
+    return `<div class="ooc-msg ${mine ? 'mine' : ''} ${m.to_wm ? 'wm' : ''}">
+      <div class="ooc-who">${esc(who)}${m.to_wm ? ' → World Master' : ''}</div>
+      <div class="ooc-text">${esc(m.text)}</div>${reply}</div>`;
+  }).join('');
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function sendOoc(text, toWm) {
+  const body = (text || '').trim();
+  if (!body) return;
+  // Shown immediately with a placeholder id. The channel's whole promise is
+  // that it is instant and free; waiting on a round-trip to see your own line
+  // would make it feel like a turn, which is the thing it exists not to be.
+  // The name others will see. `playerName` answers "You" for yourself, which
+  // is right on screen and wrong on the wire.
+  const seat = ((S.session && S.session.players) || []).find((x) => x.player_id === S.playerId);
+  const myName = seat?.name || localStorage.getItem('storyliver.name') || 'Traveller';
+  const pending = { id: `local-${Date.now()}`, player_id: S.playerId,
+    name: myName, text: body, to_wm: !!toWm, reply: '' };
+  S.ooc = [...(S.ooc || []), pending];
+  renderOoc();
+  try {
+    const saved = await api(`/playthroughs/${S.ptId}/ooc?player=${encodeURIComponent(S.playerId)}`, {
+      method: 'POST', body: { text: body, to_wm: !!toWm, name: pending.name },
+    });
+    S.ooc = (S.ooc || []).map((m) => (m.id === pending.id ? saved : m));
+  } catch (e) {
+    S.ooc = (S.ooc || []).filter((m) => m.id !== pending.id);
+    toast(e.message, 'err');
+  }
+  renderOoc();
+}
+
+/* ===========================================================================
+   Canon spectrum — strictness per domain, not one switch
+
+   "The lore is sacred but I do not want the physics argued with" is the
+   position most tables actually hold, and a single strict/loose dial cannot
+   express it. Each domain defaults to whatever that single dial says, so a
+   table that never opens this panel plays exactly the game it did before.
+   ========================================================================= */
+
+async function showSpectrum() {
+  let sp;
+  try { sp = await api(`/playthroughs/${S.ptId}/canon-spectrum`); }
+  catch { toast('Could not read this world’s canon spectrum.', 'err'); return; }
+  S.spectrum = sp;
+
+  showModal(`${head('Canon spectrum',
+    'How strict this world is, one part at a time — and how hard a mistake lands.')}
+    <div class="modal-body">
+      ${sp.domains.map((d) => `
+        <div class="mode-axis">
+          <div class="mode-axis-name">${esc(d.name)}
+            ${d.locked ? '<span class="pill">always strict</span>' : ''}</div>
+          <div class="mode-opts">
+            ${sp.levels.map((l) => `
+              <button class="mode-chip ${d.level === l.value ? 'on' : ''}"
+                      ${d.locked ? 'disabled' : ''}
+                      data-domain="${esc(d.id)}" data-level="${l.value}"
+                      title="${esc(l.blurb)}">
+                <b>${esc(l.label)}</b><small>${esc(l.blurb)}</small>
+              </button>`).join('')}
+          </div>
+          <p class="fineprint">${esc(d.blurb)}</p>
+        </div>`).join('')}
+      <div class="mode-axis">
+        <div class="mode-axis-name">How hard it lands</div>
+        <div class="mode-opts">
+          ${sp.severities.map((v) => `
+            <button class="mode-chip ${sp.severity === v.id ? 'on' : ''}"
+                    data-sev="${esc(v.id)}" title="${esc(v.blurb)}">
+              <b>${esc(v.label)}</b><small>${esc(v.blurb)}</small>
+            </button>`).join('')}
+        </div>
+      </div>
+      <p class="fineprint">Severity scales what a mistake <em>costs</em> — never whether
+        it was seen. Two tables watching the same action see the same thing happen.
+        “Who characters are” cannot be loosened at all: a character breaking their own
+        persona is a bug, not a freedom.</p>
+    </div>`);
+}
+
+async function setSpectrum(patch) {
+  // The panel is taller than the modal, and severity lives at the bottom of
+  // it. Re-rendering from the top after every click threw you back to the
+  // lore row, so choosing "harsh" scrolled the thing you just chose off screen.
+  const keep = $('#modalCard')?.scrollTop || 0;
+  try {
+    S.spectrum = await api(`/playthroughs/${S.ptId}/canon-spectrum`, { method: 'POST', body: patch });
+    await showSpectrum();
+    const card = $('#modalCard');
+    if (card) card.scrollTop = keep;
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function setMode(axis, value) {
@@ -2364,6 +3941,7 @@ async function showFastForward() {
         <div class="ff-with">${present.map((n) => `
           <button class="chip" data-ff-with="${esc(n.id)}">${esc(n.name)}</button>`).join('')}</div>
         </div>` : ''}
+      <div id="ff-skills"></div>
       <div id="ff-preview" class="ff-preview"></div>
       <div class="row" style="margin-top:14px">
         <button class="btn btn-ghost" id="ff-plan">Preview</button>
@@ -2373,6 +3951,24 @@ async function showFastForward() {
         hunters get closer. The narrator then reports what already happened — it never decides it.</p>
     </div>`);
   S.ffKind = S.ffCatalogue.kinds[0].id; S.ffWith = [];
+  loadFfSkills();
+}
+
+/** What skipping ahead has already bought. The panel promises "skills
+    improve" and there was nowhere in the app that showed one. */
+async function loadFfSkills() {
+  const box = $('#ff-skills');
+  if (!box) return;
+  let rows = [];
+  try { rows = (await api(`/playthroughs/${S.ptId}/skills`)).skills || []; } catch { return; }
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const top = Math.max(1, ...rows.map((s) => s.value));
+  box.innerHTML = `<div class="pf-head">What the training has bought</div>
+    ${rows.slice(0, 8).map((s) => `<div class="skill-row">
+      <span>${esc(s.name || s.id)}</span>
+      <span class="skill-bar"><i style="width:${Math.round((s.value / top) * 100)}%"></i></span>
+      <span class="skill-v">${s.value}</span>
+    </div>`).join('')}`;
 }
 
 function ffBody() {
@@ -2404,6 +4000,13 @@ async function ffApply() {
     const moved = (r.changes.relationships || [])
       .filter((x) => Math.abs(x.trust) >= 1).length;
     toast(`${r.changes.to_turn - r.changes.from_turn} turns passed · +${r.changes.skill.gain} skill${moved ? ` · ${moved} relationship(s) shifted` : ''}`);
+    // The skip surfaces something the player was never told. It was computed
+    // and then thrown away here, which is the one place it most needed to land.
+    await refreshLegacy();
+    if (r.changes.reveal) {
+      toast(`You also learn: ${r.changes.reveal.label} — ${r.changes.reveal.note}`, 'warn');
+      setView('chronicle'); renderChronicle();
+    }
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2442,6 +4045,8 @@ async function showParty() {
             </div>` : '<span class="pill">voted</span>'}
         </div>`).join('')}</div>` : ''}
 
+      <div id="party-cards"></div>
+
       <div id="party-archives"></div>
 
       <p class="fineprint">When someone leaves, every memory the world holds of them is
@@ -2449,6 +4054,78 @@ async function showParty() {
         because that is their memory too. Nothing is destroyed: a re-invite restores it all.</p>
     </div>`);
   loadArchives();
+  loadPendingCards();
+}
+
+
+/* ---------------------------------------------------------------------------
+   Cards waiting on the table.
+
+   The card panel has always promised that "every seated player approves a card
+   before it enters play, and an approved anomaly becomes a world rule the
+   World Master will enforce". The vote endpoint was written, wired to the
+   websocket and tested - and nothing ever rendered it, so a submitted card sat
+   at `pending` forever and no anomaly ever became canon. The promise was real
+   in the backend and unkeepable in the client.
+   ------------------------------------------------------------------------ */
+
+/* Fetching and rendering are separate on purpose: the badge has to be right
+   whether or not the table panel happens to be open, and the panel is exactly
+   where it is NOT open that the player needs telling. */
+async function refreshPendingCards() {
+  if (!S.sessionId || !S.ptId) return [];
+  let cards = [];
+  try { cards = (await api(`/playthroughs/${S.ptId}/cards`)).cards || []; } catch { return []; }
+  S.pendingCards = cards.filter((c) => c.status === 'pending'
+    && c.player_id !== S.playerId && !(S.playerId in (c.approvals || {})));
+  S.cardsPending = S.pendingCards.length > 0;
+  renderCardBadge();
+  return S.pendingCards;
+}
+
+async function loadPendingCards() {
+  const waiting = await refreshPendingCards();
+  const box = $('#party-cards');
+  if (!box) return;
+  box.innerHTML = waiting.length
+    ? `<div class="pf-head">Waiting on you</div>
+       ${waiting.map((c) => renderPendingCard(c)).join('')}`
+    : '';
+}
+
+function renderPendingCard(c) {
+  const a = c.aspects || {};
+  const voted = S.playerId in (c.approvals || {});
+  return `<div class="cardvote">
+    <div class="cardvote-h"><b>${esc(c.name || 'unnamed')}</b>
+      <small>${esc(c.concept || '')}</small></div>
+    ${[['Voice', a.voice], ['Drive', a.drive], ['Flaw', a.flaw]]
+    .filter(([, v]) => v).map(([k, v]) =>
+    `<div class="cardvote-r"><i>${k}</i><span>${esc(v)}</span></div>`).join('')}
+    ${c.anomaly ? `<div class="alert owed">
+      <div class="alert-t">Anomaly — approving this makes it a world rule</div>
+      <div class="alert-b">${esc(c.anomaly)}</div></div>` : ''}
+    ${voted ? '<span class="pill">voted</span>' : `
+      <input class="input sm" id="cv-note-${esc(c.id)}" maxlength="200"
+        placeholder="Optional — what you want changed" />
+      <div class="row">
+        <button class="btn btn-ghost sm" data-card-vote="${esc(c.id)}" data-ok="0">Ask for changes</button>
+        <button class="btn btn-primary sm" data-card-vote="${esc(c.id)}" data-ok="1">Agree</button>
+      </div>`}
+  </div>`;
+}
+
+async function voteCard(cardId, ok) {
+  const note = $(`#cv-note-${cardId}`)?.value || '';
+  try {
+    const card = await api(`/playthroughs/${S.ptId}/cards/${cardId}/vote`,
+      { method: 'POST', body: { voter: S.playerId, ok, note } });
+    toast(card.status === 'approved'
+      ? `${card.name || 'The card'} is in play.${card.anomaly ? ' Their anomaly is now a world rule.' : ''}`
+      : ok ? 'Agreed. Waiting on the rest of the table.'
+        : 'Sent back for changes.');
+  } catch (e) { return toast(e.message, 'err'); }
+  loadPendingCards();
 }
 
 async function loadArchives() {
@@ -2543,6 +4220,95 @@ document.addEventListener('click', async (ev) => {
   const mode = pick('[data-axis][data-mode]');
   if (mode) return setMode(mode.dataset.axis, mode.dataset.mode);
 
+  const fam = pick('[data-family]');
+  if (fam) { S.pickedFamily = fam.dataset.family; S.pickedMode = null; return renderModePicker(); }
+  const gm = pick('[data-gamemode]');
+  if (gm) { S.pickedMode = gm.dataset.gamemode; return renderModePicker(); }
+
+  // --- the Room -------------------------------------------------------
+  const ra = pick('[data-room]');
+  if (ra) return roomAction(ra.dataset.room);
+  const rs = pick('[data-room-seat]');
+  if (rs) return roomAction('seat', rs.dataset.roomSeat);
+  const rai = pick('[data-room-ai]');
+  if (rai) return roomAction('ai', rai.dataset.roomAi);
+  const rv = pick('[data-room-vote]');
+  if (rv) return roomAction('vote', rv.dataset.roomVote);
+  const rimp = pick('[data-room-imp]');
+  if (rimp) {
+    document.querySelectorAll('[data-room-imp]').forEach((b) => b.classList.toggle('on', b === rimp));
+    return;
+  }
+  if (pick('[data-room-go]')) return doRoomSetup();
+
+  // --- standing, boards, the case --------------------------------------
+  const sm = pick('[data-solomode]');
+  if (sm) {
+    document.querySelectorAll('[data-solomode]').forEach(
+      (b) => b.classList.toggle('on', b === sm));
+    return;
+  }
+  if (pick('[data-solo-go]')) return startSolo();
+  if (pick('[data-daily-submit]')) return submitDaily();
+  if (pick('[data-au-save]')) return saveAU();
+  if (pick('[data-mask-call]')) return showMaskCall();
+  if (pick('[data-pw-change]')) return changePassword();
+  const mv = pick('[data-mask-vote]');
+  if (mv) return maskVote(mv.dataset.maskVote, mv.dataset.maskName);
+
+  const con = pick('[data-contest]');
+  if (con) return contestNode(con.dataset.contest);
+  if (pick('[data-sides]')) return dealSides();
+  if (pick('[data-raid]')) return openRaid();
+
+  const bd = pick('[data-board]');
+  if (bd) return showBoard(bd.dataset.board);
+  const ask = pick('[data-case-ask]');
+  if (ask) return caseAsk(ask.dataset.caseAsk);
+  const acc = pick('[data-case-accuse]');
+  if (acc) return caseAccuse(acc.dataset.caseAccuse);
+  const cs = pick('[data-case]');
+  if (cs) return cs.dataset.case === 'open' ? caseOpen() : showCase();
+
+  const dom = pick('[data-domain][data-level]');
+  if (dom) return setSpectrum({ levels: { [dom.dataset.domain]: Number(dom.dataset.level) } });
+
+  const sev = pick('[data-sev]');
+  if (sev) return setSpectrum({ severity: sev.dataset.sev });
+
+  // --- layer 6 controls -----------------------------------------------
+  const kind = pick('[data-orgkind]');
+  if (kind) {
+    document.querySelectorAll('[data-orgkind]').forEach((b) => b.classList.toggle('on', b === kind));
+    return;
+  }
+  if (pick('[data-found-go]')) return doFoundOrg();
+  if (pick('[data-found-org]')) { closeOverlays(); return showFoundOrg(); }
+  const doc = pick('[data-doctrine]');
+  if (doc) {
+    const was = doc.classList.contains('on');
+    document.querySelectorAll('[data-doctrine]').forEach((b) => b.classList.remove('on'));
+    // Clicking the chosen doctrine again clears it - a doctrine is optional,
+    // and a picker with no way back is a picker that lies about that.
+    if (!was) doc.classList.add('on');
+    return;
+  }
+  const inf = pick('[data-infiltrate]');
+  if (inf) return showInfiltrate(inf.dataset.infiltrate);
+  const infNpc = pick('[data-infil-npc]');
+  if (infNpc) return doInfiltrate(infNpc.dataset.infilOrg, infNpc.dataset.infilNpc);
+
+  const recruitOrg = pick('[data-recruit-org]');
+  if (recruitOrg) return showRecruit(recruitOrg.dataset.recruitOrg);
+  const recruitNpc = pick('[data-recruit-npc]');
+  if (recruitNpc) return doRecruit(recruitNpc.dataset.recruitInto, recruitNpc.dataset.recruitNpc);
+  const send = pick('[data-order-send]');
+  if (send) return doCommand(send.dataset.orderOrg, send.dataset.orderSend);
+  const diss = pick('[data-dissolve-org]');
+  if (diss) return doDissolve(diss.dataset.dissolveOrg);
+  if (pick('[data-traitor]')) return doRevealTraitor();
+  if (pick('[data-reveal]')) return doSurfaceReveal();
+
   const runEnd = pick('[data-run-end]');
   if (runEnd) return endRun(runEnd.dataset.runEnd);
 
@@ -2572,6 +4338,8 @@ document.addEventListener('click', async (ev) => {
 
   const vote = pick('[data-vote]');
   if (vote) return voteMotion(vote.dataset.vote, vote.dataset.approve === '1');
+  const cv = t.closest('[data-card-vote]');
+  if (cv) return voteCard(cv.dataset.cardVote, cv.dataset.ok === '1');
 
   const restore = pick('[data-restore]');
   if (restore) return restorePlayer(restore.dataset.restore);
@@ -3211,6 +4979,10 @@ const SIGILS = {
   blade:  '<path d="M14.5 2.5 7 10l-2 7 7-2 7.5-7.5zM7 10l4 4"/>',
   calm:   '<circle cx="12" cy="12" r="9"/><path d="M8 13.5s1.5 1.5 4 1.5 4-1.5 4-1.5"/>',
   scales: '<path d="M12 3v18M4 7h16M7 7l-3 6h6zM17 7l-3 6h6z"/>',
+  crown:  '<path d="M3 8l3.5 4L12 5l5.5 7L21 8v9H3z"/>',
+  mask:   '<path d="M3 6c6-2 12-2 18 0 0 8-4 12-9 12S3 14 3 6z"/><path d="M8.5 10h.01M15.5 10h.01"/>',
+  ledger: '<path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5"/><path d="M8 12h8M8 16h5"/>',
+  thread: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="8" cy="19" r="2"/><path d="M6.6 7.3 17.2 11M17.6 13.6 9.6 17.8"/>',
 };
 
 const TONE_CLASS = { danger: 'sig-danger', warn: 'sig-warn', good: 'sig-good', calm: 'sig-calm' };
@@ -3421,17 +5193,38 @@ async function saveHudPrefs() {
 
 const EXPLAIN_KEY = 'storyliver.explained';
 
+/* What this actually is. The old five covered the awareness layer and death
+   resolutions and stopped there - written before the Chronicle, moral drift,
+   succession, the hidden traitor, player organisations, the Room, the
+   competitive modes, Detective, Daily and crossovers existed. It explained
+   roughly a fifth of the product to the person deciding whether to play it. */
 const EXPLAIN_BULLETS = [
-  ['eye', 'The world is awake.',
-   'Characters see, hear and gossip. What you do unseen stays unseen — until someone sees it.'],
-  ['banner', 'Reputation is per-group, not a score.',
-   'Each faction only knows what its own people learned. A village that heard nothing thinks nothing.'],
+  ['eye', 'The world is awake, and it is not omniscient.',
+   'Characters see, hear and gossip. What nobody witnessed did not happen, as far as '
+   + 'anyone here is concerned — and the same rule binds every panel you can open.'],
+  ['thread', 'It remembers, and it can show you where.',
+   'Not a transcript — a record. Turn 200 knows turn 2, and when a character turns on '
+   + 'you it can point at the exact thing you did.'],
+  ['banner', 'Reputation is per-group, not a number.',
+   'Each faction only knows what its own people learned. A village that heard nothing '
+   + 'thinks nothing, and the law can only act on what it can prove.'],
+  ['crown', 'Kill someone who mattered and the world reorganises.',
+   'A named death opens a contested seat: several claimants, an unrest window, and '
+   + 'whoever loses it remembers losing.'],
+  ['ledger', 'Power is people, not an inventory.',
+   'Found an organisation, earn the loyalty to command through it, and the world '
+   + 'records your subordinate doing the thing — not you.'],
   ['blade', 'Consequences arrive on foot.',
    'When someone is sent after you, they travel. You get a real window, and you can use it.'],
+  ['mask', 'Bring anyone into anywhere.',
+   'Name a world, or write a sentence — "Charlie from Hazbin Hotel, inside The Last of '
+   + 'Us" — and it builds that, with them still themselves inside it.'],
   ['calm', 'Death is not the end.',
-   'If you fall you choose what happens next — a ghost, an heir, a legacy. Only Hardcore is final.'],
-  ['scales', 'It is a roguelike, not a chat.',
-   'Each entry into a world is a run. It ends, and what you learned carries to the next one.'],
+   'If you fall you choose what happens next — a ghost, an heir, a legacy. Only Ironman '
+   + 'is final, and it says so before you start.'],
+  ['scales', 'Nineteen ways to play it.',
+   'Alone in a world that keeps running, together in one that does, or against each '
+   + 'other in one built to be won and thrown away.'],
 ];
 
 function needsExplainer() {
@@ -3439,7 +5232,8 @@ function needsExplainer() {
 }
 
 function showExplainer(replay) {
-  showModal(`${head('What is StoryLiver?', 'Five things that make this different from a chatbot.')}
+  showModal(`${head('What is StoryLiver?',
+    `${EXPLAIN_BULLETS.length} things a chatbot does not do.`)}
     <div class="modal-body">
       ${tableSvg()}
       <div class="ex-list">${EXPLAIN_BULLETS.map(([sig, t, d]) => `
@@ -3449,7 +5243,7 @@ function showExplainer(replay) {
         </div>`).join('')}</div>
 
       <div class="ex-try">
-        <div class="ex-try-head">Try it — the same act, two ways</div>
+        <div class="ex-try-head">The whole idea, in one choice</div>
         <div class="ex-try-opts">
           <button class="ex-try-opt" data-try="public">
             <b>Say it in the taproom</b><small>with people in the room</small></button>
@@ -3594,6 +5388,39 @@ async function doAuth(mode) {
   }
 }
 
+/** What this account has actually paid. Money the player spent and could not
+    see a record of anywhere; the endpoint has been there the whole time. */
+async function loadReceipts() {
+  const box = $('#pf-receipts');
+  if (!box) return;
+  let rows = [];
+  try { rows = (await api('/payments/history')).payments || []; } catch { return; }
+  if (!rows.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="pf-towns"><div class="pf-head">What you have paid</div>
+    ${rows.slice(0, 8).map((r) => `<div class="pf-town">
+      <span>${esc(String(r.captured_at || r.created_at || '').slice(0, 10))}
+        · ${esc(r.pack_id || 'Mana')}</span>
+      <span class="pf-crimes">${r.mana ? `${r.mana} Mana` : ''}</span>
+      <span class="pf-standing ${r.status === 'completed' ? 'good' : 'bad'}">
+        ${esc(r.status || '')}${r.usd ? ` · $${Number(r.usd).toFixed(2)}` : ''}</span>
+    </div>`).join('')}
+    <p class="fineprint">Mana buys model calls. Everything the engine computes
+      itself — reputation, witnessing, stealth, combat, the world tick — runs
+      every turn and costs nothing.</p></div>`;
+}
+
+async function changePassword() {
+  const current = $('#pf-pw-old')?.value || '';
+  const next = $('#pf-pw-new')?.value || '';
+  if (!current || !next) return toast('Both fields, please.', 'warn');
+  try {
+    await api('/auth/password', { method: 'POST', body: { current, new: next } });
+  } catch (e) { return toast(e.message, 'err'); }
+  toast('Changed. Every device is signed out — sign in again.');
+  S.account = null; S.guest = true;
+  closeOverlays(); renderAll();
+}
+
 async function showProfile() {
   if (!S.account) return showAuth('login');
   let p;
@@ -3619,6 +5446,22 @@ async function showProfile() {
         <div class="run-stat"><b>${p.cards.length}</b><small>characters</small></div>
       </div>
 
+      ${p.cards?.length ? `<div class="pf-towns">
+        <div class="pf-head">Your characters</div>
+        <div class="lib-row">${p.cards.map((c) => `
+          <div class="lib-card static">
+            <span class="lib-av">${c.avatar_url
+              ? `<img src="${esc(c.avatar_url)}" alt="" />`
+              : esc((c.name || '?')[0])}</span>
+            <span class="lib-n">${esc(c.name || 'unnamed')}</span>
+            <span class="lib-c">${esc(c.concept || '')}</span>
+            <button class="lib-x" data-forget-card="${esc(c.id)}"
+              title="Take out of your library">&times;</button>
+          </div>`).join('')}</div>
+        <p class="fineprint">Any of these can be dropped straight into a new world
+          from the character panel.</p>
+      </div>` : ''}
+
       ${p.runs?.length ? `<div class="pf-towns">
         <div class="pf-head">Your runs</div>
         ${p.runs.slice(0, 6).map((r) => `<div class="pf-town">
@@ -3638,11 +5481,27 @@ async function showProfile() {
 
       ${p.sessions?.length > 1 ? `<p class="fineprint">${p.sessions.length} devices signed in.</p>` : ''}
 
+      <div id="pf-receipts"></div>
+
+      <details class="pf-pass">
+        <summary>Change your password</summary>
+        <label class="field"><span>Current password</span>
+          <input class="input" id="pf-pw-old" type="password"
+                 autocomplete="current-password" /></label>
+        <label class="field"><span>New password</span>
+          <input class="input" id="pf-pw-new" type="password"
+                 autocomplete="new-password" /></label>
+        <p class="fineprint">Changing it signs out every device, including this
+          one — that is the point of changing it.</p>
+        <button class="btn btn-ghost" data-pw-change="1">Change it</button>
+      </details>
+
       <div class="row" style="margin-top:14px">
         <button class="btn btn-primary" id="pf-save">Save</button>
         <button class="btn btn-ghost" id="pf-logout">Sign out</button>
       </div>
     </div>`);
+  loadReceipts();
 }
 
 async function saveProfile() {

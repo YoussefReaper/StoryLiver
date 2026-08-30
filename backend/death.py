@@ -69,10 +69,24 @@ class NotOffered(ValueError):
     pass
 
 
+def _world_get(world, key, default=None):
+    """Read a world field whether it arrives as a World or a plain dict."""
+    if world is None:
+        return default
+    getter = getattr(world, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(world, key, default)
+
+
 def offered(pt_id: str, *, world=None) -> list:
     """Which resolutions this world will actually allow, in offer order."""
     permadeath = modes.permadeath_on(pt_id)
-    has_revival = bool(world and getattr(world, "revival_rule", None))
+    # World stores everything in .data behind __slots__, so getattr() for a
+    # data key always returned the default - which meant a world declaring a
+    # revival rule could never actually offer `revive`. Read it the way every
+    # other world field is read.
+    has_revival = bool(world is not None and _world_get(world, "revival_rule"))
     out = []
     for rid, spec in RESOLUTIONS.items():
         if spec.get("hardcore_only") and not permadeath:
@@ -132,7 +146,7 @@ def world_event(pt_id, *, who, killer="", world=None) -> dict:
     where they held standing, and the killer is now someone the world has an
     opinion about. This is the Relationship Economy and World Awareness
     reacting - not prose about them reacting."""
-    out = {"mourned_by": [], "killer_cost": [], "vacuum": ""}
+    out = {"mourned_by": [], "killer_cost": [], "vacuum": "", "succession": None}
     npcs = list(getattr(world, "npcs", []) or [])
     turn = _turn(pt_id)
 
@@ -166,6 +180,15 @@ def world_event(pt_id, *, who, killer="", world=None) -> dict:
                          f"{dead['role']} stands empty",
                          f"With {dead.get('name', who)} gone, nobody holds it.",
                          kind="vacuum", importance=4)
+        # An empty seat used to be a note in the timeline and nothing else -
+        # or, worse, would have needed an auto-appointed successor, which is
+        # the least interesting thing that can happen when a power dies. It
+        # opens a CONTEST instead: everyone with a real claim, an unrest
+        # window while it is undecided, and losers who remember losing.
+        if world is not None:
+            from . import legacy
+            out["succession"] = legacy.open_vacuum(
+                pt_id, world, dead_id=who, role=dead["role"], turn=turn, killer=killer)
 
     # A death is a public disturbance whether or not anyone mourned.
     worldstate.set_flag(pt_id, f"death:{who}", True)
@@ -185,7 +208,7 @@ def resolve(pt_id, *, choice, who, session_id="", player_id="", world=None) -> d
     note = ""
 
     if choice == "revive":
-        rule = getattr(world, "revival_rule", None) or {}
+        rule = _world_get(world, "revival_rule") or {}
         note = rule.get("cost", "The price was paid.")
         memory.add_event(pt_id, turn, who, f"{who} is brought back",
                          f"{note} They return diminished.", kind="revival", importance=5)

@@ -55,7 +55,10 @@ CALLBACK_WEIGHT = {
     "authority": 1.6,
 }
 
-MAX_CALLBACKS = 2
+# One, not two. This is additive prompt text and the flat-context guarantee
+# (a 4-player prompt must not exceed the single-player ceiling) is worth more
+# than a second suggestion the narrator was told to use at most one of anyway.
+MAX_CALLBACKS = 1
 
 
 def _weight(kind: str) -> float:
@@ -69,10 +72,16 @@ def candidates(pt_id, turn, *, present=None, limit=MAX_CALLBACKS) -> list:
     penalty, because the whole effect depends on the thing being old enough
     that the player has stopped expecting it. Bounded and deterministic - the
     same turn always offers the same callbacks."""
+    cutoff = turn - MIN_AGE
+    if cutoff < 1:
+        # The story is younger than the window. Flooring this at 0 (as it was)
+        # let the turn-0 arrival event through, so turn two offered "you
+        # arrived here" as a callback - the opposite of the intended effect.
+        return []
     rows = db.rows(
         "SELECT id, turn, actor, action, consequence, kind, importance, location"
-        " FROM timeline_events WHERE playthrough_id=? AND turn<=? ORDER BY id",
-        (pt_id, max(0, turn - MIN_AGE)))
+        " FROM timeline_events WHERE playthrough_id=? AND turn<=? AND turn>0 ORDER BY id",
+        (pt_id, cutoff))
     if not rows:
         return []
 
@@ -110,14 +119,11 @@ def block(pt_id, turn, *, present=None) -> str:
         who = e["actor"] or "someone"
         what = (e["action"] or "").strip()
         lines.append(f"  - {ago} turns ago, {who}: {what[:150]}")
-    return (
-        "\nWORTH REMEMBERING (optional, use at most ONE, only if it fits):\n"
-        + "\n".join(lines)
-        + "\n  A character who was there may refer back to one of these - a look, half a "
-          "sentence, a thing they kept. Do not explain the callback or announce it; people "
-          "do not narrate their own memories. If none of them fit this moment, ignore them "
-          "entirely rather than forcing one."
-    )
+    # Terse on purpose: this is additive prompt text, and a 4-player prompt
+    # must not exceed the single-player ceiling. That guarantee outranks a
+    # well-phrased instruction.
+    return ("\nMAY REMEMBER (optional, only if it fits):\n" + "\n".join(lines)
+            + "\n  A half-sentence, not an explanation. Ignore if it does not fit.")
 
 
 def note_promise(pt_id, turn, player, text, *, location="") -> None:

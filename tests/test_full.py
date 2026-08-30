@@ -24,8 +24,8 @@ _TMP = tempfile.mkdtemp(prefix="storyliver-full-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
 from backend import (arcs, budget, canon, db, death, engine, fastforward,  # noqa: E402
-                     memory, modes, party, persona, relationships, runs,
-                     sessions, trust)
+                     identity, memory, modes, party, persona, relationships,
+                     runs, sessions, trust)
 
 FAILS = []
 NOTES = []
@@ -153,6 +153,52 @@ def test_identity_block():
     ok(score > 0.8, f"a full card scores as canon-complete ({score})")
     ok(persona.card_completeness({"name": "Bob"})["score"] < 0.2,
        "an empty card is honestly reported as generic")
+
+
+def test_character_library():
+    section("§7 — a character belongs to YOU, not to one world")
+    db.init()
+    # A card was keyed to a playthrough, so building somebody cost you the
+    # same work again in every new story. And the profile counted characters
+    # with `WHERE player_id = <account>`, while save() stores whatever
+    # player_id the caller passed - the literal string "user" for every solo
+    # player - so that number read zero for anyone who had ever played alone.
+    first = engine.create_playthrough("lib_acct")
+    second = engine.create_playthrough("lib_acct")
+    card = identity.save(first, {"player_id": memory.SOLO, "name": "Vale",
+                                 "concept": "a debt-collector who stopped collecting",
+                                 "aspects": {"voice": "flat"}},
+                         account_id="lib_acct")
+    lib = identity.roster("lib_acct")
+    ok([c["name"] for c in lib] == ["Vale"],
+       "a saved character appears in the account's library, not just the world's")
+    ok(lib[0]["aspects"].get("voice") == "flat",
+       "and carries their aspects with them, decoded rather than raw JSON")
+
+    brought = identity.adopt(card["id"], second, player_id=memory.SOLO)
+    ok(brought["id"] != card["id"] and brought["name"] == "Vale",
+       "bringing them into another world COPIES them - the same person can "
+       "stand in two stories without either rewriting the other")
+    ok(brought["playthrough_id"] == second,
+       "and the copy belongs to the world they were brought into")
+    ok([c["name"] for c in identity.roster("lib_acct")] == ["Vale"],
+       "the library still lists them ONCE - four worlds is not four entries")
+
+    identity.save(second, {"name": "Vale", "concept": "rewritten here"},
+                  card_id=brought["id"])
+    ok(identity.get(card["id"])["concept"].startswith("a debt-collector"),
+       "editing them inside one world leaves the library original untouched")
+
+    guest = identity.save(first, {"player_id": memory.SOLO, "name": "Nobody"})
+    ok(len(identity.roster("lib_acct")) == 1,
+       "a card made while signed out belongs to no library")
+    identity.save(first, {"name": "Nobody", "concept": "claimed"},
+                  card_id=guest["id"], account_id="lib_acct")
+    ok(len(identity.roster("lib_acct")) == 2,
+       "and is claimed on the first edit after signing in - playing as a guest "
+       "first is the ordinary path, not a reason to lose the character")
+    ok(identity.roster("") == [],
+       "an empty account id gets an empty library rather than everyone's")
 
 
 def test_death():
@@ -363,7 +409,8 @@ def test_trust_and_safety():
 def main():
     print("StoryLiver — full-blueprint gate")
     print("  offline stub, no API key, no spend\n")
-    for fn in (test_host_premium, test_modes, test_identity_block, test_death,
+    for fn in (test_host_premium, test_modes, test_identity_block,
+               test_character_library, test_death,
                test_runs, test_timeline_and_au, test_fastforward, test_party,
                test_trust_and_safety):
         fn()
@@ -381,7 +428,8 @@ def main():
 
 
 def test_all_full():
-    for fn in (test_host_premium, test_modes, test_identity_block, test_death,
+    for fn in (test_host_premium, test_modes, test_identity_block,
+               test_character_library, test_death,
                test_runs, test_timeline_and_au, test_fastforward, test_party,
                test_trust_and_safety):
         fn()

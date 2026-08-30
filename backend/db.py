@@ -586,6 +586,191 @@ CREATE TABLE IF NOT EXISTS bounties (
   PRIMARY KEY (playthrough_id, faction_id, player_id)
 );
 
+-- ======================================================= legacy & world events
+-- Player-founded organisations. Power in this engine is not an inventory of
+-- objects; it is people who will do what you ask. An org is the structure that
+-- makes that addressable: you command THROUGH members, and the world attributes
+-- the act to the member who carried it out, not to you.
+CREATE TABLE IF NOT EXISTS orgs (
+  id TEXT PRIMARY KEY,
+  playthrough_id TEXT NOT NULL,
+  founder TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'cell',
+  charter TEXT NOT NULL DEFAULT '',
+  seat TEXT NOT NULL DEFAULT '',
+  founded_turn INTEGER NOT NULL DEFAULT 0,
+  dissolved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_orgs ON orgs(playthrough_id, dissolved);
+
+CREATE TABLE IF NOT EXISTS org_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playthrough_id TEXT NOT NULL,
+  org_id TEXT NOT NULL,
+  member_kind TEXT NOT NULL DEFAULT 'npc',
+  member_id TEXT NOT NULL,
+  rank TEXT NOT NULL DEFAULT 'member',
+  seniority REAL NOT NULL DEFAULT 1,
+  orders_carried INTEGER NOT NULL DEFAULT 0,
+  orders_refused INTEGER NOT NULL DEFAULT 0,
+  joined_turn INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (org_id, member_id)
+);
+CREATE INDEX IF NOT EXISTS ix_org_members ON org_members(playthrough_id, org_id);
+
+-- A named death does not hand the seat to one obvious heir. It opens a
+-- CONTEST: several people with a real claim, an unrest window while it is
+-- undecided, and a winner decided by what the world actually is.
+CREATE TABLE IF NOT EXISTS claimants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playthrough_id TEXT NOT NULL,
+  vacuum_key TEXT NOT NULL,
+  role TEXT NOT NULL,
+  seat TEXT NOT NULL DEFAULT '',
+  dead_id TEXT NOT NULL DEFAULT '',
+  claimant_id TEXT NOT NULL,
+  claim REAL NOT NULL DEFAULT 0,
+  basis TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'claiming',
+  opened_turn INTEGER NOT NULL DEFAULT 0,
+  unrest_until INTEGER NOT NULL DEFAULT 0,
+  fact_key TEXT NOT NULL DEFAULT '',
+  UNIQUE (playthrough_id, vacuum_key, claimant_id)
+);
+CREATE INDEX IF NOT EXISTS ix_claimants ON claimants(playthrough_id, vacuum_key);
+
+-- ======================================================== detective & masks
+-- The case is not authored. A culprit and a victim are drawn from the living,
+-- the killing goes through the ordinary witness path, and what is stored here
+-- is only the ANSWER - the mystery itself is whatever the awareness layer left
+-- in whose heads.
+CREATE TABLE IF NOT EXISTS cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playthrough_id TEXT NOT NULL,
+  culprit TEXT NOT NULL,
+  victim TEXT NOT NULL,
+  place_id TEXT NOT NULL DEFAULT '',
+  phase TEXT NOT NULL DEFAULT '',
+  opened_turn INTEGER NOT NULL DEFAULT 0,
+  fact_key TEXT NOT NULL DEFAULT '',
+  clue_count INTEGER NOT NULL DEFAULT 1,
+  solved INTEGER NOT NULL DEFAULT 0,
+  accused TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_cases ON cases(playthrough_id, id);
+
+-- A hunter wearing the face of somebody who lives here. Voting the face out
+-- either pulls a mask off or kills a real resident, and both are real.
+CREATE TABLE IF NOT EXISTS masks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  playthrough_id TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  npc_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'hidden',
+  pulled_turn INTEGER NOT NULL DEFAULT -1,
+  created_at TEXT NOT NULL,
+  UNIQUE (session_id, player_id)
+);
+
+-- ====================================================== competitive profile
+-- One row per player identity. An ACCOUNT profile is durable across runs and
+-- devices; a SESSION profile exists so anonymous play still earns something
+-- and is never blocked, and dies with the session it belongs to.
+CREATE TABLE IF NOT EXISTS profiles (
+  owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  legacy INTEGER NOT NULL DEFAULT 0,
+  coop INTEGER NOT NULL DEFAULT 0,
+  pvp TEXT NOT NULL DEFAULT '{}',
+  achievements TEXT NOT NULL DEFAULT '[]',
+  feuds TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (owner_kind, owner_id)
+);
+
+-- The Daily board. Everyone played the same seeded world that day, which is
+-- the only board here where comparing two runs is genuinely like for like.
+CREATE TABLE IF NOT EXISTS daily_results (
+  day TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  score INTEGER NOT NULL DEFAULT 0,
+  turns INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (day, owner_id)
+);
+CREATE INDEX IF NOT EXISTS ix_daily ON daily_results(day, score DESC);
+
+-- ================================================================= P8 Room
+-- A table of characters, at least one of whom is a real person wearing that
+-- character's face. Seats are assigned once and never rerolled: a reconnect
+-- that could change your role would make the whole mode unplayable.
+CREATE TABLE IF NOT EXISTS room_seats (
+  session_id TEXT NOT NULL,
+  seat_id TEXT NOT NULL,
+  character_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  card TEXT NOT NULL DEFAULT '{}',
+  occupant TEXT NOT NULL DEFAULT 'ai',
+  is_imposter INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'seated',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, seat_id)
+);
+
+CREATE TABLE IF NOT EXISTS room_state (
+  session_id TEXT PRIMARY KEY,
+  phase TEXT NOT NULL DEFAULT 'lobby',
+  round_no INTEGER NOT NULL DEFAULT 0,
+  rounds INTEGER NOT NULL DEFAULT 4,
+  ends_reason TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS room_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  round_no INTEGER NOT NULL,
+  seat_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'ai',
+  clamped INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_room_lines ON room_lines(session_id, round_no, id);
+
+CREATE TABLE IF NOT EXISTS room_votes (
+  session_id TEXT NOT NULL,
+  round_no INTEGER NOT NULL,
+  voter_seat TEXT NOT NULL,
+  target_seat TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, round_no, voter_seat)
+);
+
+-- ============================================================== OOC channel
+-- The table talking ABOUT the story, kept out of the story. Nothing here
+-- enters the timeline, moves a relationship, or is witnessed - so asking
+-- "is the gate still barred?" does not become a scene the world reacts to.
+CREATE TABLE IF NOT EXISTS ooc_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL DEFAULT '',
+  playthrough_id TEXT NOT NULL,
+  player_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL,
+  to_wm INTEGER NOT NULL DEFAULT 0,
+  reply TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ooc ON ooc_messages(playthrough_id, id);
+
 -- ===================================================== canon Session Zero
 -- What the player answered about their own place in a canon world: entry
 -- point on the timeline, where they sit in the power system, what limits
@@ -701,6 +886,53 @@ MIGRATIONS = [
     # A kicked player is marked, never row-deleted: their seat has to stay
     # addressable so a re-invite can restore the archive against it.
     ("session_players", "left_at", "TEXT NOT NULL DEFAULT ''"),
+    # --- legacy layer. A graph node carries the fact it is gated by, so the
+    # Chronicle can be witness-gated with a join instead of a guess: a node
+    # with no key is the player's own trail, a node with one is only visible
+    # to whoever actually learned that fact.
+    ("graph_nodes", "fact_key", "TEXT NOT NULL DEFAULT ''"),
+    # A fact an NPC holds is turned into a FEELING exactly once. Without this
+    # flag the gossip tick would re-apply the same rumour every turn and a
+    # single overheard killing would end a friendship by attrition.
+    ("knowledge", "applied", "INTEGER NOT NULL DEFAULT 0"),
+    # The event that broke it. Moral drift has to be traceable to a specific
+    # thing the player did, or it is a mood meter with a story pasted on.
+    ("relationships", "cause_node", "INTEGER NOT NULL DEFAULT 0"),
+    ("relationships", "cause_turn", "INTEGER NOT NULL DEFAULT -1"),
+    # --- the mode tree. `mode` already existed and means something narrower
+    # (how the table treats each other); this is what KIND of game it is, and
+    # it decides whether the world survives the session at all.
+    ("sessions", "session_type", "TEXT NOT NULL DEFAULT ''"),
+    ("sessions", "seed", "INTEGER NOT NULL DEFAULT 0"),
+    # A disposable world that has been settled. Kept as a column rather than a
+    # row deletion so the result stays readable after the world is gone.
+    ("sessions", "outcome", "TEXT NOT NULL DEFAULT ''"),
+    ("sessions", "ended_at", "TEXT NOT NULL DEFAULT ''"),
+    ("session_players", "team", "TEXT NOT NULL DEFAULT ''"),
+    ("session_players", "seat_role", "TEXT NOT NULL DEFAULT ''"),
+    # A SOLO world has no session, so there was nowhere to record which of the
+    # six solo modes it is - and every solo world silently played as Story.
+    ("playthroughs", "session_type", "TEXT NOT NULL DEFAULT ''"),
+    # The seed this world was BUILT from, not just the one the session was
+    # allocated. Without it a Daily could not be verified after the fact.
+    ("playthroughs", "seed", "INTEGER NOT NULL DEFAULT 0"),
+    # Who a character card actually belongs to. It was keyed to a playthrough,
+    # so a card died with the world it was made in - and the profile counted
+    # cards by player_id, which is the literal string "user" for every solo
+    # player on every device.
+    ("cards", "account_id", "TEXT NOT NULL DEFAULT ''"),
+    ("cards", "last_used", "TEXT NOT NULL DEFAULT ''"),
+    # The other half of the arc. cause_node records the act that turned
+    # somebody AGAINST you; nothing recorded the act that made somebody
+    # yours, so a loyal ally had no receipt while a villain had one.
+    ("relationships", "bond_node", "INTEGER NOT NULL DEFAULT 0"),
+    ("relationships", "bond_turn", "INTEGER NOT NULL DEFAULT -1"),
+    # An organisation founded by the WORLD rather than by a player - the
+    # higher-ups that rise when a power dies.
+    ("orgs", "origin", "TEXT NOT NULL DEFAULT 'player'"),
+    ("orgs", "doctrine", "TEXT NOT NULL DEFAULT ''"),
+    # Somebody of yours placed inside somebody else's house.
+    ("org_members", "planted_by", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

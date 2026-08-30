@@ -137,6 +137,39 @@ def _factions(raw: dict, npc_ids: set, loc_ids: set) -> list:
     return out[:8]
 
 
+# The wider identity card. Empty keys are OMITTED rather than defaulted:
+# anchor_block tests for presence to decide which block to build, so writing
+# empty lists here would flip every world onto the persona path and change the
+# prompt bytes of worlds that never asked for it.
+_CARD_LISTS = ("mannerisms", "values", "flaws", "secrets", "catchphrases",
+               "relationships_to_canon")
+_CARD_TEXT = ("power_profile", "backstory", "concept", "speech_constraints")
+
+
+def _card(anchors: dict) -> dict:
+    out = {}
+    for field in _CARD_LISTS:
+        items = _as_list(anchors.get(field))[:6]
+        if items:
+            out[field] = items
+    for field in _CARD_TEXT:
+        value = str(anchors.get(field) or "").strip()
+        if value:
+            out[field] = value[:400]
+    lines = []
+    for entry in anchors.get("famous_lines") or []:
+        if isinstance(entry, dict):
+            line = str(entry.get("line") or "").strip()
+            if line:
+                lines.append({"beat": str(entry.get("beat") or "").strip()[:24],
+                              "line": line[:200]})
+        elif str(entry).strip():
+            lines.append({"beat": "", "line": str(entry).strip()[:200]})
+    if lines:
+        out["famous_lines"] = lines[:8]
+    return out
+
+
 def _npc_edges(raw: dict, npc_ids: set) -> list:
     """Directed feelings between characters: (src, dst, (aff, trust, fear, obl)).
 
@@ -154,6 +187,38 @@ def _npc_edges(raw: dict, npc_ids: set) -> list:
         vals = [max(-100.0, min(100.0, float(v))) for v in (vals + [0, 0, 0, 0])[:4]]
         out.append((src, dst, tuple(vals)))
     return out[:60]
+
+
+def _revival(raw: dict) -> dict:
+    r = raw.get("revival_rule") or {}
+    if not isinstance(r, dict):
+        return {}
+    name = str(r.get("name") or "").strip()
+    cost = str(r.get("cost") or "").strip()
+    # A rule with no cost is not a rule. Worlds that say "nothing brings anyone
+    # back" land here and correctly declare nothing.
+    if not (name and cost):
+        return {}
+    return {"name": name[:80], "cost": cost[:200]}
+
+
+def _orgs(raw: dict, npc_ids: set, loc_ids: set) -> list:
+    out = []
+    for o in raw.get("orgs") or []:
+        oid = slug(o.get("id") or o.get("name") or "")
+        name = str(o.get("name") or "").strip()
+        if not (oid and name):
+            continue
+        out.append({
+            "id": oid, "name": name[:60],
+            "kind": (str(o.get("kind") or "cell").strip().lower()
+                     if str(o.get("kind") or "").strip().lower() in
+                     ("cell", "house", "company", "order", "crew") else "cell"),
+            "seat": o.get("seat") if o.get("seat") in loc_ids else "",
+            "charter": str(o.get("charter") or "")[:200],
+            "members": [m for m in _as_list(o.get("members")) if m in npc_ids][:8],
+        })
+    return out[:5]
 
 
 def normalise(raw: dict, *, strict: bool = True) -> dict:
@@ -220,6 +285,11 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "name": str(npc.get("name") or nid.replace("_", " ").title()),
             "role": str(npc.get("role") or anchors.get("role") or "villager"),
             "start_location": start,
+            # The five original fields, plus the persona card when the world
+            # carries one. memory.anchor_block switches to the full identity
+            # block the moment any card field is present, so a world authored
+            # before the card existed produces byte-identical prompts and a
+            # world that has one gets the anti-drift treatment for free.
             "anchors": {
                 "name": str(npc.get("name") or nid),
                 "role": str(npc.get("role") or anchors.get("role") or "villager"),
@@ -227,6 +297,7 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
                 "constraints": _as_list(anchors.get("constraints")) or ["Is an ordinary mortal person."],
                 "goals": _as_list(anchors.get("goals")) or ["Survive what is coming."],
                 "taboos": _as_list(anchors.get("taboos")) or ["Never breaks their own word."],
+                **_card(anchors),
             },
             "schedule": schedule,
             "seed_memories": _as_list(npc.get("seed_memories"))[:6],
@@ -298,6 +369,16 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         # Corvin and the engine seeded nothing - two people who cannot stand
         # each other stood in a room being uniformly pleasant.
         "npc_edges": _npc_edges(raw, {n["id"] for n in npcs}),
+        # How this world answers death, if it answers at all. death.py only
+        # offers the `revive` resolution when a world declares one, so without
+        # this the option could never appear on any generated world.
+        # The seed this world was built from, carried through normalisation so
+        # a Daily can be verified after the fact rather than taken on trust.
+        "seed": int(raw.get("seed") or 0),
+        "revival_rule": _revival(raw),
+        # Groups already operating when the player arrives, so the Power panel
+        # and the infiltration verb have something to point at on turn one.
+        "orgs": _orgs(raw, {n["id"] for n in npcs}, {l["id"] for l in locations}),
         # Where a bootstrapped world was researched from. Kept on the world so
         # attribution survives export, and so a player can see their sources.
         "sources": [

@@ -116,6 +116,55 @@ def questions(dossier: dict) -> dict:
                            for p in powers]),
         })
 
+    # A CROSSOVER is not a setting question, it is an arrival question. When
+    # the premise carries somebody in from somewhere else - "Charlie from
+    # Hazbin Hotel, inside The Last of Us" - the two things the builder gets
+    # wrong on its own are how they got here and whether anyone knows what
+    # they are. Neither is answerable from the host world's research, so
+    # neither was being asked.
+    premise = dossier.get("premise") or {}
+    imports = [i for i in (premise.get("imports") or dossier.get("imports") or [])
+               if i.get("character")]
+    if imports:
+        who = ", ".join(i["character"] for i in imports[:3])
+        out["crossover"] = True
+        out["questions"].append({
+            "id": "arrival",
+            "q": f"How did {who} get here?",
+            "why": "The world has to react to an arrival it has no explanation for. "
+                   "Pick one and it becomes a fact the setting is built around.",
+            "kind": "choice",
+            "options": [
+                {"id": "always", "label": "They have always been here",
+                 "blurb": "No arrival. The world remembers them as part of it, "
+                          "and nobody finds them strange."},
+                {"id": "torn", "label": "Torn through, recently",
+                 "blurb": "They landed. It was witnessed, it is unexplained, and "
+                          "somebody is already looking into it."},
+                {"id": "hidden", "label": "Arrived, and hiding it",
+                 "blurb": "They know where they came from. Nobody else does, and "
+                          "being found out costs something."},
+            ],
+        })
+        out["questions"].append({
+            "id": "keeps",
+            "q": f"Does {who} keep what they could do?",
+            "why": "A power from another world either works here or it does not, "
+                   "and the answer changes every encounter in the game.",
+            "kind": "choice",
+            "options": [
+                {"id": "full", "label": "Everything, intact",
+                 "blurb": "They are as powerful here as they were there - and this "
+                          "world has no answer for it yet."},
+                {"id": "weakened", "label": "Weakened, and it costs",
+                 "blurb": "It still works. It works badly, it draws attention, and "
+                          "it takes something out of them."},
+                {"id": "none", "label": "Nothing carried over",
+                 "blurb": "The person, not the power. They are who they are with "
+                          "none of what they had."},
+            ],
+        })
+
     out["questions"].extend(GENERAL)
     return out
 
@@ -159,6 +208,30 @@ def brief(answers: dict, dossier: dict) -> str:
     if a.get("limit"):
         lines.append(f"- WHAT LIMITS THEM: {a['limit']}. Press on this. A limit that never "
                      f"costs anything is decoration.")
+
+    if a.get("arrival"):
+        how = {
+            "always": "they have ALWAYS been here. Write them into this world's history "
+                      "and its people's memories; nobody finds them strange, and there "
+                      "is no arrival to explain.",
+            "torn": "they arrived RECENTLY and it was witnessed. It is unexplained, it "
+                    "is talked about, and at least one faction is already looking into "
+                    "it. Give that investigation a name and a person running it.",
+            "hidden": "they arrived and are HIDING it. They know where they came from; "
+                      "nobody else does. Give somebody a reason to be suspicious and "
+                      "something concrete that would expose them.",
+        }.get(a["arrival"], a["arrival"])
+        lines.append(f"- HOW THEY GOT HERE: {how}")
+    if a.get("keeps"):
+        band = {
+            "full": "everything they could do still works, at full strength. This world "
+                    "has no counter for it yet - build the reaction, not a nerf.",
+            "weakened": "what they could do still works, badly. It costs them, it is "
+                        "conspicuous, and it fails when it matters most.",
+            "none": "nothing carried over. They are exactly who they are with none of "
+                    "what they had, and they know it.",
+        }.get(a["keeps"], a["keeps"])
+        lines.append(f"- WHAT CARRIED OVER: {band}")
 
     lines.append("Give at least two named characters a reason to care that this specific person "
                  "is here - a use for them, a suspicion of them, or a grudge.")

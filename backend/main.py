@@ -14,9 +14,11 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from . import (aftermath, arcs, atlas, auth, authority, awareness, betrayal, budget,
-               canon, combat, durable, legibility, research, sessionzero, uploads,
+               canon, combat, durable, ladder, legacy, legibility, modetree,
+               ooc, research, room, sessionzero, submodes, uploads,
                config, db,
-               death, engine, fastforward, identity, mana, memory, modes, narrgraph,
+               death, engine, fastforward, identity, llm, mana, memory, modes,
+               narrgraph,
                party, payments, persona, precommit, relationships, rt, runs, sessions,
                narrator, sharecard, streaks, trust, voice, world_master, worldforge,
                worldkit, worldstate)
@@ -71,6 +73,9 @@ class NewPlaythrough(BaseModel):
     world_id: str = "emberfall"
     protagonist: str | None = None
     title: str | None = None
+    # Which of the six solo modes. Empty is Story, which is what every solo
+    # world was before there was anywhere to say otherwise.
+    session_type: str = ""
 
 
 class Action(BaseModel):
@@ -89,6 +94,9 @@ class NewSession(BaseModel):
     host_name: str = "Host"
     protagonist: str | None = None
     title: str | None = None
+    # Which of the nineteen sub-modes. Empty maps to the nearest match for the
+    # room mode, so a client that predates the tree still opens a playable room.
+    session_type: str = ""
 
 
 class JoinSession(BaseModel):
@@ -362,8 +370,13 @@ def list_playthroughs(user_id: str = Query(min_length=4)):
 def new_playthrough(body: NewPlaythrough):
     if not world_registry.exists(body.world_id):
         raise HTTPException(400, "unknown world")
-    pt_id = engine.create_playthrough(body.user_id, body.world_id, body.protagonist, body.title)
-    return {"id": pt_id, "state": engine.snapshot(pt_id), "feed": engine.feed(pt_id)}
+    try:
+        pt_id = engine.create_playthrough(body.user_id, body.world_id, body.protagonist,
+                                          body.title, session_type=body.session_type)
+    except modetree.ModeError as e:
+        raise HTTPException(400, str(e))
+    return {"id": pt_id, "mode": modetree.public(engine.mode_of(pt_id)),
+            "state": engine.snapshot(pt_id), "feed": engine.feed(pt_id)}
 
 
 @app.get("/api/playthroughs/{pt_id}")
@@ -667,8 +680,8 @@ def create_session(body: NewSession):
     try:
         s = sessions.create(body.user_id, world_id=body.world_id, mode=body.mode,
                             host_name=body.host_name, protagonist=body.protagonist,
-                            title=body.title)
-    except ValueError as e:
+                            title=body.title, session_type=body.session_type)
+    except (ValueError, modetree.ModeError) as e:
         raise HTTPException(400, str(e))
     return {"session": sessions.public(s), "player_id": "host",
             "state": engine.snapshot(s["playthrough_id"], "host"),
@@ -1085,7 +1098,7 @@ def list_cards(pt_id: str, user_id: str = Query(default="")):
 
 
 @app.post("/api/playthroughs/{pt_id}/cards")
-def save_card(pt_id: str, body: CardDraft, user_id: str = Query(default="")):
+def save_card(pt_id: str, body: CardDraft, request: Request, user_id: str = Query(default="")):
     pt = _own(pt_id, user_id)
     world = engine.world_for(pt)
     draft = {"player_id": body.player_id, "name": body.name, "concept": body.concept,
@@ -1093,7 +1106,13 @@ def save_card(pt_id: str, body: CardDraft, user_id: str = Query(default="")):
     if body.autofill:
         with budget.turn(f"card:{pt_id}", limit=1):
             draft = identity.autofill(world, draft, user_id=body.user_id, pt_id=pt_id)
-    card = identity.save(pt_id, draft, session_id=pt["session_id"], card_id=body.card_id)
+    # Stamped with the ACCOUNT when there is one, so the character joins the
+    # player's library instead of dying with this world. Read from the cookie,
+    # never from the query string - a client-supplied id here would let anyone
+    # file characters into somebody else's library. A guest's card still saves
+    # and still plays; it just has nowhere durable to live.
+    card = identity.save(pt_id, draft, session_id=pt["session_id"], card_id=body.card_id,
+                         account_id=_account_id_or_none(request) or "")
     return card
 
 
@@ -1255,6 +1274,14 @@ async def ws_session(ws: WebSocket, session_id: str, player: str = Query(default
                     "by": player, "by_name": me["name"],
                     "turn": result["state"]["turn"], "note": result.get("note", ""),
                 })
+                # The climax reveal fires inside the deterministic tick and is
+                # the whole table's beat, not just the acting player's. Sent as
+                # its own message so it lands as a reveal rather than as one
+                # more line in a turn nobody re-reads.
+                fired = (result.get("tick") or {}).get("legacy") or {}
+                if fired.get("reveal"):
+                    await rt.publish(session_id, {"type": "traitor",
+                                                  "reveal": fired["reveal"]})
                 continue
 
             if kind == "whisper":
@@ -1698,6 +1725,54 @@ class CardIdentity(BaseModel):
     on_death: str = ""
 
 
+@app.get("/api/cards")
+def my_cards(request: Request):
+    """Every character on this account. The library that makes a card worth
+    writing: build somebody once, bring them into anything."""
+    account_id = _require_account(request)
+    return {"cards": identity.roster(account_id)}
+
+
+class Adopt(BaseModel):
+    playthrough_id: str = Field(min_length=4, max_length=64)
+    player_id: str = Field(default=memory.SOLO, max_length=64)
+
+
+@app.post("/api/cards/{card_id}/adopt")
+def adopt_card(card_id: str, body: Adopt, request: Request):
+    """Bring an existing character into a world. Copied, not moved - the same
+    person can be in two stories at once and what happens in one must not
+    rewrite the other."""
+    account_id = _require_account(request)
+    card = identity.get(card_id)
+    if not card or card.get("account_id") != account_id:
+        raise HTTPException(404, "no such character")
+    pt = db.row("SELECT session_id FROM playthroughs WHERE id=?", (body.playthrough_id,))
+    if not pt:
+        raise HTTPException(404, "no such story")
+    try:
+        return identity.adopt(card_id, body.playthrough_id, player_id=body.player_id,
+                              session_id=pt["session_id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/cards/{card_id}")
+def forget_card(card_id: str, request: Request):
+    """Take a character out of the library.
+
+    Unlinked, not destroyed. The card may still be standing in a world someone
+    is playing, and deleting the row would tear a person out of a story that
+    already happened. The library is a shortcut, so removing something from it
+    should only ever remove the shortcut."""
+    account_id = _require_account(request)
+    card = identity.get(card_id)
+    if not card or card.get("account_id") != account_id:
+        raise HTTPException(404, "no such character")
+    db.run("UPDATE cards SET account_id='' WHERE id=?", (card_id,))
+    return {"ok": True}
+
+
 @app.post("/api/cards/{card_id}/identity")
 def card_identity(card_id: str, body: CardIdentity):
     row = db.row("SELECT * FROM cards WHERE id=?", (card_id,))
@@ -1974,7 +2049,11 @@ def profile_get(request: Request):
         "mana": _account_mana(account_id),
         "runs": runs.history(account_id, 10),
         "streak": streaks.status(account_id),
-        "cards": db.rows("SELECT id,name,concept,avatar_url FROM cards WHERE player_id=?"
+        # Read by ACCOUNT. This counted `WHERE player_id = <account id>`, and
+        # identity.save stores whatever player_id the caller passed - "user"
+        # for every solo player - so the number was always zero for anyone
+        # who had ever played alone.
+        "cards": db.rows("SELECT id,name,concept,avatar_url FROM cards WHERE account_id=?"
                          " ORDER BY updated_at DESC LIMIT 20", (account_id,)),
         "towns": authority.town_memory(account_id),
         "sessions": auth.sessions_for(account_id),
@@ -2021,9 +2100,25 @@ def forge_research(setting: str = Query(min_length=2, max_length=120),
     Exposed so a player can SEE what will ground their world - and so they can
     tell the difference between "we found the real canon" and "we are about to
     invent this", which is exactly the distinction an ungrounded build hides."""
-    d = research.dossier(setting, refresh=refresh, depth=depth)
+    # Parsed, not searched. A premise names properties; searching the sentence
+    # found nothing and told the player their canon request was unknown.
+    d = research.premise_dossier(setting, refresh=refresh, depth=depth)
+    parsed = d.get("premise") or {}
     return {
         "setting": d["setting"], "found": d["found"], "cached": d.get("cached", False),
+        # What we understood them to be asking for. Shown whether or not any
+        # lookup succeeded, because understanding the request and grounding it
+        # are two different things and the player should see both.
+        "premise": {
+            "is_premise": parsed.get("is_premise", False),
+            "host": parsed.get("host", ""),
+            "imports": parsed.get("imports", []),
+            "entities": parsed.get("entities", []),
+        },
+        "grounded": [name for name, ent in (d.get("entities") or {}).items()
+                     if ent.get("found")],
+        "ungrounded": [name for name, ent in (d.get("entities") or {}).items()
+                       if not ent.get("found")],
         "canonical_name": d["canonical_name"], "wiki": d["wiki"],
         "summary": d["summary"][:600],
         "characters": [c["name"] for c in d["characters"][:14]],
@@ -2119,9 +2214,703 @@ def forge_session_zero(setting: str = Query(min_length=2, max_length=160),
     the world's real arcs and its real power system - so the player picks
     "start at the Mugen Train arc" instead of typing a guess. Research is
     cached, so opening this and then building costs one lookup, not two."""
-    found = (research.dossier(setting) if mode != "original"
+    # premise_dossier, not dossier: a crossover premise carries `imports`, and
+    # the plain lookup drops them - which is why a world built from "Charlie
+    # from Hazbin Hotel, inside The Last of Us" was never asked the two
+    # questions that premise actually raises.
+    found = (research.premise_dossier(setting) if mode != "original"
              else {"found": False, "setting": setting})
     return sessionzero.questions(found)
+
+
+# ---------------------------------------------------------------------------
+# OOC - the table talking about the story, kept out of the story
+# ---------------------------------------------------------------------------
+
+class OocPost(BaseModel):
+    text: str = Field(min_length=1, max_length=600)
+    name: str = Field(default="", max_length=40)
+    to_wm: bool = False
+
+
+@app.get("/api/playthroughs/{pt_id}/ooc")
+def ooc_history(pt_id: str, user_id: str = Query(default="")):
+    pt = _own(pt_id, user_id)
+    return {"messages": ooc.history(pt["session_id"], pt_id)}
+
+
+@app.post("/api/playthroughs/{pt_id}/ooc")
+def ooc_post(pt_id: str, body: OocPost, user_id: str = Query(default=""),
+             player: str = Query(default=memory.SOLO)):
+    """Free between players. A question to the World Master costs one short,
+    hard-capped model call - the only recurring cost on this channel."""
+    pt = _own(pt_id, user_id)
+    try:
+        msg = ooc.post(pt["session_id"], pt_id, player=player,
+                       name=body.name or player, text=body.text, to_wm=body.to_wm)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    if body.to_wm:
+        world = engine.world_for(pt)
+        try:
+            with budget.turn(f"ooc:{pt_id}", limit=1):
+                reply = ooc.ask_world_master(pt, world, body.text,
+                                             user_id=pt["user_id"], player=player)
+            msg = ooc.answer_and_record(msg["id"], reply)
+        except llm.LLMError as e:
+            msg["reply"] = f"(the World Master could not answer: {e})"
+
+    _publish(pt["session_id"], {"type": "ooc", "message": msg})
+    return msg
+
+
+class DomainPatch(BaseModel):
+    levels: dict = Field(default_factory=dict)
+    severity: Optional[str] = None
+
+
+@app.get("/api/playthroughs/{pt_id}/canon-spectrum")
+def canon_spectrum(pt_id: str, user_id: str = Query(default="")):
+    _own(pt_id, user_id)
+    return modes.domain_public(pt_id)
+
+
+@app.post("/api/playthroughs/{pt_id}/canon-spectrum")
+def set_canon_spectrum(pt_id: str, body: DomainPatch, user_id: str = Query(default="")):
+    """Strictness per domain, plus how hard consequences land. 'Who characters
+    are' is deliberately not settable below strict - a character breaking their
+    own persona is a product failure, not a freedom a table opted into."""
+    _own(pt_id, user_id)
+    try:
+        return modes.set_domains(pt_id, levels=body.levels or None, sev=body.severity)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------------------------------------------------------------------------
+# The mode tree - what kind of game this is
+# ---------------------------------------------------------------------------
+
+@app.get("/api/modes/tree")
+def mode_tree():
+    """The whole tree, grouped by family. The first question a host answers is
+    which of the three they want, so it is served in that shape."""
+    return modetree.catalogue()
+
+
+@app.get("/api/modes/tree/{mode_id}")
+def mode_tree_one(mode_id: str):
+    try:
+        return modetree.public(mode_id)
+    except modetree.ModeError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/sessions/{session_id}/turn-order")
+def turn_order(session_id: str, player: str = Query(default="")):
+    """Whose turn it is, under this mode's policy. Deterministic from the seat
+    list and the turn number, so a client can render the queue without asking
+    on every tick - and a disconnect cannot lose the order."""
+    s = db.row("SELECT playthrough_id FROM sessions WHERE id=?", (session_id,))
+    if not s:
+        raise HTTPException(404, "no such room")
+    pt = db.row("SELECT current_turn FROM playthroughs WHERE id=?", (s["playthrough_id"],))
+    turn = pt["current_turn"] if pt else 0
+    mode_id = sessions.type_of(session_id)
+    seats = sessions.seats(session_id)
+    return {
+        "mode": modetree.public(mode_id),
+        "seats": seats,
+        "turn": turn,
+        "whose": (seats[turn % len(seats)] if seats
+                  and modetree.turn_policy(mode_id) == "round_robin" else None),
+        "you": modetree.may_act(mode_id, seats=seats, player_id=player, turn=turn)
+        if player else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# P8 The Room - seats, talk, the vote
+# ---------------------------------------------------------------------------
+
+def _room_session(session_id):
+    row = db.row("SELECT * FROM sessions WHERE id=?", (session_id,))
+    if not row:
+        raise HTTPException(404, "no such room")
+    if sessions.type_of(session_id) != "room":
+        raise HTTPException(400, "that room is not playing The Room")
+    return row
+
+
+class RoomSetup(BaseModel):
+    characters: list = Field(default_factory=list)
+    imposters: int = Field(default=1, ge=1, le=4)
+    rounds: int = Field(default=room.DEFAULT_ROUNDS, ge=1, le=12)
+
+
+@app.post("/api/rooms/{session_id}/setup")
+def room_setup(session_id: str, body: RoomSetup, user_id: str = Query(default="")):
+    """Seat the table. Who is an imposter is decided here and never again."""
+    row = _room_session(session_id)
+    if user_id and row["host_user_id"] != user_id:
+        raise HTTPException(403, "only the host sets the table")
+    try:
+        out = room.setup(session_id, characters=body.characters,
+                         imposters=body.imposters, rounds=body.rounds)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "setup"})
+    return out
+
+
+@app.post("/api/rooms/{session_id}/seat/{seat_id}")
+def room_take_seat(session_id: str, seat_id: str, player: str = Query(...)):
+    _room_session(session_id)
+    try:
+        out = room.take_seat(session_id, seat_id, player)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "seated", "seat": out})
+    return out
+
+
+@app.post("/api/rooms/{session_id}/begin")
+def room_begin(session_id: str, user_id: str = Query(default="")):
+    row = _room_session(session_id)
+    if user_id and row["host_user_id"] != user_id:
+        raise HTTPException(403, "only the host starts it")
+    try:
+        out = room.begin(session_id)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "begin", "state": out})
+    return out
+
+
+class RoomSay(BaseModel):
+    text: str = Field(min_length=1, max_length=room.MAX_SAY)
+
+
+@app.post("/api/rooms/{session_id}/say")
+def room_say(session_id: str, body: RoomSay, player: str = Query(...)):
+    """A player speaks as their character. No model call - a human in a seat
+    is the only character in the game that never drifts."""
+    _room_session(session_id)
+    seat_id = room.seat_of(session_id, player)
+    if not seat_id:
+        raise HTTPException(400, "you have no seat")
+    try:
+        line = room.say(session_id, seat_id, body.text, player_id=player)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "line", "line": line})
+    return line
+
+
+@app.post("/api/rooms/{session_id}/ai/{seat_id}")
+def room_ai(session_id: str, seat_id: str, user_id: str = Query(default="")):
+    """An AI seat takes its turn. One completion, guarded on both sides, and it
+    clamps rather than showing a broken frame."""
+    row = _room_session(session_id)
+    try:
+        with budget.turn(f"room:{session_id}", limit=2):
+            line = room.ai_say(session_id, seat_id, user_id=user_id or row["host_user_id"])
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    except llm.LLMError as e:
+        raise HTTPException(502, f"that seat could not answer: {e}")
+    _publish(session_id, {"type": "room", "event": "line", "line": line})
+    return line
+
+
+class RoomTestify(BaseModel):
+    text: str = Field(min_length=1, max_length=room.MAX_SAY)
+
+
+@app.post("/api/rooms/{session_id}/testify")
+def room_testify(session_id: str, body: RoomTestify, player: str = Query(...)):
+    """A banished player's one line a round, from outside the table.
+
+    Elimination that leaves somebody watching in silence is what stops people
+    joining these games; this is influence without a vote."""
+    _room_session(session_id)
+    seat_id = room.seat_of(session_id, player)
+    if not seat_id:
+        raise HTTPException(400, "you have no seat")
+    try:
+        line = room.testify(session_id, seat_id, body.text, player_id=player)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "line", "line": line})
+    return line
+
+
+@app.post("/api/rooms/{session_id}/advance")
+def room_advance(session_id: str):
+    _room_session(session_id)
+    try:
+        out = room.advance(session_id)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "phase", "state": out})
+    return out
+
+
+class RoomVote(BaseModel):
+    target: str = Field(min_length=1, max_length=12)
+
+
+@app.post("/api/rooms/{session_id}/vote")
+def room_vote(session_id: str, body: RoomVote, player: str = Query(...)):
+    _room_session(session_id)
+    seat_id = room.seat_of(session_id, player)
+    if not seat_id:
+        raise HTTPException(400, "you have no seat")
+    try:
+        out = room.vote(session_id, seat_id, body.target)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "vote", "tally": out})
+    return out
+
+
+@app.post("/api/rooms/{session_id}/resolve")
+def room_resolve(session_id: str):
+    """Banish the most-voted seat and reveal what they were."""
+    _room_session(session_id)
+    try:
+        out = room.resolve(session_id)
+    except room.RoomError as e:
+        raise HTTPException(400, str(e))
+    _publish(session_id, {"type": "room", "event": "resolved", "result": out})
+    if out.get("over"):
+        _settle_room(session_id, out)
+    return out
+
+
+def _settle_room(session_id, out):
+    """A finished Room is a finished PvP match: the world is torn down and the
+    result reaches every profile at the table."""
+    winner = out.get("winner", "")
+    for seat in room.seats(session_id):
+        if seat["occupant"] == "ai":
+            continue
+        won = (winner == "imposters") == bool(seat["is_imposter"])
+        try:
+            ladder.record_match(player_id=seat["occupant"], session_id=session_id,
+                                mode="room", outcome="win" if won else "loss")
+        except ValueError:
+            continue
+    try:
+        sessions.settle(session_id, outcome=winner, winner=winner)
+    except KeyError:
+        pass
+
+
+@app.get("/api/rooms/{session_id}")
+def room_state(session_id: str, player: str = Query(default="")):
+    """What one seat may see. Your own role is yours; everyone else's is hidden
+    until they are banished or it is over - enforced here, never in a client."""
+    _room_session(session_id)
+    return room.public(session_id, player)
+
+
+# ---------------------------------------------------------------------------
+# The competitive profile, seasons and boards
+# ---------------------------------------------------------------------------
+
+def _owner(user_id: str, player: str, session_id: str):
+    """An account if there is one, otherwise a session-scoped identity. Play is
+    never blocked to make somebody sign up."""
+    acct = db.row("SELECT id FROM accounts WHERE id=?", (user_id,)) if user_id else None
+    return (user_id if acct else "", player, session_id)
+
+
+@app.get("/api/profile/standing")
+def get_standing(user_id: str = Query(default=""), player: str = Query(default=memory.SOLO),
+                 session_id: str = Query(default="")):
+    """The COMPETITIVE profile - scores, season, rank, feuds.
+
+    Not /api/profile: that path is the account profile (mana, runs, cards) and
+    was registered first, so this handler would have been dead and the client
+    would have silently received the wrong shape forever."""
+    a, p, s = _owner(user_id, player, session_id)
+    return ladder.public(a, p, s)
+
+
+@app.get("/api/profile/trophies")
+def get_trophies(user_id: str = Query(default=""), player: str = Query(default=memory.SOLO),
+                 session_id: str = Query(default="")):
+    a, p, s = _owner(user_id, player, session_id)
+    return ladder.trophy_room(a, p, s)
+
+
+@app.get("/api/leaderboard")
+def get_leaderboard(board: str = Query(default="pvp"), mode: str = Query(default=""),
+                    limit: int = Query(default=50, ge=1, le=200)):
+    try:
+        return ladder.leaderboard(board=board, mode=mode, limit=limit)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/leaderboard/daily")
+def get_daily_board(day: str = Query(default=""), limit: int = Query(default=50, ge=1, le=200)):
+    return ladder.daily_board(day=day, limit=limit)
+
+
+class DailySubmit(BaseModel):
+    name: str = Field(default="", max_length=40)
+
+
+@app.post("/api/playthroughs/{pt_id}/daily/submit")
+def submit_daily(pt_id: str, body: DailySubmit, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    """Put today's run on the board. Everyone played the same world, so this is
+    the one comparison here that is genuinely like for like."""
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    scored = submodes.daily_score(pt_id, world, player)
+    out = ladder.submit_daily(owner_id=user_id or f"{pt_id}:{player}",
+                              name=body.name or player, score=scored["score"],
+                              turns=scored["turns"])
+    return {**out, "score_detail": scored}
+
+
+# ---------------------------------------------------------------------------
+# Sub-mode mechanics - the objective, and the modes that have their own verbs
+# ---------------------------------------------------------------------------
+
+class Contest(BaseModel):
+    place_id: str = Field(min_length=1, max_length=60)
+
+
+@app.post("/api/playthroughs/{pt_id}/contest")
+def contest_node(pt_id: str, body: Contest, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    """Make a move on a place. Public by construction - the people who see you
+    take it are the people whose opinion decides whether you keep it."""
+    pt = _own(pt_id, user_id)
+    try:
+        out = submodes.contest(pt_id, engine.world_for(pt), place_id=body.place_id,
+                               player=player, session_id=pt["session_id"],
+                               turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+    _publish(pt["session_id"], {"type": "contest", "result": out})
+    return out
+
+
+@app.post("/api/sessions/{session_id}/sides")
+def deal_sides(session_id: str, user_id: str = Query(default="")):
+    """Deal sides for Teams, Hunt or Battle Royale. Once, and deterministically."""
+    row = db.row("SELECT host_user_id FROM sessions WHERE id=?", (session_id,))
+    if not row:
+        raise HTTPException(404, "no such room")
+    if user_id and row["host_user_id"] != user_id:
+        raise HTTPException(403, "only the host deals sides")
+    mode_id = sessions.type_of(session_id)
+    dealt = submodes.assign_sides(session_id, mode_id)
+    if not dealt:
+        raise HTTPException(400, f"{mode_id} does not have sides")
+    _publish(session_id, {"type": "sides", "sides": submodes.sides(session_id)})
+    return submodes.sides(session_id)
+
+
+@app.get("/api/sessions/{session_id}/sides")
+def get_sides(session_id: str):
+    return submodes.sides(session_id)
+
+
+@app.post("/api/playthroughs/{pt_id}/raid/open")
+def open_raid(pt_id: str, user_id: str = Query(default="")):
+    """Give a Raid something to actually raid."""
+    pt = _own(pt_id, user_id)
+    try:
+        out = submodes.open_raid(pt_id, engine.world_for(pt), turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+    _publish(pt["session_id"], {"type": "raid", "result": out})
+    return out
+
+
+@app.get("/api/playthroughs/{pt_id}/objective")
+def get_objective(pt_id: str, user_id: str = Query(default=""),
+                  player: str = Query(default=memory.SOLO)):
+    """What you are trying to do here, and how far along you are. Read out of
+    engine state rather than a parallel counter."""
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    # engine.mode_of is the single resolver. Deriving it here a second way is
+    # how a solo Detective world was told its objective was Story.
+    mode_id = engine.mode_of(pt)
+    return submodes.public(pt_id, world, mode_id, player=player,
+                           session_id=pt["session_id"])
+
+
+@app.post("/api/playthroughs/{pt_id}/case/open")
+def case_open(pt_id: str, user_id: str = Query(default="")):
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    try:
+        return submodes.open_case(pt_id, world, turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/playthroughs/{pt_id}/case")
+def case_file(pt_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    pt = _own(pt_id, user_id)
+    return submodes.casefile(pt_id, engine.world_for(pt), player)
+
+
+@app.post("/api/playthroughs/{pt_id}/case/ask/{npc_id}")
+def case_ask(pt_id: str, npc_id: str, user_id: str = Query(default=""),
+             player: str = Query(default=memory.SOLO)):
+    """Ask somebody what they saw. Gated on both sides: they must know it, and
+    they must be willing to tell YOU."""
+    pt = _own(pt_id, user_id)
+    try:
+        return submodes.question(pt_id, engine.world_for(pt), npc_id,
+                                 player=player, turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/playthroughs/{pt_id}/case/accuse/{npc_id}")
+def case_accuse(pt_id: str, npc_id: str, user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    try:
+        out = submodes.accuse(pt_id, world, npc_id, player=player,
+                              turn=pt["current_turn"])
+    except submodes.SubmodeError as e:
+        raise HTTPException(400, str(e))
+    if out.get("correct"):
+        ladder.add_legacy(120, account_id=user_id, player_id=player,
+                          session_id=pt["session_id"], why="closed a case")
+    return out
+
+
+@app.post("/api/playthroughs/{pt_id}/masks/vote/{npc_id}")
+def mask_vote(pt_id: str, npc_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    """Vote a face out. Right, and a mask comes off. Wrong, and somebody who
+    actually lived here is dead and the world knows who called for it."""
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    out = submodes.mask_vote(pt["session_id"], pt_id, world, npc_id=npc_id,
+                             by=player, turn=pt["current_turn"])
+    _publish(pt["session_id"], {"type": "mask", "result": out})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Layer 6 - legacy, the world chronicle, succession, orgs, the traitor
+# ---------------------------------------------------------------------------
+
+def _pt_world(pt_id, user_id):
+    pt = _own(pt_id, user_id)
+    return pt, engine.world_for(pt), pt["current_turn"]
+
+
+@app.get("/api/playthroughs/{pt_id}/legacy")
+def legacy_all(pt_id: str, user_id: str = Query(default=""),
+               player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    return legacy.public(pt_id, world, player, turn=turn)
+
+
+@app.get("/api/playthroughs/{pt_id}/chronicle")
+def chronicle(pt_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO),
+              limit: int = Query(default=60, ge=1, le=200)):
+    """The world feed, witness-gated. It can only return events this player
+    actually learned - there is no flag that widens it."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    out = legacy.chronicle(pt_id, world, player, limit=limit)
+    out["unseen"] = legacy.unseen_count(pt_id, world, player)
+    return out
+
+
+@app.post("/api/playthroughs/{pt_id}/chronicle/read")
+def chronicle_read(pt_id: str, user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO)):
+    pt, world, _ = _pt_world(pt_id, user_id)
+    return legacy.mark_read(pt_id, world, player)
+
+
+@app.get("/api/playthroughs/{pt_id}/drift")
+def drift(pt_id: str, user_id: str = Query(default=""),
+          player: str = Query(default=memory.SOLO),
+          turned_only: bool = Query(default=False)):
+    """Who has turned, how far, and the event that did it."""
+    pt, world, _ = _pt_world(pt_id, user_id)
+    return {"drift": legacy.drift(pt_id, world, player, only_turned=turned_only)}
+
+
+@app.get("/api/playthroughs/{pt_id}/successions")
+def successions(pt_id: str, user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    pt, world, _ = _pt_world(pt_id, user_id)
+    return {"vacuums": legacy.vacuums(pt_id, world, player)}
+
+
+@app.get("/api/playthroughs/{pt_id}/power")
+def power(pt_id: str, user_id: str = Query(default=""),
+          player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    return legacy.power_panel(pt_id, world, player, turn=turn)
+
+
+class OrgNew(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    kind: str = Field(default="cell", max_length=20)
+    charter: str = Field(default="", max_length=400)
+    # One of the seven, or none. A doctrine is what the house says it is for.
+    doctrine: str = Field(default="", max_length=20)
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs")
+def found_org(pt_id: str, body: OrgNew, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    try:
+        out = legacy.found_org(pt_id, world, player=player, name=body.name,
+                               kind=body.kind, charter=body.charter, turn=turn,
+                               doctrine=body.doctrine)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+    _publish(pt["session_id"], {"type": "org", "event": "founded", "org": out})
+    return out
+
+
+class OrgRecruit(BaseModel):
+    npc_id: str = Field(min_length=1, max_length=60)
+    rank: str = Field(default="member", max_length=20)
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs/{org_id}/recruit")
+def org_recruit(pt_id: str, org_id: str, body: OrgRecruit,
+                user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    pt, world, turn = _pt_world(pt_id, user_id)
+    try:
+        return legacy.recruit(pt_id, world, org_id=org_id, npc_id=body.npc_id,
+                              player=player, turn=turn, rank=body.rank)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+
+
+class OrgOrder(BaseModel):
+    npc_id: str = Field(min_length=1, max_length=60)
+    order: str = Field(min_length=1, max_length=300)
+    severity: int = Field(default=3, ge=1, le=5)
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs/{org_id}/command")
+def org_command(pt_id: str, org_id: str, body: OrgOrder,
+                user_id: str = Query(default=""),
+                player: str = Query(default=memory.SOLO)):
+    """Give an order through a subordinate. The world witnesses THEM."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    try:
+        out = legacy.command(pt_id, world, org_id=org_id, npc_id=body.npc_id,
+                             player=player, order=body.order, turn=turn,
+                             severity=body.severity)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+    if out.get("carried"):
+        _publish(pt["session_id"], {"type": "org", "event": "order", "result": out})
+    return out
+
+
+@app.delete("/api/playthroughs/{pt_id}/orgs/{org_id}")
+def org_dissolve(pt_id: str, org_id: str, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    _own(pt_id, user_id)
+    try:
+        return legacy.dissolve(pt_id, org_id, player)
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+
+
+class Infiltration(BaseModel):
+    npc_id: str = Field(min_length=1, max_length=60)
+
+
+@app.get("/api/playthroughs/{pt_id}/rivals")
+def rival_houses(pt_id: str, user_id: str = Query(default=""),
+                 player: str = Query(default=memory.SOLO)):
+    """Organisations you do not lead - including the ones the WORLD founded
+    when a succession left people behind."""
+    pt = _own(pt_id, user_id)
+    return {"rivals": legacy.rival_orgs(pt_id, engine.world_for(pt), player)}
+
+
+@app.post("/api/playthroughs/{pt_id}/orgs/{org_id}/infiltrate")
+def org_infiltrate(pt_id: str, org_id: str, body: Infiltration,
+                   user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO)):
+    """Place one of yours inside somebody else's house. Never published - an
+    infiltration that announced itself would defeat its own purpose."""
+    pt = _own(pt_id, user_id)
+    try:
+        return legacy.infiltrate(pt_id, engine.world_for(pt), org_id=org_id,
+                                 npc_id=body.npc_id, player=player,
+                                 turn=pt["current_turn"])
+    except legacy.OrgError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/playthroughs/{pt_id}/monuments")
+def monuments(pt_id: str, user_id: str = Query(default=""),
+              player: str = Query(default=memory.SOLO)):
+    """What the dead left standing. Death is not a reset, and an heir told
+    nothing about what the last life built has inherited a number."""
+    pt = _own(pt_id, user_id)
+    return {"monuments": legacy.monuments(pt_id, engine.world_for(pt), player)}
+
+
+@app.get("/api/playthroughs/{pt_id}/traitor")
+def traitor(pt_id: str, user_id: str = Query(default=""),
+            player: str = Query(default=memory.SOLO)):
+    """The tease. Never carries a name - that is the entire contract."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    return legacy.traitor_signal(pt_id, world, player, turn=turn,
+                                 session_id=pt["session_id"])
+
+
+@app.post("/api/playthroughs/{pt_id}/traitor/reveal")
+def traitor_reveal(pt_id: str, user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO),
+                   force: bool = Query(default=False)):
+    """Name them. Refuses below the threshold unless a climax forces it."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    out = legacy.reveal_traitor(pt_id, world, player, turn=turn, force=force)
+    if out.get("revealed"):
+        _publish(pt["session_id"], {"type": "traitor", "reveal": out})
+    return out
+
+
+@app.post("/api/playthroughs/{pt_id}/catch-up")
+def surface_reveal(pt_id: str, user_id: str = Query(default=""),
+                   player: str = Query(default=memory.SOLO)):
+    """Hand back one thing that happened while nobody told them.
+
+    Not /reveal: that path is already taken by the simultaneous split reveal,
+    and FastAPI matches the first route it registered - this one was shadowed
+    and unreachable, which is a route the client would have called forever
+    while quietly getting somebody else's answer."""
+    pt, world, turn = _pt_world(pt_id, user_id)
+    out = legacy.surface_reveal(pt_id, world, player, turn=turn)
+    if not out:
+        return {"revealed": False, "note": "Nothing is owed to you right now."}
+    _publish(pt["session_id"], {"type": "chronicle", "reveal": out})
+    return {"revealed": True, **out}
 
 
 @app.get("/{path:path}")
@@ -2130,5 +2919,19 @@ def static_files(path: str):
         raise HTTPException(404, "no such endpoint")
     target = (FRONTEND / path).resolve()
     if target.is_file() and str(target).startswith(str(FRONTEND.resolve())):
-        return FileResponse(target)
+        # The rebuilt panels under /app are ES modules, and a module's static
+        # imports are resolved by the BROWSER relative to the importing file -
+        # so the ?v= hash trick that protects /assets cannot reach them. Left
+        # to the browser's heuristic cache, a deploy can leave forge.js new and
+        # viewport.js months old, which is the same stale-asset failure the
+        # hashes exist to prevent, only harder to see. `no-cache` means
+        # revalidate, not "do not cache": the ETag below turns almost every one
+        # of these into an empty 304.
+        headers = ({"Cache-Control": "no-cache"}
+                   if target.suffix in (".js", ".css", ".mjs") else None)
+        return FileResponse(target, headers=headers)
+    # A module import that 404s would otherwise be answered with index.html,
+    # and the browser reports a MIME error instead of a missing file.
+    if "." in path.rsplit("/", 1)[-1]:
+        raise HTTPException(404, "no such file")
     return FileResponse(FRONTEND / "index.html")

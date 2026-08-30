@@ -62,10 +62,18 @@ def note_private_turn(pt_id, player_id):
             "due": taken >= row["private_turns"]}
 
 
+def private_key(player_id, turn, place_id=""):
+    """The key a private turn is filed under. Shared with the narrative graph
+    so a split-off turn's node is gated by exactly the same fact that gates
+    its knowledge row - two different keys would mean two different answers to
+    "may this player see it", which is the kind of gap a leak lives in."""
+    return awareness.fact_key("private", player_id, turn, place_id or "away")
+
+
 def record_private(pt_id, *, player_id, turn, summary, detail="", place_id=""):
     """Something learned or done off-screen. Held for the reveal, and readable
     only by this player in the meantime."""
-    key = awareness.fact_key("private", player_id, turn, place_id or "away")
+    key = private_key(player_id, turn, place_id)
     awareness.learn(pt_id, "player", player_id, key=key, summary=summary, detail=detail,
                     subject=player_id, place_id=place_id, turn=turn,
                     confidence=1.0, source="private", severity=2)

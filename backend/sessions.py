@@ -9,7 +9,7 @@ import json
 import secrets
 import uuid
 
-from . import config, db, engine, memory, rt
+from . import config, db, engine, memory, modetree, rt
 
 MODES = ("coop", "chaos", "solo")
 ROLES = ("host", "player", "spectator")
@@ -25,23 +25,115 @@ def new_code() -> str:
 
 
 def create(user_id, *, world_id="emberfall", mode="coop", host_name="Host",
-           protagonist=None, title=None, world_json=None):
+           protagonist=None, title=None, world_json=None, session_type="",
+           day=""):
+    """Open a room.
+
+    `mode` is how the table treats each other (co-op / chaos / solo) and
+    predates the mode tree. `session_type` is what KIND of game it is - one of
+    the nineteen sub-modes - and it is the one that decides whether the world
+    survives the session. An old client sending only `mode` still works: the
+    tree maps it to the nearest sub-mode rather than refusing."""
     if mode not in MODES:
         raise ValueError("unknown mode")
+    session_type = modetree.normalise(session_type, room_mode=mode)
     engine.ensure_user(user_id)
     session_id = uuid.uuid4().hex[:12]
     code = new_code()
+    # Seeded from the mode: a Daily is the same world for everybody today, and
+    # everything else is seeded from the session so a rematch is genuinely a
+    # new world rather than the same ground with the score reset.
+    seed = modetree.seed_for(session_type, day=day or db.today(), session_id=session_id)
+    # Both handed on. The seed was computed here, stored on the session row and
+    # passed to NOTHING - so a multiplayer Daily was not the same world for
+    # everybody today, and a rematch was the same ground with the score reset,
+    # which is the exact opposite of what the comment above promises. The mode
+    # went the same way: the playthrough could not tell what game it was in.
     pt_id = engine.create_playthrough(user_id, world_id, protagonist, title,
-                                      session_id=session_id, world_json=world_json)
+                                      session_id=session_id, world_json=world_json,
+                                      session_type=session_type, seed=seed)
     pt = db.row("SELECT world_id FROM playthroughs WHERE id=?", (pt_id,))
+    seats = modetree.spec(session_type)["max_players"]
     db.run(
         "INSERT INTO sessions (id,code,host_user_id,playthrough_id,world_id,mode,status,max_players,"
-        "settings,created_at,updated_at) VALUES (?,?,?,?,?,?,'open',?,?,?,?)",
-        (session_id, code, user_id, pt_id, pt["world_id"], mode, config.MAX_PLAYERS,
-         json.dumps({}), db.now(), db.now()),
+        "settings,session_type,seed,created_at,updated_at) VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?)",
+        (session_id, code, user_id, pt_id, pt["world_id"], mode,
+         min(config.MAX_PLAYERS, seats), json.dumps({}), session_type, seed,
+         db.now(), db.now()),
     )
     join(session_id, user_id, host_name, role="host")
     return get(session_id)
+
+
+def type_of(session_id) -> str:
+    """The sub-mode this room is playing. Empty on rooms created before the
+    tree existed, which map to their room mode."""
+    row = db.row("SELECT session_type, mode FROM sessions WHERE id=?", (session_id,))
+    if not row:
+        return modetree.DEFAULT_MODE
+    return modetree.normalise(row["session_type"] or "", room_mode=row["mode"])
+
+
+def seats(session_id) -> list:
+    """Seat order for round-robin modes: the order people sat down."""
+    return modetree.seat_order(players(session_id))
+
+
+def may_act(session_id, player_id, turn) -> dict:
+    """Whether it is this player's turn, under this mode's turn policy.
+
+    Free and locked modes always say yes here - the rt.py lock still governs
+    them. Only round-robin refuses, because "whoever clicked first" is not a
+    fair initiative system when the outcome is a ranking."""
+    return modetree.may_act(type_of(session_id), seats=seats(session_id),
+                            player_id=player_id, turn=turn)
+
+
+def settle(session_id, *, outcome, winner="") -> dict:
+    """A disposable world has been decided. Close the room and mark the result.
+
+    The world rows are LEFT IN PLACE deliberately. "Disposable" means nothing
+    carries into the next session, not that the record of what happened is
+    destroyed - a player who just lost a match is owed the ability to read it
+    back. What makes it disposable is that the next session is a new seed and
+    reads none of this."""
+    row = db.row("SELECT * FROM sessions WHERE id=?", (session_id,))
+    if not row:
+        raise KeyError("no such session")
+    mode_id = type_of(session_id)
+    db.run("UPDATE sessions SET status='closed', outcome=?, ended_at=?, updated_at=?"
+           " WHERE id=?",
+           (json.dumps({"outcome": outcome, "winner": winner}), db.now(), db.now(),
+            session_id))
+    db.run("UPDATE playthroughs SET run_state='ended' WHERE id=?", (row["playthrough_id"],))
+    rt.cache_drop(f"sl:session:{session_id}")
+
+    # The result reaches every profile at the table. Without this a Duel could
+    # be won and the ladder would never hear about it - the whole competitive
+    # half of the spec would have been a table nobody wrote to.
+    scored = []
+    if modetree.family(mode_id) == "pvp":
+        from . import ladder
+        for p in players(session_id):
+            if p["role"] == "spectator" or p.get("left_at"):
+                continue
+            won = bool(winner) and p["player_id"] == winner
+            opponent = next((q["player_id"] for q in players(session_id)
+                             if q["player_id"] != p["player_id"]
+                             and q["role"] != "spectator"), "")
+            try:
+                scored.append(ladder.record_match(
+                    account_id=p["user_id"], player_id=p["player_id"],
+                    session_id=session_id, mode=mode_id,
+                    outcome="win" if won else "loss",
+                    opponent=opponent,
+                    opponent_name=next((q["name"] for q in players(session_id)
+                                        if q["player_id"] == opponent), "")))
+            except ValueError:
+                continue
+    return {"settled": True, "session_id": session_id, "mode": mode_id,
+            "disposable": modetree.is_disposable(mode_id),
+            "outcome": outcome, "winner": winner, "scored": scored}
 
 
 def by_code(code):
@@ -79,7 +171,12 @@ def join(session_id, user_id, name, *, role="player", goal="", player_id=None):
         return existing
 
     seated = [p for p in players(session_id) if p["role"] != "spectator"]
-    if role != "spectator" and len(seated) >= s["max_players"]:
+    # The mode's own ceiling, not just the room's. A Duel seats two; letting a
+    # third in as a player would make the turn order incoherent, so they watch.
+    ceiling = min(s["max_players"],
+                  modetree.spec(modetree.normalise(s.get("session_type") or "",
+                                                   room_mode=s["mode"]))["max_players"])
+    if role != "spectator" and len(seated) >= ceiling:
         role = "spectator"
 
     player_id = player_id or ("host" if role == "host" else f"p{secrets.token_hex(3)}")
@@ -138,8 +235,17 @@ def whispers_for(session_id, player_id, limit=60):
 
 def public(session):
     """What a client is allowed to see about a room."""
+    mode_id = modetree.normalise(session.get("session_type") or "",
+                                 room_mode=session.get("mode", "coop"))
     return {
         "id": session["id"], "code": session["code"], "mode": session["mode"],
+        # What kind of game this is, and - the part that matters to a player
+        # about to spend an evening in it - whether the world will be here
+        # tomorrow.
+        "session_type": mode_id,
+        "mode_spec": modetree.public(mode_id),
+        "seed": session.get("seed", 0),
+        "outcome": db.jload(session.get("outcome") or "", {}) or {},
         "status": session["status"], "world_id": session["world_id"],
         "playthrough_id": session["playthrough_id"],
         "max_players": session["max_players"],

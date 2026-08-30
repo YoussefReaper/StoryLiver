@@ -18,7 +18,8 @@ import uuid
 from . import (arcs, atlas, authority, awareness, betrayal, budget, callbacks, canon,
                config,
                db, director,
-               fastforward, identity, mana, memory, modes, narrator, narrgraph,
+               fastforward, identity, legacy, mana, memory, modes, modetree,
+               narrator, narrgraph,
                npc_sim, precommit, relationships, rt, runs, streaks, world_master,
                worldstate)
 from . import worlds as world_registry
@@ -50,8 +51,43 @@ def ensure_user(user_id):
     return user_id
 
 
+def mode_of(pt) -> str:
+    """Which of the nineteen sub-modes this world is playing.
+
+    ONE resolver. The alternative is the engine asking the session and the
+    client asking the playthrough, and the two disagreeing on a Tuesday. A
+    room's setting wins because a room is the stronger statement; a solo world
+    carries its own; anything older falls back to the default rather than
+    raising at the worst possible moment."""
+    if isinstance(pt, str):
+        pt = _pt(pt) or {}
+    if pt.get("session_id"):
+        from . import sessions as _sessions
+        return _sessions.type_of(pt["session_id"])
+    return modetree.normalise(pt.get("session_type") or "")
+
+
+def mode_setup(pt_id, world, mode_id, *, turn=0) -> dict:
+    """What has to be DONE to a world before its mode is playable.
+
+    A Detective world with no killing in it is one where the player opens the
+    casefile, finds nothing, and reasonably concludes the mode is broken. Run
+    once at creation, and guarded so it cannot run twice."""
+    from . import submodes
+    out = {}
+    if mode_id == "detective" and not submodes.current_case(pt_id):
+        try:
+            out["case"] = submodes.open_case(pt_id, world, turn=turn)
+        except submodes.SubmodeError as exc:
+            # A world too small or too empty for a case is a real answer. Said
+            # out loud rather than swallowed, so the client can offer another
+            # world instead of showing an empty casefile.
+            out["case_error"] = str(exc)
+    return out
+
+
 def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=None,
-                       session_id="", world_json=None):
+                       session_id="", world_json=None, session_type="", seed=0):
     world = world_registry.resolve(world_id, world_json)
     ensure_user(user_id)
     pt_id = uuid.uuid4().hex[:12]
@@ -60,11 +96,13 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     start = world.get("start_location")
     db.run(
         "INSERT INTO playthroughs (id,user_id,world_id,title,protagonist,current_turn,current_location,"
-        "mana_balance,mana_used,tension,last_beat_turn,created_at,updated_at,session_id,world_json)"
-        " VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?)",
+        "mana_balance,mana_used,tension,last_beat_turn,created_at,updated_at,session_id,world_json,"
+        "session_type,seed) VALUES (?,?,?,?,?,0,?,?,0,0.25,-99,?,?,?,?,?,?)",
         (pt_id, user_id, world.id, title or world.name,
          protagonist or world.get("default_protagonist"), start,
-         config.STARTING_MANA, db.now(), db.now(), session_id, pinned),
+         config.STARTING_MANA, db.now(), db.now(), session_id, pinned,
+         modetree.normalise(session_type or "") if not session_id else "",
+         int(seed or 0)),
     )
     memory.seed(pt_id, world)
     worldstate.seed(pt_id, world)
@@ -85,9 +123,30 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     # C4 - the town already has an opinion of you, if you have an account and
     # a history here. A guest starts clean every time, which is the honest
     # trade for not having an identity that can be verified.
-    authority.seed_from_memory(pt_id, world, account_id=user_id, player=memory.SOLO)
+    # Kept, not discarded. A town that already has an opinion of you is the
+    # payoff for having played here before, and it was computed and dropped.
+    remembered = authority.seed_from_memory(pt_id, world, account_id=user_id,
+                                            player=memory.SOLO)
+    if remembered.get("seeded"):
+        db.run("INSERT INTO prefs (user_id,data,updated_at) VALUES (?,?,?)"
+               " ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,"
+               " updated_at=excluded.updated_at",
+               (f"returned:{pt_id}", json.dumps(remembered), db.now()))
     _feed(pt_id, 0, "opening", world.get("opening") or world.get("premise"), actor=None,
           meta={"location": start})
+    # The world dials this mode implies. Applied once, here, so Ironman
+    # actually IS one life rather than a label over a world where death still
+    # has resolutions. They stay editable - a mode sets a starting position.
+    resolved_mode = modetree.normalise(session_type or "") if session_type else ""
+    if resolved_mode:
+        dials = modetree.dials_for(resolved_mode)
+        if dials:
+            modes.set_modes(pt_id, dials)
+
+    # Whatever this mode needs staged before it is playable. Solo modes only:
+    # a room stages itself when the host sets the table.
+    if session_type and not session_id:
+        mode_setup(pt_id, world, resolved_mode, turn=0)
     return pt_id
 
 
@@ -95,6 +154,10 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
 
 def _apply_fate(pt, world, turn, entries):
     fired = []
+    # A Sandbox promises no main quest. Firing the seven fated events on
+    # schedule anyway makes it a Story with the label filed off.
+    if modetree.suppresses_fate(mode_of(pt)):
+        return fired
     for f in world.fated_events:
         if f["turn"] != turn:
             continue
@@ -104,7 +167,17 @@ def _apply_fate(pt, world, turn, entries):
         narrgraph.add(pt["id"], turn, "fate", f["title"], detail=f["desc"],
                       place_id=f.get("location", ""), weight=5)
         if f.get("kills"):
+            # This used to be the ONLY thing a fated death did: flip a flag.
+            # No grief, no standing, no empty seat - so the most dramatic
+            # deaths in the game were the ones the world reacted to least.
+            # Routed through the same consequence path a fought death takes.
+            # Not through death.strike(): a Cozy world converts a death into a
+            # knockout there, and fate is by definition not negotiable.
+            from . import death as _death
             memory.kill_npc(pt["id"], f["kills"])
+            fate_consequences = _death.world_event(
+                pt["id"], who=f["kills"], killer="", world=world)
+            f["consequences"] = fate_consequences
         if f.get("ruins"):
             atlas.ripple(pt["id"], f["ruins"], f.get("condition", "ruined"), turn,
                          f["desc"], magnitude=5)
@@ -174,10 +247,29 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
     # Relationships move from a deterministic read of what was done, TO WHOM.
     event = relationships.classify(action)
     aimed_at = relationships.targets(world, action, state["present"])
+    # How hard this table asked consequences to land. It scales what a mistake
+    # COSTS and nothing else - a gentle table is not a table where people stop
+    # noticing, and it never touches a gain, because a world that forgives
+    # slowly must not also reward you faster.
+    harsh = modes.severity_mult(pt["id"])
     if event and aimed_at:
+        weight = harsh if relationships.is_harmful(event) else 1.0
+        # The node this turn wrote, so a character who drifts because of it can
+        # be shown the exact moment rather than a number. Written before the
+        # deltas so the ledger has something real to point at.
+        cause_node = 0
+        if relationships.is_harmful(event) or relationships.is_bonding(event):
+            cause_node = narrgraph.add(
+                pt["id"], turn,
+                "rupture" if relationships.is_harmful(event) else "bond",
+                f"{actor_name or 'You'}: {action[:80]}",
+                detail=verdict.get("consequence", "")[:200],
+                place_id=pt["current_location"], actor=player, weight=4)
         for npc_id in aimed_at[:3]:
             applied = relationships.apply_event(pt["id"], npc_id, player, event,
-                                                turn=turn, note=event.replace("_", " "))
+                                                turn=turn, weight=weight,
+                                                note=event.replace("_", " "),
+                                                cause_node=cause_node)
             if applied:
                 out["relationship"].append(applied)
     out["targets"] = aimed_at
@@ -185,6 +277,10 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
 
     # Witness -> rumour -> reputation -> hunt. Nobody learns what they did not see.
     severity = int(verdict.get("importance", 3))
+    # Deliberately NOT used for the witness roll or for the >=3 gates below:
+    # the slider changes what a thing costs, never whether it was seen. Two
+    # tables watching the same action see the same thing happen.
+    cost_sev = max(1, min(5, round(severity * harsh)))
     if severity >= 3 and event not in (None, "spoke_kindly", "listened"):
         fact = awareness.witness(
             pt["id"], world, actor=player, kind=event or "action",
@@ -195,7 +291,8 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
         out["witness"] = fact
         if fact["witnesses"]:
             out["rumours"] = awareness.spread(pt["id"], world, fact, turn=turn,
-                                              witnesses=fact["witnesses"], severity=severity)
+                                              witnesses=fact["witnesses"],
+                                              severity=cost_sev)
             valence = -1 if event in ("harmed", "threatened", "betrayed", "took_from",
                                       "insulted", "killed_ally_of") else 1
             out["reputation"] = awareness.adjust_rep(pt["id"], world, player=player,
@@ -238,11 +335,16 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
         for hit in seen["witnessed_by_authority"]:
             out["authority"].append(authority.register_crime(
                 pt["id"], world, player=player, faction_id=hit["faction"],
-                severity=severity, summary=action[:140], turn=turn))
+                severity=cost_sev, summary=action[:140], turn=turn))
 
     # Institutions forget slowly, but they do forget - otherwise one bad turn
     # is a life sentence, which reads as the world being broken, not strict.
     out["authority_decay"] = authority.decay(pt["id"], world, player, turn)
+
+    # Layer 6, and it runs LAST on purpose: beliefs form out of facts that have
+    # already been distributed this turn, so a character reacts to what they
+    # just saw rather than to what they will see next turn.
+    out["legacy"] = legacy.tick(pt["id"], world, turn, player=player)
     return out
 
 
@@ -260,6 +362,35 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         raise ValueError("empty action")
 
     session_id = session_id or pt["session_id"]
+
+    # What KIND of game this is decides two things before anything else runs:
+    # whether this verb is allowed at all, and whether it is even this
+    # player's turn. Both are enforced HERE rather than at each entry point,
+    # so the HTTP path and the socket path cannot drift apart on the answer.
+    mode_id = mode_of(pt)
+
+    # Guard layer 1, and it is checked for SOLO worlds too. It used to sit
+    # inside the room branch, so a talk-only mode played alone was not
+    # talk-only at all.
+    verdict_action = modetree.check_action(mode_id, action)
+    if not verdict_action["allowed"]:
+        return {"blocked": True, "reason": verdict_action["reason"],
+                "refused": verdict_action["kind"], "entries": [],
+                "state": snapshot(pt_id, player)}
+
+    if session_id:
+        from . import sessions as _sessions
+
+        # Guard layer 1. A talk-only room refuses the verb at the parser, not
+        # in a prompt: a model told not to narrate combat will eventually
+        # narrate combat, and a parser that rejects the input cannot.
+        whose = _sessions.may_act(session_id, player, pt["current_turn"])
+        if not whose["ok"]:
+            return {"blocked": True,
+                    "reason": f"Not your turn - {whose.get('reason', 'wait for the table')}.",
+                    "whose_turn": whose.get("whose"), "entries": [],
+                    "state": snapshot(pt_id, player)}
+
     party, payers = _party_context(session_id, exclude=player)
     payer_ids = payers or [user_id]
 
@@ -341,9 +472,17 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         memory.add_event(pt_id, turn, actor_name or "user", action, verdict["consequence"],
                          rule_ref=verdict.get("rule_ref"), kind="action",
                          importance=verdict.get("importance", 3), location=new_loc)
+        # A turn taken while SPLIT OFF is private, and the Chronicle reads the
+        # graph. An ungated node here would have handed every other player at
+        # the table exactly what betrayal.py exists to keep from them - the
+        # whole point of departing is that nobody sees what you did until the
+        # reveal. Gated with the same private key the knowledge store uses, so
+        # only this player's chronicle can resolve it.
+        away = betrayal.active(pt_id, player)
+        action_key = betrayal.private_key(player, turn, new_loc) if away else ""
         narrgraph.add(pt_id, turn, "action", action[:90], detail=verdict.get("consequence", ""),
                       place_id=new_loc, actor=actor_name or "you",
-                      weight=verdict.get("importance", 2))
+                      weight=verdict.get("importance", 2), fact_key=action_key)
 
         state = world_master.build_state(pt, world, player)
         npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
@@ -390,6 +529,11 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         # 6. One passage ------------------------------------------------------
         verdict["state"] = state
         verdict["world_line"] = worldstate.line(pt_id, world, new_loc)
+        # What the WORLD did this turn, independent of the player. A succession
+        # that settles while the player is standing in the room and goes
+        # unmentioned reads as the world not being there at all.
+        verdict["legacy_line"] = legacy.narrate_line(
+            world, ticked.get("legacy") or {}, player=player)
         try:
             text = narrator.narrate(
                 pt, world, action, verdict, user_id=user_id, premium=use_premium,
@@ -451,18 +595,33 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
     # actual ending with a payout - and the `closed` flag is idempotent, so a
     # story cannot pay out twice.
     ending = None
-    if turn >= world.fated_events[-1]["turn"] and world.fated_events:
+    if (world.fated_events and turn >= world.fated_events[-1]["turn"]
+            and not modetree.suppresses_fate(mode_id)):
         row = _pt(pt_id)
         if row["run_state"] != "ended":
             from . import aftermath
             ending = aftermath.close_story(pt_id, world, reason="victory", turn=turn)
+            # A DISPOSABLE world is torn down when it is decided. The rows stay
+            # - a player who just lost is owed the ability to read it back -
+            # but the room closes and the next session seeds a new world that
+            # reads none of this. That is the whole competitive guarantee: no
+            # first-mover advantage carried in from a previous match.
+            if session_id and modetree.is_disposable(mode_id):
+                from . import sessions as _sessions
+                ending["settled"] = _sessions.settle(
+                    session_id, outcome="objective", winner=player)
 
     return {"blocked": False, "rejected": False, "note": note, "entries": entries,
             "ending": ending,
             "state": snapshot(pt_id, player), "tick": {
                 "discovered": ticked["discovered"], "arrivals": ticked["arrivals"],
                 "reputation": ticked["reputation"], "hunts": ticked["hunts"],
-                "relationship": ticked["relationship"]}}
+                "relationship": ticked["relationship"],
+                # Layer 6. The climax reveal fires inside the tick, so without
+                # this the biggest beat in the campaign would reach the prose
+                # and nothing else - no modal, no notification, nothing the
+                # player could go back and read.
+                "legacy": ticked.get("legacy") or {}}}
 
 
 # --------------------------------------------------------------------------
@@ -538,6 +697,46 @@ def contest(pt_id, challenger, defender, *, session_id=""):
 
 # --------------------------------------------------------------------------
 
+def _returned(pt_id) -> dict:
+    """What a previous run left behind here, for the client to open with.
+
+    Only ever non-empty for an authenticated account with history in this
+    world - a guest starts clean every time, which is the honest trade for
+    not having an identity that can be checked."""
+    row = db.row("SELECT data FROM prefs WHERE user_id=?", (f"returned:{pt_id}",))
+    return db.jload(row["data"], {}) if row else {}
+
+
+def _fate_entry(f, turn, next_turn) -> dict:
+    """One line of the Fate Thread, redacted to what the player may know.
+
+    Fate being FIXED is the promise; fate being READABLE was never part of it.
+    A passed event is history and is named. Everything ahead is a mark on the
+    thread with a turn on it - you know something lands, and when, and that
+    you cannot stop it. You do not know what.
+
+    `kills` never crosses this line at any status: it names the character who
+    dies, and it was going out on turn one."""
+    status = ("passed" if f["turn"] <= turn
+              else ("next" if f["turn"] == next_turn else "sealed"))
+    # The id is a SLUG - "F5_the_warden_falls" - so it carries the title it was
+    # meant to hide. An unreached event gets a positional id instead, which is
+    # all a client needs to key a list row on.
+    entry = {"id": f["id"] if status == "passed" else f"sealed_{f['turn']}",
+             "turn": f["turn"], "status": status}
+    if status == "passed":
+        entry["title"] = f["title"]
+        entry["desc"] = f.get("desc", "")
+        entry["location"] = f.get("location", "")
+        return entry
+    # Ahead of the player. Deliberately no title, no description, no location -
+    # a place name is a spoiler too when only one thing happens there.
+    entry["title"] = ""
+    entry["desc"] = ""
+    entry["imminent"] = status == "next"
+    return entry
+
+
 def snapshot(pt_id, player=memory.SOLO):
     pt = _pt(pt_id)
     world = world_for(pt)
@@ -575,9 +774,7 @@ def snapshot(pt_id, player=memory.SOLO):
         })
 
     next_turn = min((x["turn"] for x in world.fated_events if x["turn"] > turn), default=-1)
-    fate = [{**f, "status": "passed" if f["turn"] <= turn
-             else ("next" if f["turn"] == next_turn else "sealed")}
-            for f in world.fated_events]
+    fate = [_fate_entry(f, turn, next_turn) for f in world.fated_events]
 
     scores = director.tension_score(pt, world, {"turn": turn, "present": present}, player)
     session = db.row("SELECT * FROM sessions WHERE playthrough_id=?", (pt_id,))
@@ -601,8 +798,17 @@ def snapshot(pt_id, player=memory.SOLO):
         "rules": world.rules,
         "player": player,
         "weather": worldstate.public(pt_id, world, pt["current_location"]),
+        # The snapshot carried the ROOM mode (co-op / chaos) and not the
+        # sub-mode, so a client in a Duel was told it was in a co-op room -
+        # and therefore could not tell the player the one thing that matters
+        # most about a PvP world: that it ends when the match does.
         "session": ({"id": session["id"], "code": session["code"], "mode": session["mode"],
                      "status": session["status"],
+                     "session_type": mode_of(pt),
+                     "mode_spec": modetree.public(mode_of(pt)),
+                     "seats": modetree.seat_order(db.rows(
+                         "SELECT player_id, role, joined_at, left_at FROM session_players"
+                         " WHERE session_id=?", (session["id"],))),
                      "premium_allowed": bool(session.get("premium_allowed", 0))}
                     if session else None),
         # The dials and the run frame travel with every snapshot. Without
@@ -610,6 +816,12 @@ def snapshot(pt_id, player=memory.SOLO):
         # whether death is permanent, which run this is, or whether Deep Prose
         # is even available - and every panel that shows them would be guessing.
         "modes": modes.public(pt_id),
+        # What this town already believed about you when you walked in.
+        "returned": _returned(pt_id),
+        # What KIND of game this is, at the top level rather than nested under
+        # `session` - a solo world has no session row, so a solo Detective was
+        # unable to tell its own client what it was.
+        "mode": modetree.public(mode_of(pt)),
         "run": runs.public(pt_id, pt["user_id"], pt["world_id"]),
         "arc": arcs.position(pt_id, pt["world_id"]),
         "skills": fastforward.skills(pt_id, player),
@@ -633,6 +845,10 @@ def workspace(pt_id, player=memory.SOLO, *, session_id=""):
         "board": betrayal.board(pt_id, world, player, turn, party),
         "safety": canon.safety(pt_id),
         "budget": budget.table(),
+        # Layer 6 travels with the workspace so the Chronicle badge, the drift
+        # list and the Power panel are populated on open rather than after a
+        # second round trip - all of it already witness-gated to this player.
+        "legacy": legacy.public(pt_id, world, player, turn=turn),
     }
 
 
@@ -648,7 +864,10 @@ def export(pt_id):
     tables = ("timeline_events", "relationships", "npc_state", "npc_player", "npc_memories",
               "narrative", "whispers", "atlas_places", "world_echoes", "graph_nodes",
               "graph_edges", "faction_rep", "knowledge", "rumors", "hunts", "splits",
-              "canon_log", "cards")
+              "canon_log", "cards",
+              # Layer 6 and the OOC channel. "Export everything" has to mean
+              # everything, or the promise is a smaller one than it sounds.
+              "orgs", "org_members", "claimants", "ooc_messages")
     out = {
         "storyliver_export_version": 3,
         "exported_at": db.now(),

@@ -6,3 +6,6 @@ __pycache__/
 venv/
 .pytest_cache/
 .DS_Store
+
+# Test scratch: every suite writes a throwaway world here.
+.t/
