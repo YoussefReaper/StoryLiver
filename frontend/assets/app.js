@@ -152,6 +152,7 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   $('#app').hidden = false;
   refreshStreak();
   refreshObjective();
+  announceReturn();
   if (sessionId) connectWS();
   $('#actionInput').focus();
 
@@ -1888,7 +1889,7 @@ function showMenu() {
       ${item('identity', 'book', 'Who they are', 'The card that keeps a character sounding like themselves')}
       ${item('boss', 'flame', 'Design a boss', 'A fight that has to be worked out, not out-damaged')}
       ${item('report', 'shield', 'Report this world', 'Worlds here are written by players')}
-      ${item('explain', 'book', 'What is StoryLiver?', 'The five things that make this not a chatbot')}
+      ${item('explain', 'book', 'What is StoryLiver?', 'What this actually is, and what it does not do')}
       ${item('profile', 'gear', S.account ? 'Your profile' : 'Sign in', S.account
           ? 'Mana, runs, and the towns that remember you'
           : 'Keep your Mana and reputation across devices')}
@@ -1899,6 +1900,8 @@ function showMenu() {
       ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
       ${item('forge', 'forge', 'World Forge', 'Build a world, or name a setting')}
       ${item('rules', 'scale', 'The rules of this world', 'What the World Master enforces')}
+      ${item('canonlog', 'shield', 'Where the world pushed back', 'Every time a rule stopped something')}
+      ${item('au', 'book', 'Change one thing', 'An alternate premise this world diverges on')}
       ${item('switch', 'book', 'Your stories', 'Return to the threshold')}
       ${item('delete', 'trash', 'Delete this story', 'Permanent. There is no undo.', true)}
     </div></div>`);
@@ -1918,6 +1921,76 @@ async function showCost() {
       <p class="fineprint">At most ${u.calls_per_turn_cap} model calls per turn, enforced in code. Every other
       system — the world tick, witnessing, reputation, stealth, combat maths, relationship deltas — is
       arithmetic and costs nothing.</p></div>`);
+}
+
+async function showCanonLog() {
+  // The safety layer working, made visible. Every one of these is a moment the
+  // world refused to contradict itself, and a player who never sees them has
+  // no reason to believe the rules are real.
+  let entries = [];
+  try {
+    entries = (await api(`/playthroughs/${S.ptId}/canonlog`)).entries || [];
+  } catch { return toast('Could not read the log.', 'err'); }
+  showModal(`${head('Where the world pushed back',
+    'Every time something tried to contradict this world and was stopped.')}
+    <div class="modal-body">
+      ${entries.length ? `<div class="mem-list">${entries.slice().reverse().map((c) => `
+        <div class="mem">
+          <div class="mem-meta"><span>turn ${c.turn}</span>
+            <span>${esc(c.kind || 'checked')}</span>
+            ${c.rule_ref ? `<span>${esc(c.rule_ref)}</span>` : ''}</div>
+          ${esc(c.detail || c.text || '')}
+        </div>`).join('')}</div>`
+    : `<p class="fineprint">Nothing has been stopped yet. That is the usual state —
+        the rules are checked before every passage, and most passages do not
+        try anything.</p>`}
+      <p class="fineprint">Checked in code before a word is written, which is why
+        breaking a rule costs you nothing: the attempt never happened.</p>
+    </div>`);
+}
+
+async function showAU() {
+  const current = S.state?.arc?.au_premise || '';
+  showModal(`${head('Change one thing',
+    'One sentence this world diverges on. Everything else stays as it is.')}
+    <div class="modal-body">
+      ${current ? `<div class="alert owed"><div class="alert-t">Currently</div>
+        <div class="alert-b">${esc(current)}</div></div>` : ''}
+      <label class="big-field"><span>What is different here</span>
+        <input class="input" id="auPremise" maxlength="200"
+          value="${esc(current)}"
+          placeholder="The Warden never took the post."></label>
+      <p class="fineprint">The narrator is told this from now on, and it never
+        drifts — it sits with the world's tone rather than in a turn's prompt.
+        Leave it empty to go back to the world as written.</p>
+      <div class="alert-act">
+        <button class="btn btn-primary" data-au-save="1">Set it</button>
+      </div>
+    </div>`);
+}
+
+async function saveAU() {
+  const premise = $('#auPremise')?.value || '';
+  try {
+    await api(`/playthroughs/${S.ptId}/au?user_id=${encodeURIComponent(S.userId)}`,
+      { method: 'POST', body: { premise } });
+    closeOverlays();
+    toast(premise ? 'This world diverges there now.' : 'Back to the world as written.');
+    refreshWorkspace();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/** A town that remembers you is the payoff for having played here before. */
+function announceReturn() {
+  const r = S.state?.returned;
+  if (!r || !r.seeded || !(r.factions || []).length) return;
+  if (sessionStorage.getItem(`returned:${S.ptId}`)) return;
+  sessionStorage.setItem(`returned:${S.ptId}`, '1');
+  const worst = [...r.factions].sort((a, b) => a.standing - b.standing)[0];
+  toast(worst.standing < 0
+    ? `${worst.faction} has not forgotten you. Standing ${Math.round(worst.standing)}.`
+    : `${worst.faction} remembers you kindly. Standing ${Math.round(worst.standing)}.`,
+  worst.standing < 0 ? 'warn' : '');
 }
 
 function showRules() {
@@ -2393,6 +2466,8 @@ async function onGlobalClick(e) {
     power: () => { closeOverlays(); setView('power'); },
     found: () => { closeOverlays(); showFoundOrg(); },
     standing: showStanding,
+    canonlog: showCanonLog,
+    au: showAU,
     board: () => showBoard('pvp'),
     case: showCase,
     explain: () => showExplainer(true), profile: showProfile,
@@ -3926,6 +4001,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (pick('[data-solo-go]')) return startSolo();
   if (pick('[data-daily-submit]')) return submitDaily();
+  if (pick('[data-au-save]')) return saveAU();
 
   const con = pick('[data-contest]');
   if (con) return contestNode(con.dataset.contest);
@@ -4648,6 +4724,10 @@ const SIGILS = {
   blade:  '<path d="M14.5 2.5 7 10l-2 7 7-2 7.5-7.5zM7 10l4 4"/>',
   calm:   '<circle cx="12" cy="12" r="9"/><path d="M8 13.5s1.5 1.5 4 1.5 4-1.5 4-1.5"/>',
   scales: '<path d="M12 3v18M4 7h16M7 7l-3 6h6zM17 7l-3 6h6z"/>',
+  crown:  '<path d="M3 8l3.5 4L12 5l5.5 7L21 8v9H3z"/>',
+  mask:   '<path d="M3 6c6-2 12-2 18 0 0 8-4 12-9 12S3 14 3 6z"/><path d="M8.5 10h.01M15.5 10h.01"/>',
+  ledger: '<path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5"/><path d="M8 12h8M8 16h5"/>',
+  thread: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="8" cy="19" r="2"/><path d="M6.6 7.3 17.2 11M17.6 13.6 9.6 17.8"/>',
 };
 
 const TONE_CLASS = { danger: 'sig-danger', warn: 'sig-warn', good: 'sig-good', calm: 'sig-calm' };
@@ -4858,17 +4938,38 @@ async function saveHudPrefs() {
 
 const EXPLAIN_KEY = 'storyliver.explained';
 
+/* What this actually is. The old five covered the awareness layer and death
+   resolutions and stopped there - written before the Chronicle, moral drift,
+   succession, the hidden traitor, player organisations, the Room, the
+   competitive modes, Detective, Daily and crossovers existed. It explained
+   roughly a fifth of the product to the person deciding whether to play it. */
 const EXPLAIN_BULLETS = [
-  ['eye', 'The world is awake.',
-   'Characters see, hear and gossip. What you do unseen stays unseen — until someone sees it.'],
-  ['banner', 'Reputation is per-group, not a score.',
-   'Each faction only knows what its own people learned. A village that heard nothing thinks nothing.'],
+  ['eye', 'The world is awake, and it is not omniscient.',
+   'Characters see, hear and gossip. What nobody witnessed did not happen, as far as '
+   + 'anyone here is concerned — and the same rule binds every panel you can open.'],
+  ['thread', 'It remembers, and it can show you where.',
+   'Not a transcript — a record. Turn 200 knows turn 2, and when a character turns on '
+   + 'you it can point at the exact thing you did.'],
+  ['banner', 'Reputation is per-group, not a number.',
+   'Each faction only knows what its own people learned. A village that heard nothing '
+   + 'thinks nothing, and the law can only act on what it can prove.'],
+  ['crown', 'Kill someone who mattered and the world reorganises.',
+   'A named death opens a contested seat: several claimants, an unrest window, and '
+   + 'whoever loses it remembers losing.'],
+  ['ledger', 'Power is people, not an inventory.',
+   'Found an organisation, earn the loyalty to command through it, and the world '
+   + 'records your subordinate doing the thing — not you.'],
   ['blade', 'Consequences arrive on foot.',
    'When someone is sent after you, they travel. You get a real window, and you can use it.'],
+  ['mask', 'Bring anyone into anywhere.',
+   'Name a world, or write a sentence — "Charlie from Hazbin Hotel, inside The Last of '
+   + 'Us" — and it builds that, with them still themselves inside it.'],
   ['calm', 'Death is not the end.',
-   'If you fall you choose what happens next — a ghost, an heir, a legacy. Only Hardcore is final.'],
-  ['scales', 'It is a roguelike, not a chat.',
-   'Each entry into a world is a run. It ends, and what you learned carries to the next one.'],
+   'If you fall you choose what happens next — a ghost, an heir, a legacy. Only Ironman '
+   + 'is final, and it says so before you start.'],
+  ['scales', 'Nineteen ways to play it.',
+   'Alone in a world that keeps running, together in one that does, or against each '
+   + 'other in one built to be won and thrown away.'],
 ];
 
 function needsExplainer() {
@@ -4876,7 +4977,8 @@ function needsExplainer() {
 }
 
 function showExplainer(replay) {
-  showModal(`${head('What is StoryLiver?', 'Five things that make this different from a chatbot.')}
+  showModal(`${head('What is StoryLiver?',
+    `${EXPLAIN_BULLETS.length} things a chatbot does not do.`)}
     <div class="modal-body">
       ${tableSvg()}
       <div class="ex-list">${EXPLAIN_BULLETS.map(([sig, t, d]) => `
@@ -4886,7 +4988,7 @@ function showExplainer(replay) {
         </div>`).join('')}</div>
 
       <div class="ex-try">
-        <div class="ex-try-head">Try it — the same act, two ways</div>
+        <div class="ex-try-head">The whole idea, in one choice</div>
         <div class="ex-try-opts">
           <button class="ex-try-opt" data-try="public">
             <b>Say it in the taproom</b><small>with people in the room</small></button>

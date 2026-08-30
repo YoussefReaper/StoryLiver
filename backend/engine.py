@@ -123,7 +123,15 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     # C4 - the town already has an opinion of you, if you have an account and
     # a history here. A guest starts clean every time, which is the honest
     # trade for not having an identity that can be verified.
-    authority.seed_from_memory(pt_id, world, account_id=user_id, player=memory.SOLO)
+    # Kept, not discarded. A town that already has an opinion of you is the
+    # payoff for having played here before, and it was computed and dropped.
+    remembered = authority.seed_from_memory(pt_id, world, account_id=user_id,
+                                            player=memory.SOLO)
+    if remembered.get("seeded"):
+        db.run("INSERT INTO prefs (user_id,data,updated_at) VALUES (?,?,?)"
+               " ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,"
+               " updated_at=excluded.updated_at",
+               (f"returned:{pt_id}", json.dumps(remembered), db.now()))
     _feed(pt_id, 0, "opening", world.get("opening") or world.get("premise"), actor=None,
           meta={"location": start})
     # The world dials this mode implies. Applied once, here, so Ironman
@@ -689,6 +697,16 @@ def contest(pt_id, challenger, defender, *, session_id=""):
 
 # --------------------------------------------------------------------------
 
+def _returned(pt_id) -> dict:
+    """What a previous run left behind here, for the client to open with.
+
+    Only ever non-empty for an authenticated account with history in this
+    world - a guest starts clean every time, which is the honest trade for
+    not having an identity that can be checked."""
+    row = db.row("SELECT data FROM prefs WHERE user_id=?", (f"returned:{pt_id}",))
+    return db.jload(row["data"], {}) if row else {}
+
+
 def _fate_entry(f, turn, next_turn) -> dict:
     """One line of the Fate Thread, redacted to what the player may know.
 
@@ -798,6 +816,8 @@ def snapshot(pt_id, player=memory.SOLO):
         # whether death is permanent, which run this is, or whether Deep Prose
         # is even available - and every panel that shows them would be guessing.
         "modes": modes.public(pt_id),
+        # What this town already believed about you when you walked in.
+        "returned": _returned(pt_id),
         # What KIND of game this is, at the top level rather than nested under
         # `session` - a solo world has no session row, so a solo Detective was
         # unable to tell its own client what it was.
