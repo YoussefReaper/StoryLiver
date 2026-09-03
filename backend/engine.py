@@ -289,6 +289,19 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
             place_id=pt["current_location"], turn=turn, severity=severity,
             present=state["present"], subject=player)
         out["witness"] = fact
+        # Being SEEN doing harm has to cost something to the people who saw
+        # it, not just to whoever it landed on - otherwise a witness's
+        # scalars (which will_snitch/betrayal_pressure read) never react to
+        # what they watched, and a room can watch a beating and feel nothing.
+        if fact["witnesses"] and relationships.is_harmful(event or ""):
+            for wit_id in fact["witnesses"]:
+                if wit_id in aimed_at:
+                    continue  # the target already got the real event, harsher
+                applied = relationships.apply_event(
+                    pt["id"], wit_id, player, "witnessed_violence",
+                    turn=turn, weight=harsh, note="witnessed it")
+                if applied:
+                    out["relationship"].append(applied)
         if fact["witnesses"]:
             out["rumours"] = awareness.spread(pt["id"], world, fact, turn=turn,
                                               witnesses=fact["witnesses"],

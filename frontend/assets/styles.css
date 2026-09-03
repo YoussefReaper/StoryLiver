@@ -2099,6 +2099,30 @@ button { background: none; border: 0; cursor: pointer; }
 .pf-pass > summary::before { content: '+ '; color: var(--faint); }
 .pf-pass[open] > summary::before { content: '- '; }
 .pf-pass > summary:hover { color: var(--vellum); }
+
+/* A player-facing mood chip - the same disposition word the debug panel used
+   to print bare, now with weight instead of being one more line of text. */
+.mood-chip {
+  display: inline-block; margin-left: 8px; padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; letter-spacing: .02em; background: var(--panel-3); color: var(--vellum-dim);
+  border: 1px solid var(--line);
+}
+.mood-warm, .mood-close, .mood-devoted, .mood-sworn { color: var(--ok); border-color: var(--ok); }
+.mood-hostile, .mood-burned, .mood-terrified { color: var(--crimson); border-color: var(--crimson); }
+.mood-wary { color: var(--ember); border-color: var(--ember-deep); }
+
+/* Engine internals, collapsed by default. The bars/anchors/memory stream
+   still exist for anyone who wants them - they are no longer the first
+   thing a player sees when they open a character. */
+.sheet-debug { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.sheet-debug > summary {
+  cursor: pointer; font-size: 11px; color: var(--faint); letter-spacing: .04em;
+  list-style: none; text-transform: uppercase;
+}
+.sheet-debug > summary::-webkit-details-marker { display: none; }
+.sheet-debug > summary::before { content: '+ '; }
+.sheet-debug[open] > summary::before { content: '- '; }
+.sheet-debug > summary:hover { color: var(--vellum-dim); }
 .mode-card.on { border-color: var(--ember); background: var(--ember-soft); color: var(--void); }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }

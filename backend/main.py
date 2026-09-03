@@ -731,6 +731,27 @@ def session_close(session_id: str, user_id: str = Query(min_length=4)):
     return {"closed": session_id}
 
 
+class SoloWhisper(BaseModel):
+    target_kind: str = Field(pattern="^(npc|player)$")
+    target_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=600)
+    player_id: str = Field(default=memory.SOLO, max_length=64)
+
+
+@app.post("/api/playthroughs/{pt_id}/whisper")
+def playthrough_whisper(pt_id: str, body: SoloWhisper, user_id: str = Query(default="")):
+    """Solo whispering. `/sessions/{id}/whisper` requires a real session row -
+    solo play has none, so the client used to post to `/sessions/null/whisper`
+    and `sessions.get("null")` returned None, which crashed on `s["playthrough_id"]`
+    with a 500 on every solo whisper, near or far."""
+    pt = _own(pt_id, user_id)
+    try:
+        return engine.whisper(pt_id, player=body.player_id, target_kind=body.target_kind,
+                              target_id=body.target_id, text=body.text, session_id="")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/sessions/{session_id}/whisper")
 def session_whisper(session_id: str, body: Whisper):
     s = sessions.get(session_id)
