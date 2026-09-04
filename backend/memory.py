@@ -50,24 +50,31 @@ def clamp(v: float) -> float:
 # (c) persona anchors - constant blocks, never summarised, never trimmed
 # --------------------------------------------------------------------------
 
-def anchor_block(world, npc_id: str, *, beat: str = "") -> str:
+def anchor_block(world, npc_id: str, *, beat: str = "", answered_goals=None) -> str:
     """The constant re-injected every call. Never a summary, never decayed.
 
     A character authored with only the original five fields produces exactly
     the bytes it always did - that path is untouched, which is what keeps the
     anti-collapse proof meaningful. A character carrying the wider identity
     card (catchphrases, famous lines, mannerisms, values, flaws, secrets)
-    gets the full block instead, assembled by persona.py and equally stable."""
+    gets the full block instead, assembled by persona.py and equally stable.
+
+    `answered_goals` (D10) drops a WANTS entry the player has already
+    addressed - a goal that reads as "find out X" from a character who was
+    already told X is not a want any more, it is a closed loop, and leaving
+    it in the block is exactly what made the dialogue path re-ask it."""
     npc = world.by_id[npc_id]
     a = npc["anchors"]
+    goals = [g for g in a["goals"] if g not in (answered_goals or ())]
     if any(a.get(f) for f in persona.LIST_FIELDS + persona.TEXT_FIELDS
            if f not in ("constraints", "goals", "taboos", "voice")):
-        return persona.identity_block(a, beat=beat)
+        card = dict(a, goals=goals)
+        return persona.identity_block(card, beat=beat)
     return (
         f"{a['name']} - {a['role']}\n"
         f"  VOICE: {a['voice']}\n"
         f"  CONSTRAINTS: {'; '.join(a['constraints'])}\n"
-        f"  WANTS: {'; '.join(a['goals'])}\n"
+        f"  WANTS: {'; '.join(goals)}\n"
         f"  NEVER: {'; '.join(a['taboos'])}"
     )
 

@@ -6,7 +6,7 @@ Anti-repetition (Pain #4) is enforced two ways: a hard ban list of the
 therapy-speak and purple-prose tics players complain about, and a rolling list
 of the openings already used in this playthrough that must not recur.
 """
-from . import arcs, callbacks, db, llm, memory, modes
+from . import arcs, callbacks, db, llm, memory, modes, npc_sim
 
 BANNED = (
     "I understand your frustration; I hear you; a mix of X and Y; a testament to; "
@@ -34,6 +34,7 @@ HARD RULES
 - No therapy-speak, no validation language, no motivational summary. Nobody in this world is a life coach.
 - Do not open with the same construction you used before (see FORBIDDEN OPENINGS).
 - ZERO mechanics in the prose. Never a number, a percentage, a rule name, a stat, or any line about how the story engine works. If it would not appear in a novel, it does not appear here.
+- A character's WANTS lists only what they are STILL after. If something they would obviously be curious about is missing from it, that means the player already told them - do not have the character ask it again, even in different words.
 
 Write only the prose. No headings, no quotes around the whole thing, no meta."""
 
@@ -71,8 +72,13 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
     # allowed to reach for this turn - a signature line lands because it fits
     # the moment, not because it fires every turn.
     moment = verdict.get("beat_key", "")
-    anchors = "\n".join(memory.anchor_block(world, n, beat=moment)
-                        for n in present) or "  (nobody else is present)"
+    # D10: a WANTS entry the player already addressed drops out of the prompt
+    # here - the same place it was leaking back in, since narrate() is what
+    # actually builds the anchor block the model sees.
+    anchors = "\n".join(memory.anchor_block(
+        world, n, beat=moment,
+        answered_goals=npc_sim.answered_goals(pt["id"], n, player))
+        for n in present) or "  (nobody else is present)"
     events = memory.retrieve_events(pt["id"], state["turn"], action + " " + (beat or ""), k=7)
     loc = world.loc_by_id[state["location"]]
     forbidden = _openings(pt["id"])

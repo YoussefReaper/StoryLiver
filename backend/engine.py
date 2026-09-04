@@ -534,6 +534,14 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
                              verdict.get("importance", 3), player=player,
                              actor_name=actor_name or "the traveller")
+        # D10: a present NPC's information-seeking goal is tracked here, once
+        # per turn - pending the first time it's on the table with them
+        # present, answered the NEXT turn they are still present with the
+        # player. This is what stops "find out where Coal came from" from
+        # being asked again after Coal already told them.
+        for npc_id in state["present"]:
+            npc_sim.track_questions(pt_id, npc_id, player,
+                                    world.by_id[npc_id]["anchors"]["goals"], turn)
         fired_fate = _apply_fate(pt, world, turn, entries, player=player, here=new_loc)
         state = world_master.build_state(_pt(pt_id), world, player)
 

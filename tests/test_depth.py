@@ -38,7 +38,7 @@ os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-depth-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import (callbacks, db, engine, memory, sessionzero,  # noqa: E402
+from backend import (callbacks, db, engine, memory, npc_sim, sessionzero,  # noqa: E402
                      worldkit, worldforge)
 
 FAILS, NOTES = [], []
@@ -131,6 +131,71 @@ def test_npc_initiative():
        "cause of flat AI roleplay, and it worsens over long conversations")
 
 
+# ------------------------------------------------------------- D10, the moat
+def test_npc_stops_reasking_answered_questions():
+    section("D10 — an information-goal is not asked again once it's answered")
+    # Reproduced: Ilo asks turn 2 ("did you come from the road...") the player
+    # answers turn 3, and turn 7 Ilo asks the EXACT same question verbatim -
+    # because the WANTS anchor was a CONSTANT re-injected every turn, with no
+    # record of ever having asked, and the dialogue-path recall never looked
+    # at what the player actually told them.
+    db.init()
+    pt_id = engine.create_playthrough("d10user")
+    goal = "Find out what Maren Vosk is hiding."
+    ok(npc_sim._is_question_goal(goal),
+       "an information-seeking goal is recognised as one")
+    ok(not npc_sim._is_question_goal("Keep the tavern full and the talk flowing."),
+       "an ordinary intention is not mistaken for a question")
+
+    # Turn 1: the NPC is present with the question still open — nothing has
+    # happened between them and the player yet.
+    r1 = engine.take_turn(pt_id, "I sit at the bar and nod to Nessa.", player="user")
+    ok(not r1.get("blocked"), "the turn actually resolved")
+    state = npc_sim.question_state(pt_id, "nessa", "user")
+    ok(state.get(goal, {}).get("state") == "pending",
+       "with Nessa present, her open question is now tracked as PENDING — on "
+       "the table, not yet resolved")
+    ok(not npc_sim.answered_goals(pt_id, "nessa", "user"),
+       "and nothing is answered yet — one turn of presence is not an exchange")
+
+    # Turn 2: still present. This is the exchange actually happening.
+    r2 = engine.take_turn(pt_id, "I ask Nessa what she's heard lately.", player="user")
+    ok(not r2.get("blocked"), "the second turn resolved too")
+    answered = npc_sim.answered_goals(pt_id, "nessa", "user")
+    ok(goal in answered,
+       "present again after the ask, the question moves to ANSWERED — the "
+       "exchange the two turns represent actually happened")
+
+    # The anchor block the model is shown no longer carries it.
+    world = engine.world_for(engine._pt(pt_id))
+    block = memory.anchor_block(world, "nessa", answered_goals=answered)
+    ok("Maren Vosk is hiding" not in block,
+       "the resolved question is gone from the block the model actually sees")
+    ok("tavern full" in block,
+       "her OTHER, unrelated goal is untouched — only the answered one drops")
+
+    # It stays answered on turn 7, exactly the reproduced symptom's turn gap.
+    for _ in range(5):
+        engine.take_turn(pt_id, "I keep drinking and watching the room.", player="user")
+    still = npc_sim.answered_goals(pt_id, "nessa", "user")
+    ok(goal in still,
+       "five turns later the answer is still remembered — this is permanent, "
+       "not a cooldown that quietly re-opens the question")
+
+    # The autonomous planner (maybe_act) and reflect() both read the same
+    # filtered list, so an unprompted NPC action cannot re-surface it either.
+    npc = world.by_id["nessa"]
+    filtered = npc_sim.active_goals(npc["anchors"]["goals"], pt_id, "nessa", "user")
+    ok(goal not in filtered and len(filtered) == len(npc["anchors"]["goals"]) - 1,
+       "the goal list every autonomous-action prompt is built from excludes "
+       "it too, not just the narrator's own anchor block")
+
+    # A different NPC's copy of the SAME kind of goal (a fresh character who
+    # never had this exchange) is untouched — the fix is per (npc, player).
+    ok(not npc_sim.answered_goals(pt_id, "corvin", "user"),
+       "an NPC the player never spoke to has nothing marked answered")
+
+
 # --------------------------------------------------------------- session zero
 def test_session_zero():
     section("Session Zero — the player has a defined place before play")
@@ -202,6 +267,7 @@ def test_world_scale():
 
 def _all():
     return (test_callbacks, test_banter, test_npc_initiative,
+            test_npc_stops_reasking_answered_questions,
             test_session_zero, test_world_scale, test_ooc_channel,
             test_canon_spectrum, test_severity_bites, test_default_lines)
 
