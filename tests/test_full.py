@@ -199,6 +199,31 @@ def test_modes():
     ok(modes.tone_directive(pt) == "",
        "a default world's narrator prompt is unchanged - anchors do not move")
 
+    # D7/F4a — language was free text and already wired to the narrator
+    # prompt; confirmed here so a future change to tone_directive() cannot
+    # silently drop it without a test noticing.
+    modes.set_modes(pt, {"language": "Arabic"})
+    ok("Arabic" in modes.tone_directive(pt),
+       "a set language reaches the narrator's own system prompt")
+    modes.set_modes(pt, {"language": ""})
+
+    # F4c — plain register is a SEPARATE axis from language: a player can
+    # want plain-register Arabic as easily as plain-register English.
+    ok(modes.get(pt)["vocabulary"] == "literary", "literary is the default register")
+    modes.set_modes(pt, {"vocabulary": "plain"})
+    d = modes.tone_directive(pt)
+    ok("REGISTER: plain" in d and "idiom" in d,
+       "plain register reaches the narrator and names the actual failure "
+       "(idiom), not just 'simpler'")
+    ok("NOT a simpler story" in d,
+       "and is explicit that this changes VOCABULARY, not content - the same "
+       "stakes, told in words that do not require knowing an idiom")
+    modes.set_modes(pt, {"language": "Arabic", "vocabulary": "plain"})
+    combined = modes.tone_directive(pt)
+    ok("Arabic" in combined and "REGISTER: plain" in combined,
+       "the two axes compose - plain-register Arabic is a real combination, "
+       "not an either/or")
+
 
 def test_identity_block():
     section("§7 — the stable identity block (the anti-drift claim)")

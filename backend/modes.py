@@ -97,9 +97,31 @@ DIFFICULTY = {
                "aggression": 1.45, "scarcity": 1.35},
 }
 
+# F4c/D7 - a player fluent enough to play but not steeped in literary English
+# idiom was genuinely lost mid-scene ("playing games" meaning evading,
+# "come back to bite" meaning future betrayal) even though the language
+# itself (English) was never the barrier - the REGISTER was. This is
+# independent of LANGUAGE_KEY below: a player can want plain-register
+# Arabic just as easily as plain-register English, so it is its own axis
+# rather than folded into the free-text language field.
+VOCABULARY = {
+    "literary": {"name": "Literary", "blurb": "Idiom, metaphor, a wider vocabulary.",
+                "default": True, "directive": ""},
+    "plain": {
+        "name": "Plain", "blurb": "Same story, told in direct, everyday words.",
+        "directive": ("REGISTER: plain. Use direct, common vocabulary and say things "
+                     "literally rather than through idiom or metaphor - 'he warns you this "
+                     "will cost you later,' not 'this will come back to bite you.' Sentences "
+                     "stay short and concrete. This is NOT a simpler story - the same events, "
+                     "the same stakes, the same characters, in words that do not require "
+                     "knowing an idiom to understand what just happened."),
+    },
+}
+
 AXES = {
     "canon": CANON, "tone": TONE, "stakes": STAKES,
     "pacing": PACING, "combat": COMBAT, "difficulty": DIFFICULTY,
+    "vocabulary": VOCABULARY,
 }
 
 
@@ -173,6 +195,9 @@ def tone_directive(pt_id: str) -> str:
         parts.append(directive)
     if m[LANGUAGE_KEY]:
         parts.append(f"LANGUAGE: narrate in the register and idiom of {m[LANGUAGE_KEY]}.")
+    vocab = VOCABULARY[m["vocabulary"]].get("directive", "")
+    if vocab:
+        parts.append(vocab)
     if m["canon"] == "strict":
         parts.append("CANON: strict. Do not invent around the world's established facts. "
                      "If a character has a canon line that fits this exact beat, deliver it.")
