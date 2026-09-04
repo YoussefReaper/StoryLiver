@@ -17,7 +17,7 @@ import hashlib
 import json
 import uuid
 
-from . import arcs, db, llm, research, sessionzero, worldkit
+from . import arcs, config, db, llm, research, sessionzero, worldkit
 from . import worlds as world_registry
 
 # Settings that read as an existing IP get the personal-only treatment. This is
@@ -518,12 +518,38 @@ def _empty_dossier(setting):
             "cached": False, "depth": "none", "fetched_at": ""}
 
 
+def _resilient(role, system, user, *, user_id, max_tokens, temperature, stub,
+               json_mode=True):
+    """D3: a region/world build is 6-9 separate model calls, and ONE truncated
+    response used to fail the WHOLE build with a 502 - wasting every other
+    call that had already succeeded, at real cost, with nothing to show for
+    it. A truncated or malformed JSON response raises llm.LLMError the same
+    way a missing API key does, so the two have to be told apart: a missing
+    key is a config problem the retry cannot fix and must still surface
+    honestly; a truncation is a size problem worth ONE retry at 50% more
+    budget before falling back to the same procedural stub offline mode
+    already uses, so the build completes instead of dying on the last
+    district out of eight."""
+    try:
+        return llm.complete(role, system, user, user_id=user_id, json_mode=json_mode,
+                            max_tokens=max_tokens, temperature=temperature, stub=stub)
+    except llm.LLMError as e:
+        if not config.key_for(config.MODELS.get(role, config.MODELS["narrator"])):
+            raise  # a config problem - no retry can fix a missing key
+        try:
+            return llm.complete(role, system, user, user_id=user_id, json_mode=json_mode,
+                                max_tokens=int(max_tokens * 1.5), temperature=temperature,
+                                stub=stub)
+        except llm.LLMError:
+            return stub()
+
+
 def _build_districts(brief, *, user_id, spec, setting, personal):
     """Pass 1: lay out the districts. Only runs for multi-district scales."""
-    plan = llm.complete(
+    plan = _resilient(
         "narrator", DISTRICT_SYSTEM,
         brief + f"\n\nLay out EXACTLY {spec['districts']} districts. JSON only.",
-        user_id=user_id, json_mode=True, max_tokens=6000, temperature=1.0,
+        user_id=user_id, max_tokens=6000, temperature=1.0,
         stub=lambda: _stub_districts(setting, spec["districts"]))
     districts = [d for d in (plan.get("districts") or []) if d.get("id")]
     return plan, districts[:spec["districts"]]
@@ -541,8 +567,8 @@ def _fill_district(district, others, brief, *, user_id, spec, setting):
         f"Give it {lo}-{hi} locations and {nlo}-{nhi} characters. "
         f"Prefix every id with '{district['id']}_'. JSON only."
     )
-    out = llm.complete(
-        "narrator", DISTRICT_FILL_SYSTEM, ask, user_id=user_id, json_mode=True,
+    out = _resilient(
+        "narrator", DISTRICT_FILL_SYSTEM, ask, user_id=user_id,
         max_tokens=7000, temperature=1.0,
         stub=lambda: _stub_fill(district, spec))
     return out.get("locations") or [], out.get("npcs") or []
@@ -772,14 +798,20 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # being silently capped at whatever fits in a single response.
     spec = SCALES.get(scale) or SCALES["town"]
     if spec["districts"] <= 1:
-        structure = llm.complete(
+        structure = _resilient(
             "narrator", STRUCTURE_SYSTEM,
             brief + "\n\nBuild the places and the people. JSON only.",
-            user_id=user_id, json_mode=True, max_tokens=8000, temperature=1.0,
+            user_id=user_id, max_tokens=8000, temperature=1.0,
             stub=lambda: _stub_structure(setting, personal, seed=seed))
     else:
         plan, districts = _build_districts(brief, user_id=user_id, spec=spec,
                                            setting=setting, personal=personal)
+        # D3: each district is now its OWN failure domain - a truncation on
+        # district 6 of 8 no longer discards the 5 that already succeeded
+        # (and were already paid for). _resilient retries once, then falls
+        # back to the same procedural stub offline mode uses for just that
+        # one district, so a region/world build completes even when a single
+        # pass comes back oversized.
         filled = [
             _fill_district(d, [o for o in districts if o["id"] != d["id"]],
                            brief, user_id=user_id, spec=spec, setting=setting)
@@ -793,8 +825,8 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         f"PEOPLE: {', '.join(n.get('id', '') for n in structure.get('npcs', []))}\n\n"
         "Write the laws and the fate. JSON only."
     )
-    laws = llm.complete(
-        "narrator", LAW_SYSTEM, laws_brief, user_id=user_id, json_mode=True,
+    laws = _resilient(
+        "narrator", LAW_SYSTEM, laws_brief, user_id=user_id,
         max_tokens=3200, temperature=0.7, stub=lambda: _stub_laws(structure))
 
     raw = {**structure, **{k: v for k, v in laws.items() if v}}
