@@ -765,9 +765,11 @@ function entryHTML(e, meta) {
       </div></article>`;
     case 'fate':
       return `<article class="entry entry-fate"><div class="fate-slab">
-        <div class="fate-title">${esc(meta.title || 'It happens')}</div>
+        ${meta.title ? `<div class="fate-title">${esc(meta.title)}</div>` : ''}
         <div class="fate-body">${paras(e.text)}</div>
-        <div class="fate-seal">Written before you arrived. Nothing could have stopped it.</div></div></article>`;
+        <div class="fate-seal">${meta.as_news
+    ? 'It happened somewhere you were not. Nothing could have stopped it.'
+    : 'Written before you arrived. Nothing could have stopped it.'}</div></div></article>`;
     case 'contest':
       return `<article class="entry entry-contest"><div class="contest-slab">
         <div class="contest-head"><svg viewBox="0 0 16 16" class="ico"><path d="M3 13 13 3M6 3H3v3M10 13h3v-3"/></svg>Contested</div>

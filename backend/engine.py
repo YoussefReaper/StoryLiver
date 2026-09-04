@@ -152,7 +152,7 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
 
 # --------------------------------------------------------------------------
 
-def _apply_fate(pt, world, turn, entries):
+def _apply_fate(pt, world, turn, entries, *, player=memory.SOLO, here=""):
     fired = []
     # A Sandbox promises no main quest. Firing the seven fated events on
     # schedule anyway makes it a Story with the label filed off.
@@ -184,8 +184,41 @@ def _apply_fate(pt, world, turn, entries):
         else:
             atlas.echo(pt["id"], turn, f["desc"], place_id=f.get("location", ""),
                        kind="fate", magnitude=5)
-        entries.append(_render(pt["id"], turn, "fate", f["desc"],
-                               meta={"fate_id": f["id"], "title": f["title"], "immutable": True}))
+
+        # Fate is FIXED - every state change above always happens, at its own
+        # location, whether or not the player is there to see it. Whether the
+        # player is TOLD about it right now used to be unconditional too: a
+        # fate scheduled at the chapel would land as a full-screen block while
+        # the player was eating dinner across the map - dragging them into a
+        # scene they were never in, mid-conversation, with no transition.
+        # Gated the same way an ordinary witnessed action is: present, it is
+        # the scene; elsewhere, it is news that has to travel to reach you.
+        fate_loc = f.get("location", "")
+        if not fate_loc or fate_loc == here:
+            entries.append(_render(pt["id"], turn, "fate", f["desc"],
+                                   meta={"fate_id": f["id"], "title": f["title"], "immutable": True}))
+        else:
+            witnesses = memory.npcs_at(pt["id"], world, fate_loc, turn)
+            fact = awareness.witness(
+                pt["id"], world, actor="fate", kind="fate", summary=f["title"],
+                detail=f["desc"], place_id=fate_loc, turn=turn, severity=5,
+                present=witnesses, subject="")
+            if fact["witnesses"]:
+                awareness.spread(pt["id"], world, fact, turn=turn,
+                                 witnesses=fact["witnesses"], severity=5)
+            # If the player is somewhere a rumour of this could already have
+            # reached this very turn (unlikely at distance 0, but a fate can
+            # fire in the player's own building's neighbouring room), let it
+            # surface immediately rather than making them wait a turn for
+            # word that already arrived.
+            for a in awareness.arrivals(pt["id"], world, turn):
+                if a["place"] == here and a["key"] == fact["key"]:
+                    entries.append(_render(
+                        pt["id"], turn, "fate",
+                        f"Word reaches you: {a['summary']}",
+                        meta={"fate_id": f["id"], "title": "", "immutable": True,
+                             "as_news": True}))
+                    break
         fired.append(f)
     return fired
 
@@ -501,7 +534,7 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
                              verdict.get("importance", 3), player=player,
                              actor_name=actor_name or "the traveller")
-        fired_fate = _apply_fate(pt, world, turn, entries)
+        fired_fate = _apply_fate(pt, world, turn, entries, player=player, here=new_loc)
         state = world_master.build_state(_pt(pt_id), world, player)
 
         # 3. Every deterministic layer, $0 -----------------------------------

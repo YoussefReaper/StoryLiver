@@ -77,7 +77,14 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
     loc = world.loc_by_id[state["location"]]
     forbidden = _openings(pt["id"])
 
-    fate_now = [f for f in world.fated_events if f["turn"] == state["turn"]]
+    # Location-gated: a fate scheduled at the chapel must not force itself
+    # into a scene the player is having across the map for dinner. engine.py
+    # applies fate's actual state changes regardless of where the player is -
+    # this only controls whether THIS turn's prose is told to narrate it as
+    # something happening HERE.
+    fate_now = [f for f in world.fated_events
+               if f["turn"] == state["turn"]
+               and (not f.get("location") or f["location"] == state["location"])]
     fate_line = f"\nHAPPENING RIGHT NOW, UNSTOPPABLE: {fate_now[0]['desc']}" if fate_now else ""
 
     parts = [
