@@ -2100,6 +2100,21 @@ button { background: none; border: 0; cursor: pointer; }
 .pf-pass[open] > summary::before { content: '- '; }
 .pf-pass > summary:hover { color: var(--vellum); }
 
+/* D9 — the first-run briefing. Three short answers before a scrap of prose,
+   because "who are you" and "where are you" are questions, not atmosphere. */
+.brief-who { margin-bottom: 12px; }
+.brief-label {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 3px;
+}
+.brief-line { font-family: var(--serif); font-size: 17px; color: var(--vellum); }
+.brief-tag {
+  font-family: var(--serif); font-style: italic; font-size: 14px;
+  color: var(--ember-soft); margin: 14px 0 10px; padding-left: 12px;
+  border-left: 2px solid var(--ember-deep);
+}
+.brief-premise { font-size: 14px; line-height: 1.6; color: var(--vellum-dim); }
+
 /* A player-facing mood chip - the same disposition word the debug panel used
    to print bare, now with weight instead of being one more line of text. */
 .mood-chip {

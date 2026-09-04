@@ -177,6 +177,11 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
     startOnboarding();
   } else if (S.state?.ended) {
     showEnding({ reason: 'victory', run: { carried: S.state.run || {} } });
+  } else {
+    // Neither gate had anything left to show — the exact case that used to
+    // drop a returning player straight into a brand new world with no idea
+    // who they were standing as.
+    showBriefingIfNeeded();
   }
 }
 
@@ -1971,6 +1976,7 @@ function showMenu() {
       ${item('settings', 'gear', 'How it looks', 'Theme, density, power mode')}
       ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
       ${item('forge', 'forge', 'World Forge', 'Build a world, or name a setting')}
+      ${item('brief', 'eye', 'Who you are', 'Your role, where you are, and why')}
       ${item('rules', 'scale', 'The rules of this world', 'What the World Master enforces')}
       ${item('canonlog', 'shield', 'Where the world pushed back', 'Every time a rule stopped something')}
       ${item('au', 'book', 'Change one thing', 'An alternate premise this world diverges on')}
@@ -2612,6 +2618,7 @@ async function onGlobalClick(e) {
     standing: showStanding,
     canonlog: showCanonLog,
     au: showAU,
+    brief: showBriefing,
     board: () => showBoard('pvp'),
     case: showCase,
     explain: () => showExplainer(true), profile: showProfile,
@@ -3208,13 +3215,22 @@ function renderObjective() {
   const el = $('#objective');
   if (!el) return;
   const o = S.objective && S.objective.objective;
-  if (!o || !o.goal) { el.hidden = true; return; }
+  // D9: this used to hide the WHOLE panel whenever `goal` was empty — which
+  // included every open-ended world (`sandbox` and its siblings ship a
+  // deliberately blank objective string), so a sandbox player got total
+  // silence instead of the "No main quest. The world simply runs." detail
+  // the backend was already sending. Silence is the one thing this panel
+  // must never be — an untagged world falls back to a plain statement
+  // rather than disappearing.
+  if (!o) { el.hidden = true; return; }
   el.hidden = false;
+  const goal = o.goal || (o.open_ended ? 'No set objective — explore, and find your own.'
+    : 'Find your footing here.');
   el.innerHTML = `<div class="card-head"><h2>${esc(o.name)}</h2>
-      <span class="pill">${Math.round((o.progress || 0) * 100)}%</span></div>
-    <p class="obj-goal">${esc(o.goal)}</p>
-    <div class="tension-track"><div class="tension-fill"
-      style="width:${Math.round((o.progress || 0) * 100)}%"></div></div>
+      ${o.open_ended ? '' : `<span class="pill">${Math.round((o.progress || 0) * 100)}%</span>`}</div>
+    <p class="obj-goal">${esc(goal)}</p>
+    ${o.open_ended ? '' : `<div class="tension-track"><div class="tension-fill"
+      style="width:${Math.round((o.progress || 0) * 100)}%"></div></div>`}
     <p class="obj-detail">${esc(o.detail || '')}</p>
     ${o.mode === 'detective' ? '<button class="tiny-btn" data-case="open-file">Casefile</button>' : ''}
     ${o.mode === 'daily' ? `<button class="tiny-btn" data-daily-submit="1">Post today's score</button>
@@ -4484,6 +4500,60 @@ async function finishOnboarding() {
   closeOverlays();
   renderAll();
   toast('Your world is set. Change any of it from the story menu.');
+  // D9: the three onboarding decisions above shape the world; none of them
+  // says who the player IS or why they're standing where they're standing.
+  // This is the seam - one blank input box away from the tone/lines dials,
+  // with nothing between "the world is set" and "figure it out yourself."
+  showBriefingIfNeeded();
+}
+
+/* ===========================================================================
+   D9 — the first-run briefing. "I don't know where I am, what my role is,
+   what's going on around me, why they want answers or what for."
+
+   Every field here already exists on the snapshot the player already has -
+   protagonist, location, and the world's own tagline/premise (the forge
+   writes the premise SPECIFICALLY to answer "who are you and why are you
+   here", per worldforge's own brief to itself). Nothing was missing from the
+   data; nothing ever assembled it into one place before the input box.
+   ========================================================================= */
+
+function needsBriefing(ptId) {
+  try { return !localStorage.getItem(`storyliver.briefed.${ptId}`); } catch { return false; }
+}
+
+function markBriefed(ptId) {
+  try { localStorage.setItem(`storyliver.briefed.${ptId}`, '1'); } catch { /* private mode */ }
+}
+
+function showBriefingIfNeeded() {
+  if (!S.ptId || !S.state || S.state.turn !== 0) return;
+  if (!needsBriefing(S.ptId)) return;
+  showBriefing();
+}
+
+function showBriefing() {
+  const st = S.state;
+  const world = st.world || {};
+  showModal(`${head('Before you begin', '')}
+    <div class="modal-body">
+      <div class="brief-who">
+        <div class="brief-label">You are</div>
+        <div class="brief-line">${esc(st.protagonist || 'a traveller, unnamed here')}</div>
+      </div>
+      <div class="brief-who">
+        <div class="brief-label">Right now, you are at</div>
+        <div class="brief-line">${esc(st.location_name || 'the threshold')}</div>
+      </div>
+      ${world.tagline ? `<div class="brief-tag">${esc(world.tagline)}</div>` : ''}
+      ${world.premise ? `<p class="brief-premise">${esc(world.premise)}</p>` : ''}
+      <p class="fineprint">This is everything the world knows about you so far. Everyone you
+        meet knows only what they have actually witnessed or been told — nothing more, and
+        nothing less.</p>
+      <div class="row" style="margin-top:14px">
+        <button class="btn btn-primary" data-brief-done>Into the story</button>
+      </div>
+    </div>`);
 }
 
 /* ===========================================================================
@@ -4732,8 +4802,12 @@ document.addEventListener('click', async (ev) => {
     S.onboardStep += 1;
     return renderOnboardStep();
   }
-  if (pick('[data-onb-skip]')) { markOnboarded(); closeOverlays(); return renderAll(); }
+  if (pick('[data-onb-skip]')) {
+    markOnboarded(); closeOverlays(); renderAll();
+    return showBriefingIfNeeded();
+  }
   if (pick('[data-onb-done]')) return finishOnboarding();
+  if (pick('[data-brief-done]')) { markBriefed(S.ptId); return closeOverlays(); }
 
   const line = pick('[data-line]');
   if (line) {
@@ -5321,6 +5395,7 @@ function finishExplainer() {
   // Hand straight into world setup so a first-timer meets one continuous flow
   // rather than two modals with a gap between them.
   if (needsOnboarding() && S.state?.turn === 0) startOnboarding();
+  else showBriefingIfNeeded();
 }
 
 /* ===========================================================================
