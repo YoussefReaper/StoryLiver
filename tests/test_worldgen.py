@@ -263,6 +263,39 @@ def test_a_truncated_pass_falls_back_instead_of_failing_the_whole_build():
         llm.complete, config.key_for = real_complete, real_key_for
 
 
+def test_locations_are_scenes_not_a_floor_plan():
+    section("D4 - a sub-room is detail, not its own place")
+    # Reported: "Training Ground" inside Butterfly Mansion built as its own
+    # PLACE, and a 24-place city read as granular rather than dense. Neither
+    # prompt ever told the architect a location was a SCENE, not a room -
+    # the schema had a `desc` field and nothing said what belonged in it
+    # versus what belonged as its own id. Both passes that emit locations
+    # (the single-district STRUCTURE_SYSTEM and the multi-district
+    # DISTRICT_FILL_SYSTEM) carry the same instruction now, so a town build
+    # and a world build get the same discipline.
+    for name, prompt in (("STRUCTURE_SYSTEM", worldforge.STRUCTURE_SYSTEM),
+                         ("DISTRICT_FILL_SYSTEM", worldforge.DISTRICT_FILL_SYSTEM)):
+        ok("SCENE" in prompt and "floor plan" in prompt,
+           f"{name} states the actual test: a location is a scene, not a room")
+        ok("sub-room" in prompt.lower(),
+           f"{name} names the exact failure mode with a concrete example "
+           "(a training ground inside a manor), not an abstract rule a "
+           "model can satisfy while still doing the wrong thing")
+        ok("folded into the parent" in prompt,
+           f"{name} says where the detail actually GOES (the parent's desc) "
+           "rather than only saying what not to do")
+
+    # The scale-appropriate per-district cap this sits on top of already
+    # existed (SCALES' locs range) - confirm it still builds at every size
+    # with the new instruction in place, not just that the text is present.
+    db.init()
+    for scale in ("town", "city", "region", "world"):
+        w = worldkit.load(worldforge.bootstrap(
+            "a drowned lighthouse colony", user_id="d4", scale=scale))
+        ok(len(w.locations) > 0, f"{scale} still builds real places with the "
+                                 f"instruction in place ({len(w.locations)})")
+
+
 def test_the_dark_systems_actually_light_up():
     section("density - and the systems downstream of it come on")
     db.init()
@@ -475,6 +508,7 @@ def _all():
             test_a_forged_world_matches_the_starter,
             test_all_four_scales_build_without_truncating,
             test_a_truncated_pass_falls_back_instead_of_failing_the_whole_build,
+            test_locations_are_scenes_not_a_floor_plan,
             test_the_dark_systems_actually_light_up,
             test_the_daily_is_genuinely_the_same_world,
             test_the_fate_thread_does_not_spoil_itself,

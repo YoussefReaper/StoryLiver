@@ -121,9 +121,11 @@ FACTIONS are the institutions with a grip on this place. `law` is 0 for a social
 
 NPC_EDGES are how the characters feel about EACH OTHER, not about the player. Give at least six. Values are -100..100 for affinity and trust, 0..100 for fear and obligation. Two people who cannot stand each other, in the same room, is where a scene comes from. At least one pair here must want incompatible things.
 
+LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone). A district this size is 6-8 real places, not a dozen rooms of the same building.
+
 Return ONLY JSON:
 {
-  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory","connects":["other_id"]}],
+  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory, naming what a passerby would only notice by stepping further in - the closest thing this place has to a sub-room, folded in as texture rather than spun into its own id","connects":["other_id"]}],
   "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"place_id",
             "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
                        "constraints":["hard limit","hard limit"],
@@ -158,6 +160,8 @@ You are given a setting. Produce the PLACES and the CHARACTERS of a small, dense
 
 Characters must be people, not archetypes. Each one needs a VOICE another writer could imitate, hard CONSTRAINTS that limit what they can do, WANTS that conflict with someone else's, and TABOOS they will not cross. At least two pairs of characters must want incompatible things.
 
+LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone).
+
 Return ONLY JSON:
 {
   "name": "the place, not the franchise",
@@ -165,7 +169,7 @@ Return ONLY JSON:
   "premise": "120-180 words, second person, addressed to the player arriving",
   "arrival": "one sentence: how the player got here",
   "default_protagonist": "who the player is by default",
-  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory","connects":["other_id"]}],
+  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory, naming what a passerby would only notice by stepping further in - the closest thing this place has to a sub-room, folded in as texture rather than spun into its own id","connects":["other_id"]}],
   "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"place_id",
             "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
                        "constraints":["hard limit","hard limit"],
