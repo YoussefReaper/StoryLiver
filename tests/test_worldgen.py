@@ -190,6 +190,46 @@ def test_a_forged_world_matches_the_starter():
        f"and nothing ever filled it, on forged worlds OR the starter")
 
 
+def test_f3_generated_content_is_tagged_canon_or_original():
+    section("F3 - filler is marked as filler, not passed off as canon")
+    # When a chosen scale needs more people/places than the source actually
+    # has, the builder fills the gap by invention - always fine, but the
+    # result was indistinguishable from the real thing. Every NPC/location
+    # now carries an origin: "canon" if it matches a name the build was
+    # actually grounded in, "original" if the model had to invent it - the
+    # data a fill-budget UI needs to ever exist.
+    db.init()
+
+    starter = registry.resolve("emberfall", None)
+    ok(starter.npcs[0].get("origin") == "canon" and starter.locations[0].get("origin") == "canon",
+       "a hand-authored/starter world has nothing to tag as filler - "
+       "everyone defaults to canon rather than being mislabelled")
+
+    ok(worldforge._fold("Tanjiro Kamado") == worldforge._fold("tanjiro  KAMADO"),
+       "the match is exact after folding case/whitespace - matching how "
+       "grounding_brief() actually instructs the model ('spell them exactly "
+       "as written above'), not a fuzzy match that could credit an "
+       "unrelated invented name as canon")
+
+    grounded = {worldforge._fold("Tanjiro Kamado"), worldforge._fold("Nezuko Kamado")}
+
+    def tag(name):
+        return "canon" if worldforge._fold(name) in grounded else "original"
+    ok(tag("Tanjiro Kamado") == "canon" and tag("Some Invented Villager") == "original",
+       "a name the build was grounded in is tagged canon; anything else "
+       "the model added to fill the scale is tagged original")
+
+    # End to end: a world built with research forced down still tags every
+    # generated character honestly (as "original", since a stub with no
+    # grounding to draw from cannot produce a canon-matching name) rather
+    # than defaulting everyone to "canon" and silently lying about it.
+    forged = _forge()
+    ok(all(n.get("origin") in ("canon", "original") for n in forged["npcs"]),
+       "every generated character is tagged one way or the other, never left unset")
+    ok(all(l.get("origin") in ("canon", "original") for l in forged["locations"]),
+       "same for every generated location")
+
+
 def test_all_four_scales_build_without_truncating():
     section("D3 - region and world builds, not just town and city")
     # Bumped once already (6000/7000 token caps) and never actually verified
@@ -506,6 +546,7 @@ def _all():
             test_an_original_setting_is_still_original,
             test_a_crossover_is_private_even_when_research_misses,
             test_a_forged_world_matches_the_starter,
+            test_f3_generated_content_is_tagged_canon_or_original,
             test_all_four_scales_build_without_truncating,
             test_a_truncated_pass_falls_back_instead_of_failing_the_whole_build,
             test_locations_are_scenes_not_a_floor_plan,

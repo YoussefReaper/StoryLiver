@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 
 from . import arcs, canon_seed, config, db, llm, research, sessionzero, worldkit
@@ -250,6 +251,15 @@ def neutral_name(seed: str) -> str:
     ends up on the artefact. Stable across processes, unlike hash()."""
     digest = hashlib.sha1(seed.lower().encode("utf-8")).digest()
     return NEUTRAL_NAMES[digest[0] % len(NEUTRAL_NAMES)]
+
+
+def _fold(name: str) -> str:
+    """Case/whitespace-normalised match for F3's canon/original tagging.
+    grounding_brief() already instructs the model to "spell them exactly as
+    written above" - an exact match after folding case is the comparison
+    that instruction is actually asking to be checked against, not a fuzzy
+    one that would risk crediting an unrelated invented name as canon."""
+    return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
 
 
 def _strip_ip_name(name: str, setting: str) -> str:
@@ -870,6 +880,23 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if personal:
         raw["name"] = _strip_ip_name(str(raw.get("name") or ""), setting)
     raw.setdefault("opening", raw.get("premise", ""))
+
+    # F3: when a chosen scale needs more people/places than the source
+    # actually has, the builder fills the gap by invention - which was
+    # always fine, but the result was indistinguishable from the real
+    # thing. Anyone matching a name research (or an era override) actually
+    # grounded the build in is marked "canon"; anyone the model had to
+    # invent to fill the rest is marked "original" - the data a fill-budget
+    # UI needs to ever exist, tagging what it is rather than passing
+    # invented content off as canon.
+    grounded = {_fold(c.get("name", "")) for c in (found.get("characters") or [])}
+    grounded |= {_fold(p.get("name", "")) for p in (found.get("places") or [])}
+    if grounded:
+        for npc in raw.get("npcs") or []:
+            npc["origin"] = "canon" if _fold(npc.get("name", "")) in grounded else "original"
+        for loc in raw.get("locations") or []:
+            loc["origin"] = "canon" if _fold(loc.get("name", "")) in grounded else "original"
+
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)
 
