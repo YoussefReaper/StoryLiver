@@ -306,6 +306,54 @@ def test_canon_seed_fallback():
     ok(canon_seed.match("", "") is None, "an empty setting matches nothing")
 
 
+def test_era_selection_swaps_the_whole_cast():
+    section("F1 — an era overrides the cast entirely, not adds to it")
+    # "Sengoku era → cast = Yoriichi + Michikatsu, not current Hashira." A
+    # different era of the same setting can share almost no names with the
+    # default - Sengoku-era Demon Slayer predates Tanjiro's generation by
+    # centuries. Asked for it, the grounding brief the builder actually
+    # reads must carry Yoriichi, not Zenitsu.
+    options = canon_seed.era_options("demon slayer", "Demon Slayer: Kimetsu no Yaiba")
+    ids = {o["id"] for o in options}
+    ok(ids == {"present", "sengoku"}, f"both eras are offered ({ids})")
+
+    present_cast = {c["name"] for c in canon_seed.fallback_cast("demon slayer", era="present")}
+    sengoku_cast = {c["name"] for c in canon_seed.fallback_cast("demon slayer", era="sengoku")}
+    ok("Tanjiro Kamado" in present_cast and "Tanjiro Kamado" not in sengoku_cast,
+       "present-day protagonist is NOT in the Sengoku cast")
+    ok("Yoriichi Tsugikuni" in sengoku_cast and "Yoriichi Tsugikuni" not in present_cast,
+       "and the Sengoku protagonist is not in the present-day cast — this "
+       "is a swap, not a merge")
+    ok(not (present_cast & sengoku_cast) or "Muzan Kibutsuji" in (present_cast & sengoku_cast),
+       "the two eras share almost no names, as the setting actually implies")
+
+    pinned = canon_seed.pin_protagonists(
+        "demon slayer", "Demon Slayer: Kimetsu no Yaiba",
+        [{"name": "Michikatsu Tsugikuni", "note": ""}], era="sengoku")
+    ok(pinned[0]["name"] == "Yoriichi Tsugikuni",
+       "the era's OWN protagonist is pinned first, not the default setting's")
+
+    # No era given, or an unmatched setting: nothing changes, exactly as
+    # before F1 existed.
+    ok(canon_seed.fallback_cast("demon slayer") == canon_seed.fallback_cast("demon slayer", era=""),
+       "no era requested falls back to the setting's default cast")
+    ok(canon_seed.era_options("a setting nobody wrote") == [],
+       "an unmatched setting offers no era question at all")
+
+    # The grounding brief the builder actually reads carries the swap.
+    from backend import sessionzero
+    dossier = {"setting": "demon slayer", "canonical_name": "Demon Slayer: Kimetsu no Yaiba",
+              "found": True, "characters": sorted(
+                  ({"name": n, "note": ""} for n in sengoku_cast), key=lambda c: c["name"]),
+              "places": [], "factions": [], "sources": []}
+    b = sessionzero.brief({"era": "sengoku"}, dossier)
+    ok("ERA: The Sengoku era" in b,
+       "the chosen era reaches the builder as an explicit instruction")
+    ok("do not mix in anyone" in b,
+       "warning it away from blending eras, which a model would otherwise "
+       "happily do given both casts share a franchise name")
+
+
 def test_cache_shape():
     section("cache — a setting is researched once")
     db.init()
@@ -382,7 +430,8 @@ def _all():
             test_article_ranking, test_wiki_identity, test_slug_generation,
             test_grounding_brief, test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
-            test_canon_seed_fallback, test_cache_shape)
+            test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,
+            test_cache_shape)
 
 
 def main():

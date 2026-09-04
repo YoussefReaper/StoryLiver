@@ -47,6 +47,34 @@ SEEDS = {
             ("Kyojuro Rengoku", "Flame Hashira, booming, never hedges, never rests"),
             ("Muzan Kibutsuji", "the first demon, wears whatever face keeps him hidden"),
         ],
+        # F1 - era selection. "Sengoku era" is not an ARC of Tanjiro's story
+        # (sessionzero's existing "where do you enter" question already
+        # covers that - it picks a point on ONE timeline, same cast
+        # throughout). Sengoku is a DIFFERENT timeline, centuries earlier,
+        # with a cast that shares almost no names with the present day - the
+        # exact failure this exists to fix: asked for Sengoku, a build got
+        # Zenitsu and Inosuke, who would not be born for another few hundred
+        # years. An era OVERRIDES protagonists/cast/places entirely rather
+        # than adding to them.
+        "eras": {
+            "present": {"label": "The present day",
+                       "blurb": "Tanjiro's generation. The demon slayer corps as it stands now."},
+            "sengoku": {
+                "label": "The Sengoku era",
+                "blurb": "Centuries earlier. The first Hashira, and the birth of Muzan's curse.",
+                "protagonists": ["Yoriichi Tsugikuni"],
+                "cast": [
+                    ("Yoriichi Tsugikuni", "the strongest demon slayer who ever lived, and knows it cost him everything"),
+                    ("Michikatsu Tsugikuni", "Yoriichi's twin, always one step behind, and it is eating him alive"),
+                    ("Muzan Kibutsuji", "newly turned, still learning what he now is"),
+                    ("Ubuyashiki (era)", "the demon slayer corps' leader in this generation"),
+                ],
+                "places": [
+                    ("The Tsugikuni Estate", "the twins' family home, and the start of everything between them"),
+                    ("A Nameless Village", "burned the night Yoriichi arrived too late"),
+                ],
+            },
+        },
     },
     "jujutsu_kaisen": {
         "aliases": ("jujutsu kaisen", "jjk"),
@@ -146,15 +174,40 @@ def match(setting: str, canonical: str = "") -> dict | None:
     return None
 
 
-def fallback_cast(setting: str, canonical: str = "") -> list:
-    """Characters to use when live research came back with nothing usable."""
+def era_options(setting: str, canonical: str = "") -> list:
+    """The eras Session Zero can offer for this setting, or [] if it only
+    has one. Each entry: {id, label, blurb}. F1 - asked for "the Sengoku
+    era" of Demon Slayer, a build got Zenitsu and Inosuke, who would not be
+    born for centuries; this is what a real era question needs to draw
+    options from instead of guessing."""
+    entry = match(setting, canonical)
+    eras = (entry or {}).get("eras")
+    if not eras:
+        return []
+    return [{"id": eid, "label": e["label"], "blurb": e.get("blurb", "")}
+           for eid, e in eras.items()]
+
+
+def _era(entry: dict, era: str) -> dict | None:
+    return (entry.get("eras") or {}).get(era) if entry and era else None
+
+
+def fallback_cast(setting: str, canonical: str = "", era: str = "") -> list:
+    """Characters to use when live research came back with nothing usable.
+    An era, when this franchise has one on record, OVERRIDES the default
+    cast entirely rather than adding to it - Sengoku-era Demon Slayer and
+    present-day Demon Slayer share almost no names."""
     entry = match(setting, canonical)
     if not entry:
         return []
-    return [{"name": n, "note": note} for n, note in entry["cast"]]
+    e = _era(entry, era)
+    # An era with no cast of its own (e.g. "the present day", the setting's
+    # own default) defers to the top-level entry rather than repeating it.
+    cast = e["cast"] if e and e.get("cast") else entry["cast"]
+    return [{"name": n, "note": note} for n, note in cast]
 
 
-def fallback_places(setting: str, canonical: str = "") -> list:
+def fallback_places(setting: str, canonical: str = "", era: str = "") -> list:
     """Places to use when live research came back with nothing usable. The
     same failure that empties a cast (a category-fetch timeout) empties this
     bucket too, and an ungrounded build invents a location exactly the way it
@@ -163,16 +216,22 @@ def fallback_places(setting: str, canonical: str = "") -> list:
     entry = match(setting, canonical)
     if not entry:
         return []
-    return [{"name": n, "note": note} for n, note in entry.get("places", [])]
+    e = _era(entry, era)
+    places = e["places"] if e and e.get("places") else entry.get("places", [])
+    return [{"name": n, "note": note} for n, note in places]
 
 
-def pin_protagonists(setting: str, canonical: str, characters: list) -> list:
-    """Guarantee the lead(s) of a matched franchise are in the list, first -
-    live research can rank a real protagonist below a shorter-article side
-    character, and a Tanjiro-less Demon Slayer build is not Demon Slayer."""
+def pin_protagonists(setting: str, canonical: str, characters: list, era: str = "") -> list:
+    """Guarantee the lead(s) of a matched franchise (or of the CHOSEN era,
+    if one was) are in the list, first - live research can rank a real
+    protagonist below a shorter-article side character, and a Tanjiro-less
+    Demon Slayer build is not Demon Slayer. Asked for the Sengoku era, the
+    protagonist being pinned is Yoriichi, not Tanjiro."""
     entry = match(setting, canonical)
     if not entry:
         return characters
+    e = _era(entry, era)
+    protagonists = e["protagonists"] if e and e.get("protagonists") else entry["protagonists"]
     have = {_norm(c["name"]) for c in characters}
-    missing = [{"name": p, "note": ""} for p in entry["protagonists"] if _norm(p) not in have]
+    missing = [{"name": p, "note": ""} for p in protagonists if _norm(p) not in have]
     return missing + characters

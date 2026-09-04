@@ -17,7 +17,7 @@ import hashlib
 import json
 import uuid
 
-from . import arcs, config, db, llm, research, sessionzero, worldkit
+from . import arcs, canon_seed, config, db, llm, research, sessionzero, worldkit
 from . import worlds as world_registry
 
 # Settings that read as an existing IP get the personal-only treatment. This is
@@ -726,6 +726,25 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # told "Nothing found for that name" about a wholly canon request.
     found = (_empty_dossier(setting) if mode == "original"
              else research.premise_dossier(setting))
+
+    # F1 - era selection. Chosen in Session Zero (after this dossier already
+    # exists), so it has to override the cast/places HERE rather than at
+    # lookup time. Asked for "the Sengoku era" of Demon Slayer, a build got
+    # Zenitsu and Inosuke - who would not be born for centuries - because
+    # nothing in the pipeline knew an era had even been asked for. Only
+    # fires when canon_seed actually has that era on record; an unmatched
+    # setting or era falls through to whatever research already found,
+    # exactly as before.
+    era = (answers or {}).get("era") or ""
+    if era:
+        canonical = found.get("canonical_name", "")
+        era_cast = canon_seed.fallback_cast(setting, canonical, era=era)
+        era_places = canon_seed.fallback_places(setting, canonical, era=era)
+        if era_cast:
+            found = {**found, "characters": era_cast}
+        if era_places:
+            found = {**found, "places": era_places}
+
     grounding = research.grounding_brief(found)
     premise = research.premise_brief(found)
     parsed = found.get("premise") or {}
