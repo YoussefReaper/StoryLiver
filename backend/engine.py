@@ -498,7 +498,16 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                     "state": snapshot(pt_id, player)}
 
         # 2. Commit ---------------------------------------------------------
-        mana.commit(user_id, pt, use_premium, payer_ids)
+        # P1: billed on what this turn actually SPENDS, not a flat per-turn
+        # price - a turn that fires World Master's downstream effects plus an
+        # NPC's own turn plus the Director costs more than a turn with one
+        # quiet Narrator call, which a flat price could never represent. The
+        # real amount is only known once every call below has actually run,
+        # so this only marks where counting starts; commit_measured() at the
+        # bottom of the turn does the real charge.
+        usage_before = db.row(
+            "SELECT COALESCE(MAX(id),0) m FROM usage_log WHERE playthrough_id=?",
+            (pt_id,))["m"]
         turn = pt["current_turn"] + 1
         new_loc = verdict.get("new_location") or pt["current_location"]
         moved_to = None
@@ -641,6 +650,18 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         if mode == mana.FULL and state["present"] and budget.affordable("npc"):
             who = state["present"][turn % len(state["present"])]
             npc_sim.reflect(_pt(pt_id), world, who, user_id=user_id, player=player)
+
+        # P1: the real charge, now that every call this turn could make has
+        # made it. Ember stays free and unlimited regardless of what it
+        # actually cost - that promise does not become conditional just
+        # because billing got more precise. `usage_before` excludes World
+        # Master's own validation call, matching the existing rule that a
+        # refusal (and the check that produces one) costs the player nothing.
+        if mode == mana.FULL:
+            spent = db.row(
+                "SELECT COALESCE(SUM(usd),0) s FROM usage_log"
+                " WHERE playthrough_id=? AND id>?", (pt_id, usage_before))["s"]
+            mana.commit_measured(user_id, pt, spent, payer_ids)
 
     streaks.touch(user_id)
 

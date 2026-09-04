@@ -15,6 +15,7 @@ resolve or a plot twist is not.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 
 # The only roles permitted to reach a model. Anything else raises.
@@ -63,6 +64,43 @@ FREE_ACTIONS = (
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+class RateLimited(RuntimeError):
+    """P2: cost abuse is spamming actions or WM queries to burn tokens - NOT
+    anything the player does inside the fiction, which stays completely
+    free. "GO AWAY YOU SHIT" is a normal action, billed like any other; a
+    script firing forty actions a second is not playing, it is a token
+    farm. This is that wall, and only that wall."""
+
+
+# Sliding window, in-process. A second web worker keeps its own window rather
+# than sharing one - acceptable here because the wall this exists to stop is
+# a script hammering ONE process's socket, and Mana's own per-turn cost (P1)
+# is what actually bounds spend across a whole fleet regardless of how many
+# workers are running. A shared window would need a store every deployment
+# of this project carries, which none of them do today.
+_ACTION_WINDOW: dict[str, list[float]] = {}
+_WINDOW_LOCK = threading.Lock()
+MAX_ACTIONS_PER_MINUTE = 20
+
+
+def rate_limit(user_id: str, *, max_per_minute: int = MAX_ACTIONS_PER_MINUTE) -> None:
+    """Raises RateLimited if this id has sent too many actions too fast.
+    Call BEFORE any model is asked anything - this is a wall in front of the
+    turn, not inside it."""
+    if not user_id:
+        return
+    now = time.monotonic()
+    with _WINDOW_LOCK:
+        window = [t for t in _ACTION_WINDOW.get(user_id, []) if now - t < 60.0]
+        if len(window) >= max_per_minute:
+            _ACTION_WINDOW[user_id] = window
+            raise RateLimited(
+                f"{len(window)} actions in the last minute - the world does not "
+                "keep up. Wait a few seconds.")
+        window.append(now)
+        _ACTION_WINDOW[user_id] = window
 
 
 class _Ledger(threading.local):

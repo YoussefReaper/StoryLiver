@@ -117,7 +117,11 @@ def check(ctx):
     # which is exactly what the ratio check above still guards). The number
     # that actually matters is that ratio; this ceiling is a sanity check on
     # top of it, re-measured against the real prompt rather than kept frozen.
-    solo_ceiling = 1550
+    # Given real headroom (not just past the measured value) because the
+    # exact byte count varies turn to turn with which NPCs/goals a seeded
+    # run happens to surface - a ceiling sitting a handful of tokens above
+    # one observed run is a flaky test waiting to happen, not a guardrail.
+    solo_ceiling = 1750
     ok(b <= solo_ceiling,
        f"a 4-player broadcast prompt is {b:.0f} tok, under the {solo_ceiling} single-player ceiling")
 

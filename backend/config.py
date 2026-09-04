@@ -199,3 +199,25 @@ MANA_PACKS = [
 # asserted; usage_summary() flags a story as over budget if it blows past
 # this.
 TARGET_BLENDED_COST_USD = 0.0040
+
+# P1: Mana meters TOKENS, not turns - a turn firing World Master + Director +
+# NPC + a premium Narrator spends several times what a single quiet Narrator
+# call does, and a flat per-turn price hides that difference from both the
+# player and the margin. Not a new number: TARGET_BLENDED_COST_USD above is
+# already the real, measured, 1.5x-buffered cost of an AVERAGE standard
+# action, and MANA_COST["standard"] already prices that average action at
+# exactly 1 Mana - so a turn costing the target spends 1 Mana, a light turn
+# (single cheap call) spends less, rounded up to a whole Mana as a floor, and
+# a heavy turn (multiple calls, or premium) spends proportionally more,
+# automatically, with no separate premium multiplier required. The pack
+# margin this was already measured against (60-72% gross, worst case) is
+# unchanged by this - it depends on $/Mana sold vs $/Mana of compute
+# delivered, and both stay exactly what they were.
+USD_PER_MANA = TARGET_BLENDED_COST_USD
+
+# P1: the guest ceiling. Full-pool Mana (STARTING_MANA) requires an account -
+# sign-in is the gate, with no anonymous upgrade path. A guest is a teaser,
+# not a free ride on the API: 10 Mana is enough to see the product work
+# (roughly ten ordinary turns at the target blended cost) without being a
+# throwaway-world token farm.
+GUEST_STARTING_MANA = int(os.getenv("STORYLIVER_GUEST_MANA", "10"))

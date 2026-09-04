@@ -402,6 +402,15 @@ def delete_playthrough(pt_id: str, user_id: str = Query(min_length=4)):
 @app.post("/api/playthroughs/{pt_id}/action")
 def act(pt_id: str, body: Action, user_id: str = Query(default=""),
         player: str = Query(default=memory.SOLO)):
+    # P2: cost abuse is spamming actions to burn tokens, not anything the
+    # player does IN the story - crude, blunt, hostile input still costs
+    # Mana and still plays exactly as typed. This is a wall in front of the
+    # turn, checked before the World Master or the narrator are asked
+    # anything, so a burst cannot even reach the first billable call.
+    try:
+        budget.rate_limit(user_id)
+    except budget.RateLimited as e:
+        raise HTTPException(429, str(e))
     _own(pt_id, user_id)
     try:
         result = engine.take_turn(pt_id, body.action, premium=body.premium, player=player)
@@ -1264,6 +1273,15 @@ async def ws_session(ws: WebSocket, session_id: str, player: str = Query(default
             if kind == "action":
                 if me["role"] == "spectator":
                     await ws.send_json({"type": "error", "error": "spectators watch; they do not act"})
+                    continue
+                # P2: the same wall the HTTP action route has. The turn lock
+                # below serialises WHO goes next in this room; it does not
+                # stop one connection sending forty actions a second - that
+                # is what this checks, before the turn lock is even asked for.
+                try:
+                    await asyncio.to_thread(budget.rate_limit, user_id)
+                except budget.RateLimited as e:
+                    await ws.send_json({"type": "error", "error": str(e)})
                     continue
                 # Actions in one room serialise: the turn lock is the queue.
                 got = await asyncio.to_thread(rt.acquire_turn, session_id, player)
