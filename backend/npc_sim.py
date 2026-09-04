@@ -218,7 +218,13 @@ def maybe_act(pt, world, npc_id, *, user_id, player=memory.SOLO, actor_name="the
     if not st or not st["alive"]:
         return None
     ps = memory.npc_player_state(pt["id"], npc_id, player)
-    if turn - ps["last_act_turn"] < 3:
+    shock = _freshly_shocked(pt["id"], npc_id, player, turn)
+    # D15: the ordinary 3-turn cooldown is what keeps small talk from firing
+    # every turn - it is not what should stand between the player and an NPC
+    # reacting to something severe that just happened in front of them.
+    # pick_actor() only selects a shocked NPC past its own shorter floor;
+    # this mirrors that floor rather than re-imposing the longer one.
+    if turn - ps["last_act_turn"] < (1 if shock else 3):
         return None
     npc = world.by_id[npc_id]
     rel = memory.rel_to(pt["id"], npc_id, player)
@@ -230,6 +236,18 @@ def maybe_act(pt, world, npc_id, *, user_id, player=memory.SOLO, actor_name="the
     goals = [g for g in npc["anchors"]["goals"] if g not in dropped] or npc["anchors"]["goals"]
     mems = memory.npc_recall(pt["id"], npc_id, turn,
                              f"{actor_name} " + " ".join(goals), k=5, player=player)
+    # D15: a goal-scoped query is exactly what buried the trauma in the first
+    # place - "find out where Coal came from" shares no words with "watched
+    # the player beat a child". A recent high-severity memory is folded in
+    # REGARDLESS of whether it matched the query, so it reaches the prompt
+    # whenever it is the actual reason this NPC was picked to act at all.
+    if shock:
+        recent_shock = memory.npc_recall(pt["id"], npc_id, turn, "", k=3, player=player)
+        seen_ids = {m["id"] for m in mems}
+        for m in recent_shock:
+            if m.get("importance", 0) >= 4 and m["id"] not in seen_ids:
+                mems = [m] + mems
+                seen_ids.add(m["id"])
     plan = [p for p in db.jload(ps["plan"], [])
            if not any(g.lower() in p.lower() for g in dropped)]
 
@@ -321,10 +339,43 @@ def whisper(pt, world, npc_id, text, *, user_id, player=memory.SOLO, speaker="so
     return {"reply": reply, "delta": delta}
 
 
+def _freshly_shocked(pt_id, npc_id, player, turn):
+    """A high-severity thing this NPC just watched happen, this turn or last.
+
+    D15, reproduced: after the player beat Ilo bloody in front of Dr. Marrow,
+    her next line was about charcoal. The relationship-scalar score below
+    could not represent "I just watched this happen" for someone who has
+    barely met the player - a stranger's affinity/trust/obligation are all
+    near zero, so `intensity` stays near zero even though something severe
+    just happened directly in front of them. observe_turn() already records
+    what every present NPC saw, at the SAME importance the event itself
+    carried - this only has to go and look."""
+    return db.row(
+        "SELECT id FROM npc_memories WHERE playthrough_id=? AND npc_id=?"
+        " AND player_id IN (?,?) AND turn>=? AND importance>=4"
+        " ORDER BY id DESC LIMIT 1",
+        (pt_id, npc_id, player, memory.SHARED, turn - 1))
+
+
 def pick_actor(pt, state, player=memory.SOLO):
     """Who is most likely to make a move on this player? Strongest feeling in
-    the room wins, with a cooldown so one NPC cannot monopolise the story."""
+    the room wins, with a cooldown so one NPC cannot monopolise the story -
+    UNLESS someone just watched something severe happen, which overrides
+    both the cooldown and the intensity bar. A room that stays quiet after
+    watching harm is the room not being there at all."""
     turn = state["turn"]
+    for npc_id in state["present"]:
+        st = memory.npc_state(pt["id"], npc_id)
+        if not st or not st["alive"]:
+            continue
+        ps = memory.npc_player_state(pt["id"], npc_id, player)
+        # A shorter floor than the ordinary cooldown - shock can interrupt the
+        # story sooner than an ordinary aside would, but the SAME shock still
+        # cannot fire this NPC's reaction turn after turn once they have.
+        if turn - ps["last_act_turn"] < 1:
+            continue
+        if _freshly_shocked(pt["id"], npc_id, player, turn):
+            return npc_id
     best, best_score = None, 0.0
     for npc_id in state["present"]:
         st = memory.npc_state(pt["id"], npc_id)

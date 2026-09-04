@@ -196,6 +196,58 @@ def test_npc_stops_reasking_answered_questions():
        "an NPC the player never spoke to has nothing marked answered")
 
 
+def test_witnessed_trauma_can_trigger_an_out_of_turn_reaction():
+    section("D15 — a fresh, severe memory overrides both the cooldown and the intensity bar")
+    # Reproduced: after the player beat Ilo bloody in front of Dr. Marrow,
+    # her next line was about charcoal. pick_actor() scored purely off
+    # relationship scalars (affinity/trust/fear/obligation) - a near-stranger
+    # has all of those near zero, so watching something severe happen moved
+    # the score barely at all, and the ordinary 3-turn cooldown kept her
+    # quiet regardless. observe_turn() already recorded what she saw, at the
+    # SAME importance the event carried - pick_actor() just never looked.
+    db.init()
+    pt_id = engine.create_playthrough("d15user")
+    pt = engine._pt(pt_id)
+    world = engine.world_for(pt)
+    witness = world.npcs[1]["id"]
+
+    # Recently acted (so the ordinary cooldown would still be closed) and no
+    # relationship built (so intensity-based scoring alone stays near zero).
+    memory.set_npc_player_state(pt_id, witness, "user", last_act_turn=18)
+    state = {"turn": 20, "present": [witness]}
+    ok(npc_sim.pick_actor(pt, state, player="user") is None,
+       "with nothing severe to react to, the room correctly stays quiet")
+
+    memory.npc_observe(pt_id, witness, 20,
+                       "I saw the player beat a child bloody in the square.",
+                       importance=5, player="user")
+    picked = npc_sim.pick_actor(pt, state, player="user")
+    ok(picked == witness,
+       "a fresh, severe memory overrides the cooldown and the near-zero "
+       "relationship score — the room does not stay quiet after watching harm")
+
+    # Called exactly the way engine.py calls it after pick_actor selects her.
+    pt2 = dict(pt); pt2["current_turn"] = 20
+    captured = {}
+    from backend import llm as _llm
+    orig = _llm.complete
+
+    def spy(role, system, user, **kw):
+        captured["user"] = user
+        return kw["stub"]()
+    _llm.complete = spy
+    try:
+        out = npc_sim.maybe_act(pt2, world, witness, user_id="dummy", player="user",
+                                actor_name="the traveller")
+    finally:
+        _llm.complete = orig
+    ok(out is not None, "the shocked NPC's own act-or-not call actually runs")
+    ok("beat a child bloody" in captured["user"],
+       "and the traumatic memory reaches the ACT prompt even though it shares "
+       "no words with any of her ordinary goals — a goal-scoped recall query "
+       "is exactly what buried it before")
+
+
 # --------------------------------------------------------------- session zero
 def test_session_zero():
     section("Session Zero — the player has a defined place before play")
@@ -268,6 +320,7 @@ def test_world_scale():
 def _all():
     return (test_callbacks, test_banter, test_npc_initiative,
             test_npc_stops_reasking_answered_questions,
+            test_witnessed_trauma_can_trigger_an_out_of_turn_reaction,
             test_session_zero, test_world_scale, test_ooc_channel,
             test_canon_spectrum, test_severity_bites, test_default_lines)
 
