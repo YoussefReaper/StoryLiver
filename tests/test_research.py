@@ -31,7 +31,7 @@ os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-research-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import db, research, worldforge  # noqa: E402
+from backend import canon_seed, db, research, worldforge  # noqa: E402
 from backend.research import (BlockedHost, ResearchError, _Budget,  # noqa: E402
                               _get_json, _host_allowed, _public_ips,
                               _rank, _slug_candidates, _wiki_is_about)
@@ -239,6 +239,73 @@ def test_offline_is_hermetic():
     ok(not touched, f"zero DNS lookups attempted ({len(touched)})")
 
 
+def test_canon_seed_fallback():
+    section("canon fidelity — a broken network must not mean invented names")
+    # D2, reproduced: "Swordsmith Village" (Demon Slayer) built made-up NPCs
+    # (Kaname, Aiko) because a category fetch timed out and dossier() returned
+    # an empty cast, which the model then filled from its own imagination. A
+    # small curated table for the handful of franchises this happens to
+    # constantly beats an empty cast in every failure mode.
+    db.init()
+    import backend.research as R
+    real_enabled, real_identify, real_summarise = R.enabled, R.identify, R.summarise
+    real_curated, real_find_wiki = R.characters_from_wikipedia, R.find_wiki
+    try:
+        R.enabled = lambda: True
+
+        # (a) the very first lookup fails outright.
+        def boom(*a, **k):
+            raise R.ResearchError("egress timeout")
+        R.identify = boom
+        d = research.dossier("Demon Slayer", refresh=True)
+        ok(d["found"] and len(d["characters"]) >= 4,
+           f"identify() raising still yields a real cast ({len(d['characters'])} characters)")
+        ok(any("Tanjiro" in c["name"] for c in d["characters"]),
+           "and the protagonist is in it")
+        ok(len(d["places"]) >= 2,
+           f"and real places, not an empty REAL PLACES section ({len(d['places'])})")
+        ok(any("Butterfly" in p["name"] for p in d["places"]),
+           "grounded in an actual canon location")
+
+        # (b) identify() succeeds, everything downstream comes back empty —
+        # the exact Swordsmith Village failure mode (a timed-out category fetch).
+        R.identify = lambda setting, budget: {"title": "Demon Slayer: Kimetsu no Yaiba"}
+        R.summarise = lambda title, budget: {"title": title, "summary": "A manga series.",
+                                             "url": "", "license": ""}
+        R.characters_from_wikipedia = lambda *a, **k: []
+        R.find_wiki = lambda *a, **k: None
+        d2 = research.dossier("demon slayer", refresh=True)
+        ok(d2["found"] and len(d2["characters"]) >= 4,
+           f"an empty live cast falls back to the seed roster ({len(d2['characters'])} characters)")
+
+        # (c) live research succeeds but ranks the protagonist out of the cast —
+        # a real, reproducible failure: article-length ranking can put a short
+        # protagonist page below a longer side-character one.
+        R.characters_from_wikipedia = lambda *a, **k: [
+            {"name": "Zenitsu Agatsuma", "note": ""}, {"name": "Inosuke Hashibira", "note": ""},
+            {"name": "Shinobu Kocho", "note": ""}, {"name": "Giyu Tomioka", "note": ""}]
+        d3 = research.dossier("demon slayer", refresh=True)
+        ok(any("Tanjiro" in c["name"] for c in d3["characters"]),
+           "a real cast missing the protagonist gets them PINNED in, not just left out")
+        ok(d3["characters"][0]["name"].startswith("Tanjiro"),
+           "and pinned first — the lead is not buried after four side characters")
+
+        # (d) a setting with no seed entry gets no fabricated help — this must
+        # not become a crutch for every possible setting, only the handful
+        # that keep reproducing the failure.
+        R.identify = boom
+        d4 = research.dossier("a wholly original setting nobody wrote", refresh=True)
+        ok(not d4["found"] and not d4["characters"],
+           "an unmatched original setting fails honestly rather than inventing a cast")
+    finally:
+        R.enabled, R.identify, R.summarise = real_enabled, real_identify, real_summarise
+        R.characters_from_wikipedia, R.find_wiki = real_curated, real_find_wiki
+
+    ok(canon_seed.match("HAZBIN HOTEL", "") is not None,
+       "matching is case/spacing-insensitive")
+    ok(canon_seed.match("", "") is None, "an empty setting matches nothing")
+
+
 def test_cache_shape():
     section("cache — a setting is researched once")
     db.init()
@@ -315,7 +382,7 @@ def _all():
             test_article_ranking, test_wiki_identity, test_slug_generation,
             test_grounding_brief, test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
-            test_cache_shape)
+            test_canon_seed_fallback, test_cache_shape)
 
 
 def main():

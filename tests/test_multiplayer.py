@@ -111,7 +111,13 @@ def check(ctx):
     a, b = sum(early) / len(early), sum(late) / len(late)
     ok(b / a <= 1.5,
        f"context flat with 4 concurrent players: {a:.0f} -> {b:.0f} tok ({b/a:.2f}x, ceiling 1.50x)")
-    solo_ceiling = 1400
+    # Raised once, deliberately: narrator.SYSTEM grew ~600 chars to carry the
+    # BECOME/continuity/reaction/sensory instructions the Gemini-tier prose
+    # pass needed (a fixed, per-call cost - NOT proportional to player count,
+    # which is exactly what the ratio check above still guards). The number
+    # that actually matters is that ratio; this ceiling is a sanity check on
+    # top of it, re-measured against the real prompt rather than kept frozen.
+    solo_ceiling = 1550
     ok(b <= solo_ceiling,
        f"a 4-player broadcast prompt is {b:.0f} tok, under the {solo_ceiling} single-player ceiling")
 

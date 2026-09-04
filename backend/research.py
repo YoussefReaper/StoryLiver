@@ -58,7 +58,7 @@ import socket
 import time
 from urllib.parse import quote, urlparse
 
-from . import config, db
+from . import canon_seed, config, db
 
 # ---------------------------------------------------------------------------
 # Policy
@@ -880,7 +880,12 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
     try:
         found = identify(setting, budget)
         if not found:
+            # identify() itself can fail before any cast-building code runs -
+            # a DNS/egress problem on the very first lookup. The seed table
+            # is checked here too, so a network outage doesn't have to mean
+            # an empty cast for a franchise this file already knows.
             out["note"] = "nothing found under that name"
+            out = _seed_fallback(out, setting)
             _cache_put(key, out)
             return out
 
@@ -926,17 +931,69 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
             out["characters"] = curated + [c for c in out["characters"]
                                            if _norm(c["name"]) not in seen]
 
+        # FALLBACK: live research found the setting but came back with too
+        # thin a cast/place list to build from (a wiki timeout, a blocked
+        # host, an obscure subdomain) - this is what used to fall through to
+        # the model inventing names (Kaname, Aiko - never in Demon Slayer) and
+        # locations. A curated local roster for the handful of franchises
+        # this happens to constantly beats an empty bucket every time.
+        if len(out["characters"]) < 4:
+            seeded = canon_seed.fallback_cast(setting, out["canonical_name"])
+            if seeded:
+                have = {_norm(c["name"]) for c in out["characters"]}
+                out["characters"] = out["characters"] + [
+                    c for c in seeded if _norm(c["name"]) not in have]
+        if len(out["places"]) < 2:
+            seeded_places = canon_seed.fallback_places(setting, out["canonical_name"])
+            if seeded_places:
+                have = {_norm(p["name"]) for p in out["places"]}
+                out["places"] = out["places"] + [
+                    p for p in seeded_places if _norm(p["name"]) not in have]
+
+        # PIN: even a healthy cast can rank the real protagonist below a
+        # shorter-article side character - a Tanjiro-less Demon Slayer build
+        # is not Demon Slayer regardless of how the wiki ranked it.
+        out["characters"] = canon_seed.pin_protagonists(
+            setting, out["canonical_name"], out["characters"])
+
         out["found"] = bool(out["summary"] or out["characters"])
         out["fetched_at"] = db.now()
     except ResearchError as e:
         out["note"] = str(e)
+        # A raised failure can land here from ANYWHERE in the try block above
+        # - including identify() itself, before the fallback logic that runs
+        # on a clean `None` return never got a chance to fire.
+        out = _seed_fallback(out, setting)
     except Exception as e:                     # never break a world build
         out["note"] = f"research failed: {type(e).__name__}"
+        out = _seed_fallback(out, setting)
 
     finally:
         budget.close()
 
     _cache_put(key, out)
+    return out
+
+
+def _seed_fallback(out, setting):
+    """Applied wherever live research produced too little to build from -
+    identify() returning nothing, identify() raising, or any later step in
+    the dossier raising before the cast was assembled. Mutates and returns
+    `out` so every call site can just `out = _seed_fallback(out, setting)`.
+
+    Covers characters AND places: the same failure (a category-fetch timeout)
+    empties both buckets, and grounding_brief() has a REAL PLACES section that
+    goes just as silent as REAL CHARACTERS when this isn't filled."""
+    canonical = out.get("canonical_name", "")
+    seeded_cast = canon_seed.fallback_cast(setting, canonical)
+    seeded_places = canon_seed.fallback_places(setting, canonical)
+    if seeded_cast:
+        out["characters"] = canon_seed.pin_protagonists(setting, canonical, seeded_cast)
+        out["found"] = True
+        if not out.get("note"):
+            out["note"] = "identified locally; live lookup found nothing"
+    if seeded_places and not out.get("places"):
+        out["places"] = seeded_places
     return out
 
 
