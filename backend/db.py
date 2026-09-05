@@ -933,6 +933,12 @@ MIGRATIONS = [
     ("orgs", "doctrine", "TEXT NOT NULL DEFAULT ''"),
     # Somebody of yours placed inside somebody else's house.
     ("org_members", "planted_by", "TEXT NOT NULL DEFAULT ''"),
+    # D10: an NPC's information-seeking goal ("find out where Coal came
+    # from") was a CONSTANT anchor, re-injected every turn with no memory of
+    # ever having asked - so the same NPC asked the same question verbatim,
+    # turn after turn, with no record the player had already answered.
+    # JSON: {goal_text: {"state": "pending"|"answered", "turn": N}}.
+    ("npc_player", "question_state", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

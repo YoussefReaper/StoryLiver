@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 
-from . import arcs, db, llm, research, sessionzero, worldkit
+from . import arcs, canon_seed, config, db, llm, research, sessionzero, worldkit
 from . import worlds as world_registry
 
 # Settings that read as an existing IP get the personal-only treatment. This is
@@ -121,9 +122,11 @@ FACTIONS are the institutions with a grip on this place. `law` is 0 for a social
 
 NPC_EDGES are how the characters feel about EACH OTHER, not about the player. Give at least six. Values are -100..100 for affinity and trust, 0..100 for fear and obligation. Two people who cannot stand each other, in the same room, is where a scene comes from. At least one pair here must want incompatible things.
 
+LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone). A district this size is 6-8 real places, not a dozen rooms of the same building.
+
 Return ONLY JSON:
 {
-  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory","connects":["other_id"]}],
+  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory, naming what a passerby would only notice by stepping further in - the closest thing this place has to a sub-room, folded in as texture rather than spun into its own id","connects":["other_id"]}],
   "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"place_id",
             "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
                        "constraints":["hard limit","hard limit"],
@@ -158,6 +161,8 @@ You are given a setting. Produce the PLACES and the CHARACTERS of a small, dense
 
 Characters must be people, not archetypes. Each one needs a VOICE another writer could imitate, hard CONSTRAINTS that limit what they can do, WANTS that conflict with someone else's, and TABOOS they will not cross. At least two pairs of characters must want incompatible things.
 
+LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone).
+
 Return ONLY JSON:
 {
   "name": "the place, not the franchise",
@@ -165,7 +170,7 @@ Return ONLY JSON:
   "premise": "120-180 words, second person, addressed to the player arriving",
   "arrival": "one sentence: how the player got here",
   "default_protagonist": "who the player is by default",
-  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory","connects":["other_id"]}],
+  "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory, naming what a passerby would only notice by stepping further in - the closest thing this place has to a sub-room, folded in as texture rather than spun into its own id","connects":["other_id"]}],
   "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"place_id",
             "anchors":{"voice":"how they speak, 15-30 words, specific and imitable",
                        "constraints":["hard limit","hard limit"],
@@ -246,6 +251,15 @@ def neutral_name(seed: str) -> str:
     ends up on the artefact. Stable across processes, unlike hash()."""
     digest = hashlib.sha1(seed.lower().encode("utf-8")).digest()
     return NEUTRAL_NAMES[digest[0] % len(NEUTRAL_NAMES)]
+
+
+def _fold(name: str) -> str:
+    """Case/whitespace-normalised match for F3's canon/original tagging.
+    grounding_brief() already instructs the model to "spell them exactly as
+    written above" - an exact match after folding case is the comparison
+    that instruction is actually asking to be checked against, not a fuzzy
+    one that would risk crediting an unrelated invented name as canon."""
+    return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
 
 
 def _strip_ip_name(name: str, setting: str) -> str:
@@ -518,12 +532,38 @@ def _empty_dossier(setting):
             "cached": False, "depth": "none", "fetched_at": ""}
 
 
+def _resilient(role, system, user, *, user_id, max_tokens, temperature, stub,
+               json_mode=True):
+    """D3: a region/world build is 6-9 separate model calls, and ONE truncated
+    response used to fail the WHOLE build with a 502 - wasting every other
+    call that had already succeeded, at real cost, with nothing to show for
+    it. A truncated or malformed JSON response raises llm.LLMError the same
+    way a missing API key does, so the two have to be told apart: a missing
+    key is a config problem the retry cannot fix and must still surface
+    honestly; a truncation is a size problem worth ONE retry at 50% more
+    budget before falling back to the same procedural stub offline mode
+    already uses, so the build completes instead of dying on the last
+    district out of eight."""
+    try:
+        return llm.complete(role, system, user, user_id=user_id, json_mode=json_mode,
+                            max_tokens=max_tokens, temperature=temperature, stub=stub)
+    except llm.LLMError as e:
+        if not config.key_for(config.MODELS.get(role, config.MODELS["narrator"])):
+            raise  # a config problem - no retry can fix a missing key
+        try:
+            return llm.complete(role, system, user, user_id=user_id, json_mode=json_mode,
+                                max_tokens=int(max_tokens * 1.5), temperature=temperature,
+                                stub=stub)
+        except llm.LLMError:
+            return stub()
+
+
 def _build_districts(brief, *, user_id, spec, setting, personal):
     """Pass 1: lay out the districts. Only runs for multi-district scales."""
-    plan = llm.complete(
+    plan = _resilient(
         "narrator", DISTRICT_SYSTEM,
         brief + f"\n\nLay out EXACTLY {spec['districts']} districts. JSON only.",
-        user_id=user_id, json_mode=True, max_tokens=6000, temperature=1.0,
+        user_id=user_id, max_tokens=6000, temperature=1.0,
         stub=lambda: _stub_districts(setting, spec["districts"]))
     districts = [d for d in (plan.get("districts") or []) if d.get("id")]
     return plan, districts[:spec["districts"]]
@@ -541,8 +581,8 @@ def _fill_district(district, others, brief, *, user_id, spec, setting):
         f"Give it {lo}-{hi} locations and {nlo}-{nhi} characters. "
         f"Prefix every id with '{district['id']}_'. JSON only."
     )
-    out = llm.complete(
-        "narrator", DISTRICT_FILL_SYSTEM, ask, user_id=user_id, json_mode=True,
+    out = _resilient(
+        "narrator", DISTRICT_FILL_SYSTEM, ask, user_id=user_id,
         max_tokens=7000, temperature=1.0,
         stub=lambda: _stub_fill(district, spec))
     return out.get("locations") or [], out.get("npcs") or []
@@ -696,6 +736,25 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # told "Nothing found for that name" about a wholly canon request.
     found = (_empty_dossier(setting) if mode == "original"
              else research.premise_dossier(setting))
+
+    # F1 - era selection. Chosen in Session Zero (after this dossier already
+    # exists), so it has to override the cast/places HERE rather than at
+    # lookup time. Asked for "the Sengoku era" of Demon Slayer, a build got
+    # Zenitsu and Inosuke - who would not be born for centuries - because
+    # nothing in the pipeline knew an era had even been asked for. Only
+    # fires when canon_seed actually has that era on record; an unmatched
+    # setting or era falls through to whatever research already found,
+    # exactly as before.
+    era = (answers or {}).get("era") or ""
+    if era:
+        canonical = found.get("canonical_name", "")
+        era_cast = canon_seed.fallback_cast(setting, canonical, era=era)
+        era_places = canon_seed.fallback_places(setting, canonical, era=era)
+        if era_cast:
+            found = {**found, "characters": era_cast}
+        if era_places:
+            found = {**found, "places": era_places}
+
     grounding = research.grounding_brief(found)
     premise = research.premise_brief(found)
     parsed = found.get("premise") or {}
@@ -772,14 +831,20 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # being silently capped at whatever fits in a single response.
     spec = SCALES.get(scale) or SCALES["town"]
     if spec["districts"] <= 1:
-        structure = llm.complete(
+        structure = _resilient(
             "narrator", STRUCTURE_SYSTEM,
             brief + "\n\nBuild the places and the people. JSON only.",
-            user_id=user_id, json_mode=True, max_tokens=8000, temperature=1.0,
+            user_id=user_id, max_tokens=8000, temperature=1.0,
             stub=lambda: _stub_structure(setting, personal, seed=seed))
     else:
         plan, districts = _build_districts(brief, user_id=user_id, spec=spec,
                                            setting=setting, personal=personal)
+        # D3: each district is now its OWN failure domain - a truncation on
+        # district 6 of 8 no longer discards the 5 that already succeeded
+        # (and were already paid for). _resilient retries once, then falls
+        # back to the same procedural stub offline mode uses for just that
+        # one district, so a region/world build completes even when a single
+        # pass comes back oversized.
         filled = [
             _fill_district(d, [o for o in districts if o["id"] != d["id"]],
                            brief, user_id=user_id, spec=spec, setting=setting)
@@ -793,8 +858,8 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         f"PEOPLE: {', '.join(n.get('id', '') for n in structure.get('npcs', []))}\n\n"
         "Write the laws and the fate. JSON only."
     )
-    laws = llm.complete(
-        "narrator", LAW_SYSTEM, laws_brief, user_id=user_id, json_mode=True,
+    laws = _resilient(
+        "narrator", LAW_SYSTEM, laws_brief, user_id=user_id,
         max_tokens=3200, temperature=0.7, stub=lambda: _stub_laws(structure))
 
     raw = {**structure, **{k: v for k, v in laws.items() if v}}
@@ -815,6 +880,23 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if personal:
         raw["name"] = _strip_ip_name(str(raw.get("name") or ""), setting)
     raw.setdefault("opening", raw.get("premise", ""))
+
+    # F3: when a chosen scale needs more people/places than the source
+    # actually has, the builder fills the gap by invention - which was
+    # always fine, but the result was indistinguishable from the real
+    # thing. Anyone matching a name research (or an era override) actually
+    # grounded the build in is marked "canon"; anyone the model had to
+    # invent to fill the rest is marked "original" - the data a fill-budget
+    # UI needs to ever exist, tagging what it is rather than passing
+    # invented content off as canon.
+    grounded = {_fold(c.get("name", "")) for c in (found.get("characters") or [])}
+    grounded |= {_fold(p.get("name", "")) for p in (found.get("places") or [])}
+    if grounded:
+        for npc in raw.get("npcs") or []:
+            npc["origin"] = "canon" if _fold(npc.get("name", "")) in grounded else "original"
+        for loc in raw.get("locations") or []:
+            loc["origin"] = "canon" if _fold(loc.get("name", "")) in grounded else "original"
+
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)
 

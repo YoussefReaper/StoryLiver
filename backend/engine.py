@@ -152,7 +152,7 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
 
 # --------------------------------------------------------------------------
 
-def _apply_fate(pt, world, turn, entries):
+def _apply_fate(pt, world, turn, entries, *, player=memory.SOLO, here=""):
     fired = []
     # A Sandbox promises no main quest. Firing the seven fated events on
     # schedule anyway makes it a Story with the label filed off.
@@ -184,8 +184,41 @@ def _apply_fate(pt, world, turn, entries):
         else:
             atlas.echo(pt["id"], turn, f["desc"], place_id=f.get("location", ""),
                        kind="fate", magnitude=5)
-        entries.append(_render(pt["id"], turn, "fate", f["desc"],
-                               meta={"fate_id": f["id"], "title": f["title"], "immutable": True}))
+
+        # Fate is FIXED - every state change above always happens, at its own
+        # location, whether or not the player is there to see it. Whether the
+        # player is TOLD about it right now used to be unconditional too: a
+        # fate scheduled at the chapel would land as a full-screen block while
+        # the player was eating dinner across the map - dragging them into a
+        # scene they were never in, mid-conversation, with no transition.
+        # Gated the same way an ordinary witnessed action is: present, it is
+        # the scene; elsewhere, it is news that has to travel to reach you.
+        fate_loc = f.get("location", "")
+        if not fate_loc or fate_loc == here:
+            entries.append(_render(pt["id"], turn, "fate", f["desc"],
+                                   meta={"fate_id": f["id"], "title": f["title"], "immutable": True}))
+        else:
+            witnesses = memory.npcs_at(pt["id"], world, fate_loc, turn)
+            fact = awareness.witness(
+                pt["id"], world, actor="fate", kind="fate", summary=f["title"],
+                detail=f["desc"], place_id=fate_loc, turn=turn, severity=5,
+                present=witnesses, subject="")
+            if fact["witnesses"]:
+                awareness.spread(pt["id"], world, fact, turn=turn,
+                                 witnesses=fact["witnesses"], severity=5)
+            # If the player is somewhere a rumour of this could already have
+            # reached this very turn (unlikely at distance 0, but a fate can
+            # fire in the player's own building's neighbouring room), let it
+            # surface immediately rather than making them wait a turn for
+            # word that already arrived.
+            for a in awareness.arrivals(pt["id"], world, turn):
+                if a["place"] == here and a["key"] == fact["key"]:
+                    entries.append(_render(
+                        pt["id"], turn, "fate",
+                        f"Word reaches you: {a['summary']}",
+                        meta={"fate_id": f["id"], "title": "", "immutable": True,
+                             "as_news": True}))
+                    break
         fired.append(f)
     return fired
 
@@ -289,6 +322,19 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
             place_id=pt["current_location"], turn=turn, severity=severity,
             present=state["present"], subject=player)
         out["witness"] = fact
+        # Being SEEN doing harm has to cost something to the people who saw
+        # it, not just to whoever it landed on - otherwise a witness's
+        # scalars (which will_snitch/betrayal_pressure read) never react to
+        # what they watched, and a room can watch a beating and feel nothing.
+        if fact["witnesses"] and relationships.is_harmful(event or ""):
+            for wit_id in fact["witnesses"]:
+                if wit_id in aimed_at:
+                    continue  # the target already got the real event, harsher
+                applied = relationships.apply_event(
+                    pt["id"], wit_id, player, "witnessed_violence",
+                    turn=turn, weight=harsh, note="witnessed it")
+                if applied:
+                    out["relationship"].append(applied)
         if fact["witnesses"]:
             out["rumours"] = awareness.spread(pt["id"], world, fact, turn=turn,
                                               witnesses=fact["witnesses"],
@@ -452,7 +498,16 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                     "state": snapshot(pt_id, player)}
 
         # 2. Commit ---------------------------------------------------------
-        mana.commit(user_id, pt, use_premium, payer_ids)
+        # P1: billed on what this turn actually SPENDS, not a flat per-turn
+        # price - a turn that fires World Master's downstream effects plus an
+        # NPC's own turn plus the Director costs more than a turn with one
+        # quiet Narrator call, which a flat price could never represent. The
+        # real amount is only known once every call below has actually run,
+        # so this only marks where counting starts; commit_measured() at the
+        # bottom of the turn does the real charge.
+        usage_before = db.row(
+            "SELECT COALESCE(MAX(id),0) m FROM usage_log WHERE playthrough_id=?",
+            (pt_id,))["m"]
         turn = pt["current_turn"] + 1
         new_loc = verdict.get("new_location") or pt["current_location"]
         moved_to = None
@@ -488,7 +543,15 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
                              verdict.get("importance", 3), player=player,
                              actor_name=actor_name or "the traveller")
-        fired_fate = _apply_fate(pt, world, turn, entries)
+        # D10: a present NPC's information-seeking goal is tracked here, once
+        # per turn - pending the first time it's on the table with them
+        # present, answered the NEXT turn they are still present with the
+        # player. This is what stops "find out where Coal came from" from
+        # being asked again after Coal already told them.
+        for npc_id in state["present"]:
+            npc_sim.track_questions(pt_id, npc_id, player,
+                                    world.by_id[npc_id]["anchors"]["goals"], turn)
+        fired_fate = _apply_fate(pt, world, turn, entries, player=player, here=new_loc)
         state = world_master.build_state(_pt(pt_id), world, player)
 
         # 3. Every deterministic layer, $0 -----------------------------------
@@ -587,6 +650,18 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         if mode == mana.FULL and state["present"] and budget.affordable("npc"):
             who = state["present"][turn % len(state["present"])]
             npc_sim.reflect(_pt(pt_id), world, who, user_id=user_id, player=player)
+
+        # P1: the real charge, now that every call this turn could make has
+        # made it. Ember stays free and unlimited regardless of what it
+        # actually cost - that promise does not become conditional just
+        # because billing got more precise. `usage_before` excludes World
+        # Master's own validation call, matching the existing rule that a
+        # refusal (and the check that produces one) costs the player nothing.
+        if mode == mana.FULL:
+            spent = db.row(
+                "SELECT COALESCE(SUM(usd),0) s FROM usage_log"
+                " WHERE playthrough_id=? AND id>?", (pt_id, usage_before))["s"]
+            mana.commit_measured(user_id, pt, spent, payer_ids)
 
     streaks.touch(user_id)
 

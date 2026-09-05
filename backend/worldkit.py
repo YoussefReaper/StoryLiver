@@ -242,6 +242,13 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "kind": str(loc.get("kind") or "place"),
             "desc": str(loc.get("desc") or ""),
             "connects": [slug(c) for c in _as_list(loc.get("connects"))],
+            # F3: "canon" (a real, researched/seeded name) or "original"
+            # (invented to fill a scale the source material didn't cover) -
+            # worldforge stamps this when it knows the difference; a
+            # hand-forged or imported world has no such distinction to make,
+            # so it defaults to "canon" rather than mislabelling authored
+            # content as filler.
+            "origin": str(loc.get("origin") or "canon"),
         })
     if len(locations) < 2:
         raise WorldError("world needs at least 2 locations")
@@ -285,6 +292,8 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "name": str(npc.get("name") or nid.replace("_", " ").title()),
             "role": str(npc.get("role") or anchors.get("role") or "villager"),
             "start_location": start,
+            # F3: see the matching note on locations above.
+            "origin": str(npc.get("origin") or "canon"),
             # The five original fields, plus the persona card when the world
             # carries one. memory.anchor_block switches to the full identity
             # block the moment any card field is present, so a world authored

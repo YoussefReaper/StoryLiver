@@ -227,6 +227,34 @@ def test_l5_awareness():
        "the same conditions always give the same answer")
 
 
+def test_witnessing_harm_moves_the_witness():
+    section("witnessed harm - being SEEN doing it costs the witness, not just the target")
+    # engine.py applied a harmful event's scalars only to `aimed_at` (the
+    # target). A witness got a memory entry from awareness.witness() and
+    # nothing else - trust/fear/respect never moved, so will_snitch and
+    # betrayal_pressure (which read those scalars) never reacted to what a
+    # bystander had just watched happen.
+    db.init()
+    pt = engine.create_playthrough("witness_user")
+    w = engine.world_for(engine._pt(pt))
+    memory.npcs_at  # (imported already by the module under test)
+    present = [n["id"] for n in w.npcs][:2]
+    target, bystander = present[0], present[1]
+    before = relationships.ensure(pt, bystander, "witness_user")
+    r = engine.take_turn(pt, f"I beat {w.npc_name(target)} bloody in front of everyone.",
+                         player="witness_user")
+    ok(not r.get("blocked"), "the action actually resolved")
+    after = relationships.ensure(pt, bystander, "witness_user")
+    moved = (round(after["trust"], 3) != round(before["trust"], 3)
+            or round(after["fear"], 3) != round(before["fear"], 3))
+    fact = r.get("witness") or {}
+    if bystander in (fact.get("witnesses") or []):
+        ok(moved, f"the bystander who witnessed it has moved scalars "
+                  f"(trust {before['trust']}->{after['trust']}, fear {before['fear']}->{after['fear']})")
+    else:
+        ok(True, "the witness roll missed this bystander this turn (seeded, can happen)")
+
+
 def test_l3_betrayal():
     section("L3 — betrayal and hidden information")
     db.init()
@@ -503,6 +531,7 @@ def main():
     print("StoryLiver — layers 2-7 verification gate")
     print("  offline stub, no API key, no spend\n")
     for fn in (test_l2_living_world, test_l4_relationships, test_l5_awareness,
+               test_witnessing_harm_moves_the_witness,
                test_l3_betrayal, test_l6_combat, test_l7_identity, test_cost_architecture):
         fn()
     passed = 0
@@ -520,6 +549,7 @@ def main():
 
 def test_all_layers():
     for fn in (test_l2_living_world, test_l4_relationships, test_l5_awareness,
+               test_witnessing_harm_moves_the_witness,
                test_l3_betrayal, test_l6_combat, test_l7_identity, test_cost_architecture):
         fn()
     assert not FAILS, "\n".join(FAILS)

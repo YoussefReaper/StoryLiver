@@ -6,7 +6,7 @@ Anti-repetition (Pain #4) is enforced two ways: a hard ban list of the
 therapy-speak and purple-prose tics players complain about, and a rolling list
 of the openings already used in this playthrough that must not recur.
 """
-from . import arcs, callbacks, db, llm, memory, modes
+from . import arcs, callbacks, db, llm, memory, modes, npc_sim
 
 BANNED = (
     "I understand your frustration; I hear you; a mix of X and Y; a testament to; "
@@ -18,15 +18,23 @@ BANNED = (
 
 SYSTEM = f"""You are the Narrator of a literary text RPG. Second person, present tense, addressed to "you".
 
+BECOME each character under CHARACTERS PRESENT rather than describing them;
+deliver an offered canon line verbatim if it fits this moment. Same room as
+last turn unless told otherwise - nobody teleports between paragraphs, and at
+least one present character reacts to what JUST happened, specifically.
+
 HARD RULES
-- 90-150 words. Never longer. Stop on a live moment, never on a summary.
+- 110-190 words. Never longer. Stop on a live moment, never on a summary.
+- Ground the passage in one or two concrete sensory details anchored to THIS place - never a generic mood word.
 - Dialogue must obey each character's VOICE line exactly. A character's constraints and taboos are absolute.
-- Only state facts given to you. Never invent an item, an ally, a name, or an event that is not in the state you were handed.
+- Only state facts given to you. Never invent an item, an ally, a name, an event, a NEW place or a NEW character not in the state you were handed - keep an unnamed figure unnamed ("a woman by the door") rather than christening them.
 - Never narrate the player's feelings or decisions for them. Show the world; let them react.
 - Never ask "what do you do?" and never offer a menu of options.
 - Never use any of these dead phrases or anything like them: {BANNED}.
 - No therapy-speak, no validation language, no motivational summary. Nobody in this world is a life coach.
 - Do not open with the same construction you used before (see FORBIDDEN OPENINGS).
+- ZERO mechanics in the prose. Never a number, a percentage, a rule name, a stat, or any line about how the story engine works. If it would not appear in a novel, it does not appear here.
+- A character's WANTS lists only what they are STILL after. If something they would obviously be curious about is missing from it, that means the player already told them - do not have the character ask it again, even in different words.
 
 Write only the prose. No headings, no quotes around the whole thing, no meta."""
 
@@ -64,13 +72,25 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
     # allowed to reach for this turn - a signature line lands because it fits
     # the moment, not because it fires every turn.
     moment = verdict.get("beat_key", "")
-    anchors = "\n".join(memory.anchor_block(world, n, beat=moment)
-                        for n in present) or "  (nobody else is present)"
+    # D10: a WANTS entry the player already addressed drops out of the prompt
+    # here - the same place it was leaking back in, since narrate() is what
+    # actually builds the anchor block the model sees.
+    anchors = "\n".join(memory.anchor_block(
+        world, n, beat=moment,
+        answered_goals=npc_sim.answered_goals(pt["id"], n, player))
+        for n in present) or "  (nobody else is present)"
     events = memory.retrieve_events(pt["id"], state["turn"], action + " " + (beat or ""), k=7)
     loc = world.loc_by_id[state["location"]]
     forbidden = _openings(pt["id"])
 
-    fate_now = [f for f in world.fated_events if f["turn"] == state["turn"]]
+    # Location-gated: a fate scheduled at the chapel must not force itself
+    # into a scene the player is having across the map for dinner. engine.py
+    # applies fate's actual state changes regardless of where the player is -
+    # this only controls whether THIS turn's prose is told to narrate it as
+    # something happening HERE.
+    fate_now = [f for f in world.fated_events
+               if f["turn"] == state["turn"]
+               and (not f.get("location") or f["location"] == state["location"])]
     fate_line = f"\nHAPPENING RIGHT NOW, UNSTOPPABLE: {fate_now[0]['desc']}" if fate_now else ""
 
     parts = [

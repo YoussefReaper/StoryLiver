@@ -31,7 +31,7 @@ os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-research-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import db, research, worldforge  # noqa: E402
+from backend import canon_seed, db, research, worldforge  # noqa: E402
 from backend.research import (BlockedHost, ResearchError, _Budget,  # noqa: E402
                               _get_json, _host_allowed, _public_ips,
                               _rank, _slug_candidates, _wiki_is_about)
@@ -239,6 +239,121 @@ def test_offline_is_hermetic():
     ok(not touched, f"zero DNS lookups attempted ({len(touched)})")
 
 
+def test_canon_seed_fallback():
+    section("canon fidelity — a broken network must not mean invented names")
+    # D2, reproduced: "Swordsmith Village" (Demon Slayer) built made-up NPCs
+    # (Kaname, Aiko) because a category fetch timed out and dossier() returned
+    # an empty cast, which the model then filled from its own imagination. A
+    # small curated table for the handful of franchises this happens to
+    # constantly beats an empty cast in every failure mode.
+    db.init()
+    import backend.research as R
+    real_enabled, real_identify, real_summarise = R.enabled, R.identify, R.summarise
+    real_curated, real_find_wiki = R.characters_from_wikipedia, R.find_wiki
+    try:
+        R.enabled = lambda: True
+
+        # (a) the very first lookup fails outright.
+        def boom(*a, **k):
+            raise R.ResearchError("egress timeout")
+        R.identify = boom
+        d = research.dossier("Demon Slayer", refresh=True)
+        ok(d["found"] and len(d["characters"]) >= 4,
+           f"identify() raising still yields a real cast ({len(d['characters'])} characters)")
+        ok(any("Tanjiro" in c["name"] for c in d["characters"]),
+           "and the protagonist is in it")
+        ok(len(d["places"]) >= 2,
+           f"and real places, not an empty REAL PLACES section ({len(d['places'])})")
+        ok(any("Butterfly" in p["name"] for p in d["places"]),
+           "grounded in an actual canon location")
+
+        # (b) identify() succeeds, everything downstream comes back empty —
+        # the exact Swordsmith Village failure mode (a timed-out category fetch).
+        R.identify = lambda setting, budget: {"title": "Demon Slayer: Kimetsu no Yaiba"}
+        R.summarise = lambda title, budget: {"title": title, "summary": "A manga series.",
+                                             "url": "", "license": ""}
+        R.characters_from_wikipedia = lambda *a, **k: []
+        R.find_wiki = lambda *a, **k: None
+        d2 = research.dossier("demon slayer", refresh=True)
+        ok(d2["found"] and len(d2["characters"]) >= 4,
+           f"an empty live cast falls back to the seed roster ({len(d2['characters'])} characters)")
+
+        # (c) live research succeeds but ranks the protagonist out of the cast —
+        # a real, reproducible failure: article-length ranking can put a short
+        # protagonist page below a longer side-character one.
+        R.characters_from_wikipedia = lambda *a, **k: [
+            {"name": "Zenitsu Agatsuma", "note": ""}, {"name": "Inosuke Hashibira", "note": ""},
+            {"name": "Shinobu Kocho", "note": ""}, {"name": "Giyu Tomioka", "note": ""}]
+        d3 = research.dossier("demon slayer", refresh=True)
+        ok(any("Tanjiro" in c["name"] for c in d3["characters"]),
+           "a real cast missing the protagonist gets them PINNED in, not just left out")
+        ok(d3["characters"][0]["name"].startswith("Tanjiro"),
+           "and pinned first — the lead is not buried after four side characters")
+
+        # (d) a setting with no seed entry gets no fabricated help — this must
+        # not become a crutch for every possible setting, only the handful
+        # that keep reproducing the failure.
+        R.identify = boom
+        d4 = research.dossier("a wholly original setting nobody wrote", refresh=True)
+        ok(not d4["found"] and not d4["characters"],
+           "an unmatched original setting fails honestly rather than inventing a cast")
+    finally:
+        R.enabled, R.identify, R.summarise = real_enabled, real_identify, real_summarise
+        R.characters_from_wikipedia, R.find_wiki = real_curated, real_find_wiki
+
+    ok(canon_seed.match("HAZBIN HOTEL", "") is not None,
+       "matching is case/spacing-insensitive")
+    ok(canon_seed.match("", "") is None, "an empty setting matches nothing")
+
+
+def test_era_selection_swaps_the_whole_cast():
+    section("F1 — an era overrides the cast entirely, not adds to it")
+    # "Sengoku era → cast = Yoriichi + Michikatsu, not current Hashira." A
+    # different era of the same setting can share almost no names with the
+    # default - Sengoku-era Demon Slayer predates Tanjiro's generation by
+    # centuries. Asked for it, the grounding brief the builder actually
+    # reads must carry Yoriichi, not Zenitsu.
+    options = canon_seed.era_options("demon slayer", "Demon Slayer: Kimetsu no Yaiba")
+    ids = {o["id"] for o in options}
+    ok(ids == {"present", "sengoku"}, f"both eras are offered ({ids})")
+
+    present_cast = {c["name"] for c in canon_seed.fallback_cast("demon slayer", era="present")}
+    sengoku_cast = {c["name"] for c in canon_seed.fallback_cast("demon slayer", era="sengoku")}
+    ok("Tanjiro Kamado" in present_cast and "Tanjiro Kamado" not in sengoku_cast,
+       "present-day protagonist is NOT in the Sengoku cast")
+    ok("Yoriichi Tsugikuni" in sengoku_cast and "Yoriichi Tsugikuni" not in present_cast,
+       "and the Sengoku protagonist is not in the present-day cast — this "
+       "is a swap, not a merge")
+    ok(not (present_cast & sengoku_cast) or "Muzan Kibutsuji" in (present_cast & sengoku_cast),
+       "the two eras share almost no names, as the setting actually implies")
+
+    pinned = canon_seed.pin_protagonists(
+        "demon slayer", "Demon Slayer: Kimetsu no Yaiba",
+        [{"name": "Michikatsu Tsugikuni", "note": ""}], era="sengoku")
+    ok(pinned[0]["name"] == "Yoriichi Tsugikuni",
+       "the era's OWN protagonist is pinned first, not the default setting's")
+
+    # No era given, or an unmatched setting: nothing changes, exactly as
+    # before F1 existed.
+    ok(canon_seed.fallback_cast("demon slayer") == canon_seed.fallback_cast("demon slayer", era=""),
+       "no era requested falls back to the setting's default cast")
+    ok(canon_seed.era_options("a setting nobody wrote") == [],
+       "an unmatched setting offers no era question at all")
+
+    # The grounding brief the builder actually reads carries the swap.
+    from backend import sessionzero
+    dossier = {"setting": "demon slayer", "canonical_name": "Demon Slayer: Kimetsu no Yaiba",
+              "found": True, "characters": sorted(
+                  ({"name": n, "note": ""} for n in sengoku_cast), key=lambda c: c["name"]),
+              "places": [], "factions": [], "sources": []}
+    b = sessionzero.brief({"era": "sengoku"}, dossier)
+    ok("ERA: The Sengoku era" in b,
+       "the chosen era reaches the builder as an explicit instruction")
+    ok("do not mix in anyone" in b,
+       "warning it away from blending eras, which a model would otherwise "
+       "happily do given both casts share a franchise name")
+
+
 def test_cache_shape():
     section("cache — a setting is researched once")
     db.init()
@@ -315,6 +430,7 @@ def _all():
             test_article_ranking, test_wiki_identity, test_slug_generation,
             test_grounding_brief, test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
+            test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,
             test_cache_shape)
 
 

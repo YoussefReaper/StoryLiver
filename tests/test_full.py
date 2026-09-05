@@ -23,9 +23,9 @@ os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-full-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import (arcs, budget, canon, db, death, engine, fastforward,  # noqa: E402
-                     identity, memory, modes, party, persona, relationships,
-                     runs, sessions, trust)
+from backend import (arcs, auth, budget, canon, config, db, death, engine,  # noqa: E402
+                     fastforward, identity, mana, memory, modes, party,
+                     persona, relationships, runs, sessions, trust)
 
 FAILS = []
 NOTES = []
@@ -71,6 +71,97 @@ def test_host_premium():
        "a player asking for premium in a room with it OFF does not get it")
 
 
+# --------------------------------------------------------------------- P1
+def test_mana_meters_tokens_not_turns():
+    section("P1 — Mana is charged on what a turn actually spent, not a flat price")
+    # "the Mana must be for the tokens and not the turns because it differs.
+    # A turn can be 200 tokens or 4000 tokens - billing per-turn hides real
+    # cost." A flat MANA_COST["standard"] used to be pre-charged before a
+    # single model call ran, so a turn with three calls firing (World
+    # Master's downstream effects, an NPC's own turn, the Director) cost the
+    # exact same 1 Mana as a turn with one quiet Narrator call.
+    db.init()
+    pt_id = engine.create_playthrough("mana-token-user")
+    before = mana.wallet("mana-token-user")["balance"]
+    r = engine.take_turn(pt_id, "I look around the room.", player="user")
+    ok(not r.get("blocked"), "the turn actually resolved")
+    led = mana.ledger("mana-token-user")
+    ok(led["free_mana_used"] >= 1,
+       f"a turn that made at least one real model call costs at least 1 "
+       f"Mana ({led['free_mana_used']}) - never rounds a real, non-zero "
+       f"spend down to free")
+
+    # The formula itself: proportional, floored at 1, never fractional. Free
+    # pool exhausted first so the charge is forced onto the WALLET, where the
+    # balance actually moves and is checkable - spending from the free pool
+    # only touches the daily ledger, not the balance.
+    mana._spend(config.GUEST_STARTING_MANA, ["mana-formula-user"])  # this id has no account
+    mana.credit("mana-formula-user", 100, purchased=True)
+    before_bal = mana.wallet("mana-formula-user")["balance"]
+    mana.commit_measured("mana-formula-user", None, config.USD_PER_MANA * 3.4)
+    after_bal = mana.wallet("mana-formula-user")["balance"]
+    ok(before_bal - after_bal == 4,
+       f"$3.4x the per-Mana rate rounds UP to 4 Mana ({before_bal - after_bal}), "
+       f"not down to 3 — Mana is an integer currency, and rounding a real "
+       f"charge down under-bills it")
+    mana.commit_measured("mana-formula-user", None, 0.0)
+    ok(mana.wallet("mana-formula-user")["balance"] == after_bal,
+       "and a turn that spent nothing (fully deterministic, no model asked "
+       "anything) is charged nothing")
+
+    # Guest vs signed-in ceiling (P1's other half): sign-in is the gate, no
+    # anonymous upgrade path.
+    guest_id = "mana-guest-probe"
+    ok(auth.is_guest(guest_id), "an id with no account row is a guest")
+    st_guest = mana.status(guest_id)
+    ok(st_guest["free_daily"] == config.GUEST_STARTING_MANA == 10,
+       f"a guest's daily ceiling is capped at {config.GUEST_STARTING_MANA}, "
+       f"not the signed-in rate ({st_guest['free_daily']})")
+
+    acct = auth.register("manatest@example.com", "a-real-password", "Mana Tester")
+    ok(not auth.is_guest(acct["id"]), "a registered account is not a guest")
+    st_acct = mana.status(acct["id"])
+    ok(st_acct["free_daily"] == config.FREE_DAILY_MANA == 40,
+       f"and gets the full daily allowance ({st_acct['free_daily']}) - "
+       f"there is no path to 40 that does not go through an account")
+
+
+# --------------------------------------------------------------------- P2
+def test_action_spam_is_rate_limited_not_in_world_content():
+    section("P2 — cost abuse is a script hammering the endpoint, not anything IN the story")
+    # "abuse = abusing the AI / spamming to burn my tokens, NOT in-world RPG
+    # actions - user is completely free in the RPG." So this wall sits in
+    # front of every action call, checked before the World Master or the
+    # narrator are asked anything - it has no opinion on WHAT the action
+    # said, only on how many arrived in the last minute.
+    uid = "rate-limit-probe"
+    for i in range(budget.MAX_ACTIONS_PER_MINUTE):
+        budget.rate_limit(uid)  # the allowance itself never raises
+    ok(True, f"{budget.MAX_ACTIONS_PER_MINUTE} actions inside a minute all go through")
+    try:
+        budget.rate_limit(uid)
+        ok(False, "the (MAX+1)th action in the same minute was not stopped")
+    except budget.RateLimited as e:
+        ok("world does not keep up" in str(e),
+           f"and the one past it is refused, in-character rather than as a raw error: {e!r}")
+
+    # A DIFFERENT id is untouched by another id's burst - this is per-user,
+    # not a global lock that would let one script throttle every player.
+    other = "rate-limit-probe-neighbour"
+    budget.rate_limit(other)
+    ok(True, "a neighbouring id's window is independent")
+
+    # Crude or hostile text is never what this checks - only volume.
+    from backend import db, engine
+    db.init()
+    pt_id = engine.create_playthrough("rate-limit-content-probe")
+    r = engine.take_turn(pt_id, "GO AWAY YOU SHIT", player="user")
+    ok(not r.get("blocked"),
+       "blunt, hostile, in-character text is never refused by this wall - "
+       "it plays exactly as typed, and it is billed exactly like any other "
+       "action (ties D16 - the input guard protects the PARSER, not taste)")
+
+
 # ---------------------------------------------------------------------- §7
 def test_modes():
     section("§7 — world modes compose, and cost nothing")
@@ -107,6 +198,31 @@ def test_modes():
     modes.set_modes(pt, {"tone": "neutral", "canon": "loose"})
     ok(modes.tone_directive(pt) == "",
        "a default world's narrator prompt is unchanged - anchors do not move")
+
+    # D7/F4a — language was free text and already wired to the narrator
+    # prompt; confirmed here so a future change to tone_directive() cannot
+    # silently drop it without a test noticing.
+    modes.set_modes(pt, {"language": "Arabic"})
+    ok("Arabic" in modes.tone_directive(pt),
+       "a set language reaches the narrator's own system prompt")
+    modes.set_modes(pt, {"language": ""})
+
+    # F4c — plain register is a SEPARATE axis from language: a player can
+    # want plain-register Arabic as easily as plain-register English.
+    ok(modes.get(pt)["vocabulary"] == "literary", "literary is the default register")
+    modes.set_modes(pt, {"vocabulary": "plain"})
+    d = modes.tone_directive(pt)
+    ok("REGISTER: plain" in d and "idiom" in d,
+       "plain register reaches the narrator and names the actual failure "
+       "(idiom), not just 'simpler'")
+    ok("NOT a simpler story" in d,
+       "and is explicit that this changes VOCABULARY, not content - the same "
+       "stakes, told in words that do not require knowing an idiom")
+    modes.set_modes(pt, {"language": "Arabic", "vocabulary": "plain"})
+    combined = modes.tone_directive(pt)
+    ok("Arabic" in combined and "REGISTER: plain" in combined,
+       "the two axes compose - plain-register Arabic is a real combination, "
+       "not an either/or")
 
 
 def test_identity_block():
@@ -409,8 +525,9 @@ def test_trust_and_safety():
 def main():
     print("StoryLiver — full-blueprint gate")
     print("  offline stub, no API key, no spend\n")
-    for fn in (test_host_premium, test_modes, test_identity_block,
-               test_character_library, test_death,
+    for fn in (test_host_premium, test_mana_meters_tokens_not_turns,
+               test_action_spam_is_rate_limited_not_in_world_content, test_modes,
+               test_identity_block, test_character_library, test_death,
                test_runs, test_timeline_and_au, test_fastforward, test_party,
                test_trust_and_safety):
         fn()
@@ -428,8 +545,9 @@ def main():
 
 
 def test_all_full():
-    for fn in (test_host_premium, test_modes, test_identity_block,
-               test_character_library, test_death,
+    for fn in (test_host_premium, test_mana_meters_tokens_not_turns,
+               test_action_spam_is_rate_limited_not_in_world_content, test_modes,
+               test_identity_block, test_character_library, test_death,
                test_runs, test_timeline_and_au, test_fastforward, test_party,
                test_trust_and_safety):
         fn()

@@ -402,6 +402,15 @@ def delete_playthrough(pt_id: str, user_id: str = Query(min_length=4)):
 @app.post("/api/playthroughs/{pt_id}/action")
 def act(pt_id: str, body: Action, user_id: str = Query(default=""),
         player: str = Query(default=memory.SOLO)):
+    # P2: cost abuse is spamming actions to burn tokens, not anything the
+    # player does IN the story - crude, blunt, hostile input still costs
+    # Mana and still plays exactly as typed. This is a wall in front of the
+    # turn, checked before the World Master or the narrator are asked
+    # anything, so a burst cannot even reach the first billable call.
+    try:
+        budget.rate_limit(user_id)
+    except budget.RateLimited as e:
+        raise HTTPException(429, str(e))
     _own(pt_id, user_id)
     try:
         result = engine.take_turn(pt_id, body.action, premium=body.premium, player=player)
@@ -729,6 +738,27 @@ def session_close(session_id: str, user_id: str = Query(min_length=4)):
         raise HTTPException(403, "only the host can close the room")
     sessions.close(session_id)
     return {"closed": session_id}
+
+
+class SoloWhisper(BaseModel):
+    target_kind: str = Field(pattern="^(npc|player)$")
+    target_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=600)
+    player_id: str = Field(default=memory.SOLO, max_length=64)
+
+
+@app.post("/api/playthroughs/{pt_id}/whisper")
+def playthrough_whisper(pt_id: str, body: SoloWhisper, user_id: str = Query(default="")):
+    """Solo whispering. `/sessions/{id}/whisper` requires a real session row -
+    solo play has none, so the client used to post to `/sessions/null/whisper`
+    and `sessions.get("null")` returned None, which crashed on `s["playthrough_id"]`
+    with a 500 on every solo whisper, near or far."""
+    pt = _own(pt_id, user_id)
+    try:
+        return engine.whisper(pt_id, player=body.player_id, target_kind=body.target_kind,
+                              target_id=body.target_id, text=body.text, session_id="")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/sessions/{session_id}/whisper")
@@ -1243,6 +1273,15 @@ async def ws_session(ws: WebSocket, session_id: str, player: str = Query(default
             if kind == "action":
                 if me["role"] == "spectator":
                     await ws.send_json({"type": "error", "error": "spectators watch; they do not act"})
+                    continue
+                # P2: the same wall the HTTP action route has. The turn lock
+                # below serialises WHO goes next in this room; it does not
+                # stop one connection sending forty actions a second - that
+                # is what this checks, before the turn lock is even asked for.
+                try:
+                    await asyncio.to_thread(budget.rate_limit, user_id)
+                except budget.RateLimited as e:
+                    await ws.send_json({"type": "error", "error": str(e)})
                     continue
                 # Actions in one room serialise: the turn lock is the queue.
                 got = await asyncio.to_thread(rt.acquire_turn, session_id, player)

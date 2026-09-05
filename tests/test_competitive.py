@@ -597,6 +597,18 @@ def test_b7_a_sandbox_has_no_main_quest():
        "and the objective says so rather than inventing a progress bar out of "
        "the turn counter")
 
+    # D9: the objective panel's own GOAL text used to be a mechanic
+    # description ("the last fated event lands") - true, but it told the
+    # player nothing about their actual situation, and is exactly the kind
+    # of engine-facing phrase this panel should never surface as if it were
+    # an in-world goal.
+    o = submodes.objective(sand, world, "story")
+    ok(o["goal"] == world.get("tagline"),
+       f"a story-ending mode's goal is the world's own tagline "
+       f"({o['goal']!r}), not a description of the fate mechanic")
+    ok("fated event" not in o["goal"].lower(),
+       "and never leaks the mechanic's own name into the player-facing text")
+
 
 def test_b3_a_banished_player_still_matters():
     section("B3 - elimination that makes a spectator is what empties the genre")

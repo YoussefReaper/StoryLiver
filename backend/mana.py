@@ -9,6 +9,8 @@ The only hard stop in the system is a per-user daily USD rail, which exists to
 protect the company from a runaway loop, not to sell anything. It sits far
 above what a person can reach by playing.
 """
+import math
+
 from . import config, db
 
 FULL, EMBER, RAIL = "full", "ember", "rail"
@@ -39,7 +41,10 @@ def status(user_id, pt=None, payer_ids=None):
         "balance": balance,
         "used": int(w["spent"]),
         "purchased": int(w["purchased"]),
-        "free_daily": config.FREE_DAILY_MANA * max(1, len(pool)),
+        # P1: the real sum of each payer's own allowance, not the signed-in
+        # rate multiplied by headcount - that overstated a guest's true
+        # ceiling and a mixed guest/account party's real total alike.
+        "free_daily": sum(_daily_allowance(uid) for uid, _ in pool) or _daily_allowance(user_id),
         "payers": len(pool),
         "free_left": free_left,
         "mode": mode,
@@ -51,6 +56,16 @@ def status(user_id, pt=None, payer_ids=None):
     }
 
 
+def _daily_allowance(uid) -> int:
+    """P1: sign-in is the gate. A guest (no account row - imported lazily,
+    since auth is one layer up and nothing else in this module needs it)
+    gets the smaller ceiling; the full daily allowance requires an account.
+    No anonymous upgrade path - a guest cannot reach 40 by any route that
+    does not create an account."""
+    from . import auth
+    return config.GUEST_STARTING_MANA if auth.is_guest(uid) else config.FREE_DAILY_MANA
+
+
 def free_pool(payer_ids):
     """Allowances stack when several paying players party up, to a 5x ceiling.
     Friends a host brings along contribute nothing and pay nothing."""
@@ -58,7 +73,7 @@ def free_pool(payer_ids):
     remaining = []
     for uid in payers:
         led = ledger(uid)
-        remaining.append((uid, max(0, config.FREE_DAILY_MANA - led["free_mana_used"])))
+        remaining.append((uid, max(0, _daily_allowance(uid) - led["free_mana_used"])))
     return remaining
 
 
@@ -78,11 +93,12 @@ def preview(user_id, pt, premium=False, payer_ids=None):
                    "quieter world. Nothing is locked, nothing is lost, and the memory stays exactly as deep.")
 
 
-def commit(user_id, pt, premium=False, payer_ids=None):
-    """Deduct for an action that actually happened. Refused actions never
-    reach here - the world pushing back is free."""
-    cost = config.MANA_COST["premium" if premium else "standard"]
-    for uid, left in free_pool(payer_ids or [user_id]):
+def _spend(cost, payer_ids):
+    """Free pool first, then a payer's wallet, else absorbed as Ember. Shared
+    by commit() (a flat, known cost - TTS minutes, still a fair unit for
+    that) and commit_measured() (P1: the real cost of a turn that just ran,
+    known only after it ran)."""
+    for uid, left in free_pool(payer_ids):
         if left >= cost:
             db.run("INSERT INTO daily_ledger (user_id,day,free_mana_used) VALUES (?,?,?)"
                    " ON CONFLICT(user_id,day) DO UPDATE SET free_mana_used = free_mana_used + excluded.free_mana_used",
@@ -92,7 +108,7 @@ def commit(user_id, pt, premium=False, payer_ids=None):
     # Spend from a PAYER's wallet. In a room that is the host, so their pack
     # carries across every world and every room they run - which is the whole
     # point of a wallet, and what "host pays" was always supposed to mean.
-    payer = payer_with_funds(payer_ids or [user_id], cost)
+    payer = payer_with_funds(payer_ids, cost)
     if payer and debit(payer, cost):
         db.run("INSERT INTO daily_ledger (user_id,day,paid_mana_used) VALUES (?,?,?)"
                " ON CONFLICT(user_id,day) DO UPDATE SET paid_mana_used = paid_mana_used + excluded.paid_mana_used",
@@ -100,6 +116,36 @@ def commit(user_id, pt, premium=False, payer_ids=None):
         return "mana"
 
     return "ember"
+
+
+def commit(user_id, pt, premium=False, payer_ids=None):
+    """Deduct a FLAT, known cost for something that actually happened.
+    Refused actions never reach here - the world pushing back is free. Kept
+    for callers pricing a genuinely flat unit (TTS is billed by the request,
+    not by how the sentence tokenises) - a story turn uses commit_measured()."""
+    cost = config.MANA_COST["premium" if premium else "standard"]
+    return _spend(cost, payer_ids or [user_id])
+
+
+def commit_measured(user_id, pt, usd_spent, payer_ids=None):
+    """P1: deduct for what a turn ACTUALLY cost, not a flat per-turn price.
+
+    `usd_spent` is the real, measured cost of every model call this turn
+    made (world_master's own validation call is deliberately excluded by the
+    caller, matching commit()'s existing rule that a refusal - and the check
+    that produces one - costs the player nothing). A turn with several calls
+    firing (World Master's downstream effects, an NPC's own turn, the
+    Director) now correctly costs more than a turn with one quiet Narrator
+    call - which a flat per-turn price could never represent.
+
+    A turn that spent nothing (fully deterministic - no model was asked
+    anything) costs nothing. Otherwise the charge is rounded UP to a whole
+    Mana with a floor of 1: Mana is an integer currency here, and rounding
+    down would under-charge a real, non-zero spend to zero."""
+    if usd_spent <= 0:
+        return "free"
+    cost = max(1, math.ceil(usd_spent / config.USD_PER_MANA))
+    return _spend(cost, payer_ids or [user_id])
 
 
 def grant(pt_id, amount):

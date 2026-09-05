@@ -52,6 +52,13 @@ EVENTS = {
     "killed_ally_of":    dict(affinity=-30, trust=-25, fear=20, loyalty=-25),
     "romanced":          dict(love=7, affinity=5),
     "rebuffed":          dict(love=-9, affinity=-4),
+    # Applied to a WITNESS, not a target - `apply_event` treats it like any
+    # other event; the caller (engine._apply_action) is what decides who
+    # gets it. Before this, harm moved only the target's scalars: a witness
+    # got a memory entry from awareness.witness() and nothing else, so
+    # will_snitch/betrayal_pressure - which read these scalars - never
+    # reacted to what they had just seen.
+    "witnessed_violence": dict(trust=-12, fear=10, respect=-4),
 }
 
 # Events where trust collapses rather than erodes.

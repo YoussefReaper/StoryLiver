@@ -209,6 +209,55 @@ def test_hardcore_ends_the_run_cozy_does_not():
 
 
 # ---------------------------------------------------------------- ending
+def test_fate_is_location_gated():
+    section("R1 — fate fires where it happens, not wherever the player is")
+    # Symptom, reproduced: eating with an NPC at turn 9, a fated death at
+    # turn 10 elsewhere teleported the player to the battlefield mid-meal
+    # with no transition. `_apply_fate` applied every state change globally
+    # AND unconditionally dropped a full narration block into the player's
+    # feed, and narrator.py separately told the model "HAPPENING RIGHT NOW,
+    # UNSTOPPABLE" regardless of where the player actually was.
+    db.init()
+    pt_id = engine.create_playthrough("journey-fate")
+    pt = engine._pt(pt_id)
+    world = engine.world_for(pt)
+    fate = next(f for f in world.fated_events if f["id"] == "f2_bell_cracks")
+    ok(fate["location"] == "ash_chapel", "picked a fate with a real location")
+
+    # Player is somewhere else entirely when it fires.
+    entries = []
+    fired = engine._apply_fate(pt, world, fate["turn"], entries,
+                               player="user", here="broken_bell")
+    ok(fired and fired[0]["id"] == fate["id"], "the fate still fires — it is not skippable")
+    ok(not any(e.get("kind") == "fate" and e.get("meta", {}).get("immutable")
+              and not e.get("meta", {}).get("as_news")
+              for e in entries),
+       "but it does NOT drop a full immersive block into a feed for a scene "
+       "the player was never in")
+    from backend import awareness
+    key = awareness.fact_key("fate", "fate", fate["turn"], "ash_chapel")
+    ok(awareness.knows(pt_id, "player", "fate", key),
+       "and it is recorded through the same witness/awareness pipeline an "
+       "ordinary event uses — it did not just vanish, it became news")
+
+    # Player IS at the fate's location.
+    entries2 = []
+    engine._apply_fate(pt, world, fate["turn"], entries2, player="user", here="ash_chapel")
+    ok(any(e.get("kind") == "fate" and e.get("meta", {}).get("title") == fate["title"]
+          for e in entries2),
+       "present, the same event renders as the full immersive block")
+
+    # narrator.py's independent fate detection is location-gated the same way.
+    fate_here = [f for f in world.fated_events
+                if f["turn"] == fate["turn"]
+                and (not f.get("location") or f["location"] == "ash_chapel")]
+    fate_elsewhere = [f for f in world.fated_events
+                      if f["turn"] == fate["turn"]
+                      and (not f.get("location") or f["location"] == "broken_bell")]
+    ok(fate_here and not fate_elsewhere,
+       "the narrator's own fate-detection matches location too, not just turn")
+
+
 def test_story_closes_once():
     section("ending — fate runs out, and the story actually closes")
     db.init()
@@ -264,8 +313,8 @@ def main():
     print("  offline stub, no API key, no spend\n")
     for fn in (test_run_exists_from_the_start, test_combat_reaches_the_world,
                test_combat_is_witnessed_not_broadcast, test_player_death_offers_a_way_on,
-               test_hardcore_ends_the_run_cozy_does_not, test_story_closes_once,
-               test_uploads_are_content_typed):
+               test_hardcore_ends_the_run_cozy_does_not, test_fate_is_location_gated,
+               test_story_closes_once, test_uploads_are_content_typed):
         fn()
     passed = 0
     for n in NOTES:
@@ -282,8 +331,8 @@ def main():
 def test_all_journey():
     for fn in (test_run_exists_from_the_start, test_combat_reaches_the_world,
                test_combat_is_witnessed_not_broadcast, test_player_death_offers_a_way_on,
-               test_hardcore_ends_the_run_cozy_does_not, test_story_closes_once,
-               test_uploads_are_content_typed):
+               test_hardcore_ends_the_run_cozy_does_not, test_fate_is_location_gated,
+               test_story_closes_once, test_uploads_are_content_typed):
         fn()
     assert not FAILS, "\n".join(FAILS)
 

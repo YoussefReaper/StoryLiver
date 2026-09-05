@@ -56,7 +56,18 @@ def objective(pt_id, world, mode_id, *, player=memory.SOLO, session_id="") -> di
     """
     turn = _turn(pt_id)
     spec = modetree.spec(mode_id)
-    base = {"mode": mode_id, "name": spec["name"], "goal": spec["objective"],
+    # D9: `spec["objective"]` is a MECHANIC description ("the last fated
+    # event lands") - true, but it tells the player nothing about their own
+    # situation, and is the exact kind of engine-facing phrase this panel
+    # should never surface as if it were an in-world goal. A forged world's
+    # tagline is written to BE that goal in one diegetic line ("Three days
+    # before the valley burns."); use it wherever a story runs to its fate
+    # rather than toward a structured win condition.
+    goal = spec["objective"]
+    if mode_id in ("story", "ironman", "coop", "chaos", "sandbox", "shared_sandbox",
+                  "social_hub", "async_pvp"):
+        goal = world.get("tagline") or goal
+    base = {"mode": mode_id, "name": spec["name"], "goal": goal,
             "done": False, "progress": 0.0, "detail": ""}
 
     if mode_id == "detective":

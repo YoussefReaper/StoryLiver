@@ -71,6 +71,91 @@ def observe_fate(pt_id, turn, fated):
                                importance=5, kind="fate", player=memory.SHARED)
 
 
+# --------------------------------------------------------------------------
+# D10 - conversational continuity. An NPC's goal ("find out where Coal came
+# from") was a CONSTANT anchor with no memory of ever having asked, so the
+# dialogue path re-surfaced the exact same question turn after turn even
+# though the player answered it three turns ago. Deterministic - the same
+# keyword-matching philosophy as persona.detect_beat and modes.check_action -
+# because a live judgement of "was this answered" would be a per-turn model
+# call for something arithmetic can decide well enough.
+# --------------------------------------------------------------------------
+
+_QUESTION_CUES = (
+    "find out", "ask ", "asks ", "asking ", "learn where", "learn who",
+    "learn what", "learn why", "discover where", "discover who",
+    "know where", "know who", "know what happened", "wants to know",
+    "curious about", "figure out", "get answers", "get the truth",
+)
+
+
+def _is_question_goal(text: str) -> bool:
+    """A goal that reads as something the character is trying to LEARN from
+    the player, as opposed to something they intend to DO. Only these are
+    tracked - a goal like "protect the herbary" has no question to stop
+    repeating."""
+    t = (text or "").lower()
+    return any(cue in t for cue in _QUESTION_CUES)
+
+
+def question_state(pt_id, npc_id, player) -> dict:
+    ps = memory.npc_player_state(pt_id, npc_id, player)
+    return db.jload(ps["question_state"], {})
+
+
+def answered_goals(pt_id, npc_id, player) -> set:
+    """The set of this NPC's own goal strings the player has already
+    addressed - what the anchor block and the autonomous planner must both
+    stop re-surfacing as an open pursuit."""
+    state = question_state(pt_id, npc_id, player)
+    return {g for g, v in state.items() if v.get("state") == "answered"}
+
+
+def active_goals(goals, pt_id, npc_id, player) -> list:
+    """This NPC's goal list with already-answered questions removed. Used
+    everywhere a goal list feeds a prompt, so a resolved question cannot
+    leak back in through a different code path than the anchor block."""
+    dropped = answered_goals(pt_id, npc_id, player)
+    return [g for g in (goals or []) if g not in dropped]
+
+
+def track_questions(pt_id, npc_id, player, goals, turn):
+    """Called once per turn for every NPC present. Two transitions, in order:
+
+    1. A question asked on an EARLIER turn, with this NPC still present now,
+       is the exchange actually happening - mark it answered, and record it
+       as a memory so npc_recall can surface "they already told me" the same
+       way it surfaces anything else the character was told.
+    2. A question never tracked before, with this NPC present to ask it, is
+       marked pending - the state now reflects that this NPC has this open
+       ask on the table, the same way `pending` on a card means "waiting on
+       the table", not "this happened."
+
+    An already-answered goal is left alone permanently: the fix for
+    "the NPC forgot" is not "the NPC asks again in five turns."
+    """
+    state = question_state(pt_id, npc_id, player)
+    changed = False
+    for goal in goals or []:
+        if not _is_question_goal(goal):
+            continue
+        entry = state.get(goal)
+        if entry and entry.get("state") == "pending" and entry.get("turn", turn) < turn:
+            state[goal] = {"state": "answered", "turn": turn}
+            memory.npc_observe(
+                pt_id, npc_id, turn,
+                f"They already answered this for me: {goal}",
+                importance=4, kind="reflection", player=player)
+            changed = True
+        elif not entry:
+            state[goal] = {"state": "pending", "turn": turn}
+            changed = True
+    if changed:
+        memory.set_npc_player_state(pt_id, npc_id, player,
+                                    question_state=json.dumps(state))
+    return state
+
+
 def reflect(pt, world, npc_id, *, user_id, player=memory.SOLO):
     turn = pt["current_turn"]
     st = memory.npc_state(pt["id"], npc_id)
@@ -80,13 +165,18 @@ def reflect(pt, world, npc_id, *, user_id, player=memory.SOLO):
     if turn - ps["last_reflect_turn"] < 6:
         return None
     npc = world.by_id[npc_id]
-    mems = memory.npc_recall(pt["id"], npc_id, turn, " ".join(npc["anchors"]["goals"]),
+    # D10/D15: a goal the player already answered/addressed drops out of the
+    # recall query and the plan - otherwise a reflection keeps circling back
+    # to "find out where Coal came from" long after Coal already told them.
+    goals = active_goals(npc["anchors"]["goals"], pt["id"], npc_id, player) \
+        or npc["anchors"]["goals"]
+    mems = memory.npc_recall(pt["id"], npc_id, turn, " ".join(goals),
                              k=8, player=player)
     if len(mems) < 3:
         return None
     rel = memory.rel_to(pt["id"], npc_id, player)
     prompt = (
-        f"{memory.anchor_block(world, npc_id)}\n\n"
+        f"{memory.anchor_block(world, npc_id, answered_goals=answered_goals(pt['id'], npc_id, player))}\n\n"
         f"HOW YOU FEEL ABOUT THIS PERSON: {_rel_words(rel)}\n\n"
         "YOUR MEMORIES:\n" + "\n".join(f"  - {m['text']}" for m in mems) +
         f"\n\nIt is day {world.day_for(turn)}, {world.phase_for(turn)}. Reflect. JSON only."
@@ -94,7 +184,7 @@ def reflect(pt, world, npc_id, *, user_id, player=memory.SOLO):
 
     def stub():
         r = llm.rng(turn, npc_id, player, "reflect")
-        g = npc["anchors"]["goals"][0].rstrip(".")
+        g = goals[0].rstrip(".") if goals else "what happens next"
         return {"reflections": [f"I keep coming back to one thing: {g.lower()}.",
                                 r.choice(["This one is not what they say they are.",
                                           "Nobody here is going to do this for me.",
@@ -128,16 +218,41 @@ def maybe_act(pt, world, npc_id, *, user_id, player=memory.SOLO, actor_name="the
     if not st or not st["alive"]:
         return None
     ps = memory.npc_player_state(pt["id"], npc_id, player)
-    if turn - ps["last_act_turn"] < 3:
+    shock = _freshly_shocked(pt["id"], npc_id, player, turn)
+    # D15: the ordinary 3-turn cooldown is what keeps small talk from firing
+    # every turn - it is not what should stand between the player and an NPC
+    # reacting to something severe that just happened in front of them.
+    # pick_actor() only selects a shocked NPC past its own shorter floor;
+    # this mirrors that floor rather than re-imposing the longer one.
+    if turn - ps["last_act_turn"] < (1 if shock else 3):
         return None
     npc = world.by_id[npc_id]
     rel = memory.rel_to(pt["id"], npc_id, player)
+    # D10/D15: goals already answered drop out of both the recall QUERY and
+    # any stale entry in the STORED plan - a plan written by reflect() before
+    # the answer landed can otherwise carry the literal question text for up
+    # to reflect()'s own 6-turn cooldown after it was resolved.
+    dropped = answered_goals(pt["id"], npc_id, player)
+    goals = [g for g in npc["anchors"]["goals"] if g not in dropped] or npc["anchors"]["goals"]
     mems = memory.npc_recall(pt["id"], npc_id, turn,
-                             f"{actor_name} " + " ".join(npc["anchors"]["goals"]), k=5, player=player)
-    plan = db.jload(ps["plan"], [])
+                             f"{actor_name} " + " ".join(goals), k=5, player=player)
+    # D15: a goal-scoped query is exactly what buried the trauma in the first
+    # place - "find out where Coal came from" shares no words with "watched
+    # the player beat a child". A recent high-severity memory is folded in
+    # REGARDLESS of whether it matched the query, so it reaches the prompt
+    # whenever it is the actual reason this NPC was picked to act at all.
+    if shock:
+        recent_shock = memory.npc_recall(pt["id"], npc_id, turn, "", k=3, player=player)
+        seen_ids = {m["id"] for m in mems}
+        for m in recent_shock:
+            if m.get("importance", 0) >= 4 and m["id"] not in seen_ids:
+                mems = [m] + mems
+                seen_ids.add(m["id"])
+    plan = [p for p in db.jload(ps["plan"], [])
+           if not any(g.lower() in p.lower() for g in dropped)]
 
     prompt = (
-        f"{memory.anchor_block(world, npc_id)}\n\n"
+        f"{memory.anchor_block(world, npc_id, answered_goals=dropped)}\n\n"
         f"WHERE YOU ARE: {world.loc_name(st['location'])}, day {world.day_for(turn)}, {world.phase_for(turn)}\n"
         f"{actor_name} IS HERE TOO.\n"
         f"HOW YOU FEEL ABOUT THEM: {_rel_words(rel)}\n"
@@ -150,7 +265,7 @@ def maybe_act(pt, world, npc_id, *, user_id, player=memory.SOLO, actor_name="the
         r = llm.rng(turn, npc_id, player, "act")
         if r.random() > 0.35:
             return {"act": False, "action": "", "importance": 1, "toward": "affinity", "delta": 0}
-        goal = npc["anchors"]["goals"][0].rstrip(".").lower()
+        goal = goals[0].rstrip(".").lower()
         return {"act": True,
                 "action": f"{npc['name']} crosses to {actor_name} without being asked, because of one thing: to {goal}.",
                 "importance": 3, "toward": r.choice(["affinity", "trust", "obligation"]),
@@ -224,10 +339,43 @@ def whisper(pt, world, npc_id, text, *, user_id, player=memory.SOLO, speaker="so
     return {"reply": reply, "delta": delta}
 
 
+def _freshly_shocked(pt_id, npc_id, player, turn):
+    """A high-severity thing this NPC just watched happen, this turn or last.
+
+    D15, reproduced: after the player beat Ilo bloody in front of Dr. Marrow,
+    her next line was about charcoal. The relationship-scalar score below
+    could not represent "I just watched this happen" for someone who has
+    barely met the player - a stranger's affinity/trust/obligation are all
+    near zero, so `intensity` stays near zero even though something severe
+    just happened directly in front of them. observe_turn() already records
+    what every present NPC saw, at the SAME importance the event itself
+    carried - this only has to go and look."""
+    return db.row(
+        "SELECT id FROM npc_memories WHERE playthrough_id=? AND npc_id=?"
+        " AND player_id IN (?,?) AND turn>=? AND importance>=4"
+        " ORDER BY id DESC LIMIT 1",
+        (pt_id, npc_id, player, memory.SHARED, turn - 1))
+
+
 def pick_actor(pt, state, player=memory.SOLO):
     """Who is most likely to make a move on this player? Strongest feeling in
-    the room wins, with a cooldown so one NPC cannot monopolise the story."""
+    the room wins, with a cooldown so one NPC cannot monopolise the story -
+    UNLESS someone just watched something severe happen, which overrides
+    both the cooldown and the intensity bar. A room that stays quiet after
+    watching harm is the room not being there at all."""
     turn = state["turn"]
+    for npc_id in state["present"]:
+        st = memory.npc_state(pt["id"], npc_id)
+        if not st or not st["alive"]:
+            continue
+        ps = memory.npc_player_state(pt["id"], npc_id, player)
+        # A shorter floor than the ordinary cooldown - shock can interrupt the
+        # story sooner than an ordinary aside would, but the SAME shock still
+        # cannot fire this NPC's reaction turn after turn once they have.
+        if turn - ps["last_act_turn"] < 1:
+            continue
+        if _freshly_shocked(pt["id"], npc_id, player, turn):
+            return npc_id
     best, best_score = None, 0.0
     for npc_id in state["present"]:
         st = memory.npc_state(pt["id"], npc_id)

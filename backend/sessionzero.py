@@ -32,7 +32,7 @@ builder receives. No extra model call.
 """
 from __future__ import annotations
 
-from . import db, research
+from . import canon_seed, db, research
 
 # A canon world where research found a power system or a timeline gets the
 # specific questions. Everything else gets the general ones, which are still
@@ -82,6 +82,22 @@ def questions(dossier: dict) -> dict:
     found = bool(dossier.get("found"))
     out = {"canon": found, "setting": dossier.get("canonical_name") or dossier.get("setting", ""),
            "questions": []}
+
+    # F1 - era, before entry. Era picks the TIMELINE ("the Sengoku era" -
+    # centuries before the present-day cast exists at all); entry picks a
+    # point WITHIN one timeline ("the Mugen Train arc"). Only asked when
+    # canon_seed actually has more than one era on record for this setting -
+    # every other setting is unaffected, exactly as before.
+    eras = canon_seed.era_options(dossier.get("setting", ""), dossier.get("canonical_name", ""))
+    if eras:
+        out["questions"].append({
+            "id": "era",
+            "q": "Which era?",
+            "why": "A different era can mean an almost entirely different cast - this "
+                   "changes who you can actually meet, not just when.",
+            "kind": "choice",
+            "options": [{"id": e["id"], "label": e["label"], "blurb": e["blurb"]} for e in eras],
+        })
 
     arcs = [a for a in (dossier.get("arcs") or []) if a.get("name")][:10]
     if arcs:
@@ -182,6 +198,12 @@ def brief(answers: dict, dossier: dict) -> str:
         return ""
 
     lines = ["THE PLAYER'S PLACE IN THIS WORLD (build around these, do not overrule them):"]
+    if a.get("era"):
+        eras = canon_seed.era_options(dossier.get("setting", ""), dossier.get("canonical_name", ""))
+        label = next((e["label"] for e in eras if e["id"] == a["era"]), a["era"])
+        lines.append(f"- ERA: {label}. The REAL PLACES and REAL CHARACTERS listed above "
+                     f"already belong to this era specifically - do not mix in anyone or "
+                     f"anywhere from a different era of this setting.")
     if a.get("entry") and a["entry"] not in ("start",):
         where = "after everything the source covers" if a["entry"] == "after" else a["entry"].replace("_", " ")
         lines.append(f"- ENTRY POINT: the story begins {where}. Seed the world as it stands "

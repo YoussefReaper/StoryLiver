@@ -177,6 +177,11 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
     startOnboarding();
   } else if (S.state?.ended) {
     showEnding({ reason: 'victory', run: { carried: S.state.run || {} } });
+  } else {
+    // Neither gate had anything left to show — the exact case that used to
+    // drop a returning player straight into a brand new world with no idea
+    // who they were standing as.
+    showBriefingIfNeeded();
   }
 }
 
@@ -762,14 +767,14 @@ function entryHTML(e, meta) {
           The world refuses</div>
         <div class="prose">${paras(e.text)}</div>
         ${meta.reason && !e.text.includes(meta.reason) ? `<div class="refusal-reason">${esc(meta.reason)}</div>` : ''}
-        ${meta.rule_ref ? `<span class="rule-chip">rule ${esc(meta.rule_ref)}${meta.checked_by === 'rules' ? ' &middot; enforced in code' : ''}</span>` : ''}
       </div></article>`;
     case 'fate':
       return `<article class="entry entry-fate"><div class="fate-slab">
-        <div class="fate-kicker">Fate <span class="ar" dir="rtl" lang="ar">القدر</span></div>
-        <div class="fate-title">${esc(meta.title || 'It happens')}</div>
+        ${meta.title ? `<div class="fate-title">${esc(meta.title)}</div>` : ''}
         <div class="fate-body">${paras(e.text)}</div>
-        <div class="fate-seal">Written before you arrived. Nothing could have stopped it.</div></div></article>`;
+        <div class="fate-seal">${meta.as_news
+    ? 'It happened somewhere you were not. Nothing could have stopped it.'
+    : 'Written before you arrived. Nothing could have stopped it.'}</div></div></article>`;
     case 'contest':
       return `<article class="entry entry-contest"><div class="contest-slab">
         <div class="contest-head"><svg viewBox="0 0 16 16" class="ico"><path d="M3 13 13 3M6 3H3v3M10 13h3v-3"/></svg>Contested</div>
@@ -808,7 +813,7 @@ function entryHTML(e, meta) {
         ${esc(meta.npc_initiated.name)} acted on their own</span>`);
       if (meta.director_beat) tags.push(`<span class="tag tag-beat">
         <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 9.9 5.7l4.5.5-3.4 3 1 4.4L8 11.4l-4 2.2 1-4.4-3.4-3 4.5-.5z"/></svg>
-        The Director turned the story <em>&middot; ${esc(meta.director_beat.kind)}</em></span>`);
+        Something shifted here</span>`);
       if (meta.discovered) tags.push(`<span class="tag tag-world">Found ${esc(meta.discovered.name)}</span>`);
       if (meta.unseen) tags.push(`<span class="tag tag-unseen">Nobody saw that</span>`);
       for (const r of (meta.reputation || [])) {
@@ -934,10 +939,13 @@ async function sendWhisper(target, text) {
       S.ws.send(JSON.stringify({ type: 'whisper', target_kind: target.kind, target_id: target.id, text }));
       return;
     }
-    const out = await api(`/sessions/${S.sessionId}/whisper`, {
-      method: 'POST',
-      body: { player_id: S.playerId, target_kind: target.kind, target_id: target.id, text },
-    });
+    // Solo has no session row, so posting to /sessions/null/whisper 500'd on
+    // every whisper - near or far. Route to the playthrough endpoint instead.
+    const out = S.sessionId
+      ? await api(`/sessions/${S.sessionId}/whisper`, { method: 'POST',
+          body: { player_id: S.playerId, target_kind: target.kind, target_id: target.id, text } })
+      : await api(`/playthroughs/${S.ptId}/whisper`, { method: 'POST',
+          body: { player_id: S.playerId, target_kind: target.kind, target_id: target.id, text } });
     renderFeed([{ kind: 'whisper', turn: S.state.turn, text: '',
                   meta: { payload: out, label: `You to ${target.name}` } }]);
     refreshWorkspace();
@@ -1437,47 +1445,49 @@ async function showSoul(npcId) {
   const li = (arr) => `<ul>${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
   const others = n.remembers_others || [];
 
+  // A player-facing character sheet, not the engine's own view of itself.
+  // The mood chip IS the disposition the sim already derived (relationships.py
+  // disposition()) - if it reads "stranger" that is what the scalars say, not
+  // a mislabel; the bug this replaces was showing the player raw anchor-
+  // injection notes, rule text ("No model is asked... it is told"), and a
+  // weighted memory stream instead of a character. That's now folded behind
+  // one explicit toggle, off by default.
+  const latest = n.reflections.length ? n.reflections[n.reflections.length - 1] : null;
   d.innerHTML = `
     <div class="drawer-head"><div class="dh-top">
       <div style="flex:1"><h2>${esc(n.name)}${n.alive ? '' : ' &dagger;'}</h2>
-        <div class="dh-role">${esc(live.disposition || n.role)}</div></div>${closeX}
+        <div class="dh-role">${esc(n.role)}
+          <span class="mood-chip mood-${esc((live.disposition || 'stranger').split(' ')[0])}">${esc(live.disposition || 'stranger')}</span>
+        </div></div>${closeX}
     </div></div>
     <div class="drawer-body">
       ${n.alive ? `<button class="btn btn-ghost" data-whisper-npc="${n.id}" data-name="${esc(n.name)}">
         <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6a5.4 5.4 0 0 0-3.4 9.6V14l2.2-1.2a5.4 5.4 0 1 0 1.2-11.2z"/></svg>
         Whisper to ${esc(n.name)}</button>` : ''}
-      <section class="sect"><h3>How they feel about you</h3>
+      <section class="sect"><h3>What they want from you</h3>${li(a.goals)}
+        ${live.will_cover ? '<p class="anchor-note"><b>They would cover for you, if it came to that.</b></p>' : ''}</section>
+      ${latest ? `<section class="sect"><h3>What they know about you</h3>
+        <p class="anchor-note">${esc(latest.text)}</p></section>` : ''}
+      <details class="sheet-debug">
+        <summary>Engine internals</summary>
         <div class="bars">
           ${bar('Affinity', 'affinity', rel.affinity)}${bar('Trust', 'trust', rel.trust)}
           ${bar('Fear', 'fear', rel.fear)}${bar('Duty', 'obligation', rel.obligation)}
           ${bar('Loyalty', 'loyalty', live.loyalty)}${bar('Love', 'love', live.love)}
           ${bar('Respect', 'respect', live.respect)}
         </div>
-        <p class="anchor-note">${live.will_cover ? '<b>They would cover for you.</b> ' : ''}
-        These move by a repeated trust game: kindness compounds with diminishing returns, and a betrayal
-        costs a multiple of whatever trust it broke. No model is asked how they feel — it is told.
-        ${others.length ? `<br><br>This character keeps ${others.length} separate memory stream${others.length > 1 ? 's' : ''}
-        of the other players.` : ''}</p>
-      </section>
-      <section class="sect"><h3>Persona anchors — injected every single turn</h3>
         <div class="anchor-grid">
           <div class="anchor-row"><div class="ak">Voice</div><div class="av">${esc(a.voice)}</div></div>
           <div class="anchor-row"><div class="ak">Constraints</div><div class="av">${li(a.constraints)}</div></div>
-          <div class="anchor-row"><div class="ak">Wants</div><div class="av">${li(a.goals)}</div></div>
           <div class="anchor-row"><div class="ak">Never</div><div class="av">${li(a.taboos)}</div></div>
         </div>
-        <p class="anchor-note">Constant, never summarised. A proposed action that breaks one of these is
-        cancelled before it happens — the model does not get a vote.</p></section>
-      ${(live.plan || []).length ? `<section class="sect"><h3>What they intend next</h3>
-        <div class="plan-list">${live.plan.map((p) => `<div class="plan-item">${esc(p)}</div>`).join('')}</div></section>` : ''}
-      ${n.reflections.length ? `<section class="sect"><h3>Conclusions about you</h3>
-        <div class="mem-list">${n.reflections.slice().reverse().map((r) => `
-          <div class="mem k-reflection"><div class="mem-meta"><span>turn ${r.turn}</span><span>reflection</span></div>${esc(r.text)}</div>`).join('')}</div></section>` : ''}
-      <section class="sect"><h3>Memory stream <span style="color:var(--faint);font-weight:400">&middot; ${n.memories.length}</span></h3>
+        ${(live.plan || []).length ? `<div class="plan-list">${live.plan.map((p) => `<div class="plan-item">${esc(p)}</div>`).join('')}</div>` : ''}
         <div class="mem-list">${n.memories.length ? n.memories.map((m) => `
           <div class="mem k-${esc(m.kind)}"><div class="mem-meta"><span>turn ${m.turn}</span><span>${esc(m.kind)}</span>
           <span>weight ${m.importance}</span>${m.player_id === '*' ? '<span>known to all</span>' : ''}</div>${esc(m.text)}</div>`).join('')
-          : '<div class="empty">Nothing observed yet.</div>'}</div></section>
+          : '<div class="empty">Nothing observed yet.</div>'}</div>
+        ${others.length ? `<p class="anchor-note">${others.length} separate memory stream${others.length > 1 ? 's' : ''} of other players.</p>` : ''}
+      </details>
     </div>`;
 }
 
@@ -1966,6 +1976,7 @@ function showMenu() {
       ${item('settings', 'gear', 'How it looks', 'Theme, density, power mode')}
       ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
       ${item('forge', 'forge', 'World Forge', 'Build a world, or name a setting')}
+      ${item('brief', 'eye', 'Who you are', 'Your role, where you are, and why')}
       ${item('rules', 'scale', 'The rules of this world', 'What the World Master enforces')}
       ${item('canonlog', 'shield', 'Where the world pushed back', 'Every time a rule stopped something')}
       ${item('au', 'book', 'Change one thing', 'An alternate premise this world diverges on')}
@@ -2607,6 +2618,7 @@ async function onGlobalClick(e) {
     standing: showStanding,
     canonlog: showCanonLog,
     au: showAU,
+    brief: showBriefing,
     board: () => showBoard('pvp'),
     case: showCase,
     explain: () => showExplainer(true), profile: showProfile,
@@ -3203,13 +3215,22 @@ function renderObjective() {
   const el = $('#objective');
   if (!el) return;
   const o = S.objective && S.objective.objective;
-  if (!o || !o.goal) { el.hidden = true; return; }
+  // D9: this used to hide the WHOLE panel whenever `goal` was empty — which
+  // included every open-ended world (`sandbox` and its siblings ship a
+  // deliberately blank objective string), so a sandbox player got total
+  // silence instead of the "No main quest. The world simply runs." detail
+  // the backend was already sending. Silence is the one thing this panel
+  // must never be — an untagged world falls back to a plain statement
+  // rather than disappearing.
+  if (!o) { el.hidden = true; return; }
   el.hidden = false;
+  const goal = o.goal || (o.open_ended ? 'No set objective — explore, and find your own.'
+    : 'Find your footing here.');
   el.innerHTML = `<div class="card-head"><h2>${esc(o.name)}</h2>
-      <span class="pill">${Math.round((o.progress || 0) * 100)}%</span></div>
-    <p class="obj-goal">${esc(o.goal)}</p>
-    <div class="tension-track"><div class="tension-fill"
-      style="width:${Math.round((o.progress || 0) * 100)}%"></div></div>
+      ${o.open_ended ? '' : `<span class="pill">${Math.round((o.progress || 0) * 100)}%</span>`}</div>
+    <p class="obj-goal">${esc(goal)}</p>
+    ${o.open_ended ? '' : `<div class="tension-track"><div class="tension-fill"
+      style="width:${Math.round((o.progress || 0) * 100)}%"></div></div>`}
     <p class="obj-detail">${esc(o.detail || '')}</p>
     ${o.mode === 'detective' ? '<button class="tiny-btn" data-case="open-file">Casefile</button>' : ''}
     ${o.mode === 'daily' ? `<button class="tiny-btn" data-daily-submit="1">Post today's score</button>
@@ -4479,6 +4500,60 @@ async function finishOnboarding() {
   closeOverlays();
   renderAll();
   toast('Your world is set. Change any of it from the story menu.');
+  // D9: the three onboarding decisions above shape the world; none of them
+  // says who the player IS or why they're standing where they're standing.
+  // This is the seam - one blank input box away from the tone/lines dials,
+  // with nothing between "the world is set" and "figure it out yourself."
+  showBriefingIfNeeded();
+}
+
+/* ===========================================================================
+   D9 — the first-run briefing. "I don't know where I am, what my role is,
+   what's going on around me, why they want answers or what for."
+
+   Every field here already exists on the snapshot the player already has -
+   protagonist, location, and the world's own tagline/premise (the forge
+   writes the premise SPECIFICALLY to answer "who are you and why are you
+   here", per worldforge's own brief to itself). Nothing was missing from the
+   data; nothing ever assembled it into one place before the input box.
+   ========================================================================= */
+
+function needsBriefing(ptId) {
+  try { return !localStorage.getItem(`storyliver.briefed.${ptId}`); } catch { return false; }
+}
+
+function markBriefed(ptId) {
+  try { localStorage.setItem(`storyliver.briefed.${ptId}`, '1'); } catch { /* private mode */ }
+}
+
+function showBriefingIfNeeded() {
+  if (!S.ptId || !S.state || S.state.turn !== 0) return;
+  if (!needsBriefing(S.ptId)) return;
+  showBriefing();
+}
+
+function showBriefing() {
+  const st = S.state;
+  const world = st.world || {};
+  showModal(`${head('Before you begin', '')}
+    <div class="modal-body">
+      <div class="brief-who">
+        <div class="brief-label">You are</div>
+        <div class="brief-line">${esc(st.protagonist || 'a traveller, unnamed here')}</div>
+      </div>
+      <div class="brief-who">
+        <div class="brief-label">Right now, you are at</div>
+        <div class="brief-line">${esc(st.location_name || 'the threshold')}</div>
+      </div>
+      ${world.tagline ? `<div class="brief-tag">${esc(world.tagline)}</div>` : ''}
+      ${world.premise ? `<p class="brief-premise">${esc(world.premise)}</p>` : ''}
+      <p class="fineprint">This is everything the world knows about you so far. Everyone you
+        meet knows only what they have actually witnessed or been told — nothing more, and
+        nothing less.</p>
+      <div class="row" style="margin-top:14px">
+        <button class="btn btn-primary" data-brief-done>Into the story</button>
+      </div>
+    </div>`);
 }
 
 /* ===========================================================================
@@ -4727,8 +4802,12 @@ document.addEventListener('click', async (ev) => {
     S.onboardStep += 1;
     return renderOnboardStep();
   }
-  if (pick('[data-onb-skip]')) { markOnboarded(); closeOverlays(); return renderAll(); }
+  if (pick('[data-onb-skip]')) {
+    markOnboarded(); closeOverlays(); renderAll();
+    return showBriefingIfNeeded();
+  }
   if (pick('[data-onb-done]')) return finishOnboarding();
+  if (pick('[data-brief-done]')) { markBriefed(S.ptId); return closeOverlays(); }
 
   const line = pick('[data-line]');
   if (line) {
@@ -5095,10 +5174,11 @@ function renderBoard(b) {
         <div class="ib-facts">${k.facts.map((f) => `
           <div class="ib-fact src-${esc(f.source)}">
             <span>${esc(f.summary)}</span>
-            <em>${esc(f.source)} · T${f.turn} · ${Math.round(f.confidence * 100)}%</em>
+            <em>${esc(f.source)} · T${f.turn} · ${f.confidence >= 0.75 ? 'certain'
+    : f.confidence >= 0.4 ? 'fairly sure' : 'a rumor'}</em>
           </div>`).join('')}</div>
       </div>`).join('') : '<div class="empty">Nobody has anything on you.</div>'}
-    ${b.unwitnessed ? `<div class="ib-quiet">${b.unwitnessed} thing${b.unwitnessed === 1 ? '' : 's'} you did that nobody ever learned about.</div>` : ''}
+    ${b.unwitnessed ? `<div class="ib-quiet">${b.unwitnessed} thing${b.unwitnessed === 1 ? '' : 's'} stayed between you and the dark.</div>` : ''}
   </div>`;
 }
 
@@ -5315,6 +5395,7 @@ function finishExplainer() {
   // Hand straight into world setup so a first-timer meets one continuous flow
   // rather than two modals with a gap between them.
   if (needsOnboarding() && S.state?.turn === 0) startOnboarding();
+  else showBriefingIfNeeded();
 }
 
 /* ===========================================================================

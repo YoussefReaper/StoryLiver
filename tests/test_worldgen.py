@@ -190,6 +190,152 @@ def test_a_forged_world_matches_the_starter():
        f"and nothing ever filled it, on forged worlds OR the starter")
 
 
+def test_f3_generated_content_is_tagged_canon_or_original():
+    section("F3 - filler is marked as filler, not passed off as canon")
+    # When a chosen scale needs more people/places than the source actually
+    # has, the builder fills the gap by invention - always fine, but the
+    # result was indistinguishable from the real thing. Every NPC/location
+    # now carries an origin: "canon" if it matches a name the build was
+    # actually grounded in, "original" if the model had to invent it - the
+    # data a fill-budget UI needs to ever exist.
+    db.init()
+
+    starter = registry.resolve("emberfall", None)
+    ok(starter.npcs[0].get("origin") == "canon" and starter.locations[0].get("origin") == "canon",
+       "a hand-authored/starter world has nothing to tag as filler - "
+       "everyone defaults to canon rather than being mislabelled")
+
+    ok(worldforge._fold("Tanjiro Kamado") == worldforge._fold("tanjiro  KAMADO"),
+       "the match is exact after folding case/whitespace - matching how "
+       "grounding_brief() actually instructs the model ('spell them exactly "
+       "as written above'), not a fuzzy match that could credit an "
+       "unrelated invented name as canon")
+
+    grounded = {worldforge._fold("Tanjiro Kamado"), worldforge._fold("Nezuko Kamado")}
+
+    def tag(name):
+        return "canon" if worldforge._fold(name) in grounded else "original"
+    ok(tag("Tanjiro Kamado") == "canon" and tag("Some Invented Villager") == "original",
+       "a name the build was grounded in is tagged canon; anything else "
+       "the model added to fill the scale is tagged original")
+
+    # End to end: a world built with research forced down still tags every
+    # generated character honestly (as "original", since a stub with no
+    # grounding to draw from cannot produce a canon-matching name) rather
+    # than defaulting everyone to "canon" and silently lying about it.
+    forged = _forge()
+    ok(all(n.get("origin") in ("canon", "original") for n in forged["npcs"]),
+       "every generated character is tagged one way or the other, never left unset")
+    ok(all(l.get("origin") in ("canon", "original") for l in forged["locations"]),
+       "same for every generated location")
+
+
+def test_all_four_scales_build_without_truncating():
+    section("D3 - region and world builds, not just town and city")
+    # Bumped once already (6000/7000 token caps) and never actually verified
+    # past city scale. A multi-district build is 6-9 separate model calls,
+    # and the caps were right - but nothing was checked past what they were
+    # tuned against.
+    db.init()
+    for scale, districts in (("town", 1), ("city", 3), ("region", 5), ("world", 8)):
+        w = worldkit.load(worldforge.bootstrap(
+            "a drowned lighthouse colony", user_id="d3", scale=scale))
+        ok(len(w.locations) > 0 and len(w.npcs) > 0,
+           f"{scale} ({districts} district(s)) built real places and people "
+           f"({len(w.locations)} places, {len(w.npcs)} people)")
+        ok(len(w.rules) >= worldkit.MIN_RULES and len(w.fated_events) == worldkit.MIN_FATED,
+           f"{scale}: {len(w.rules)} rules, {len(w.fated_events)} fated events - "
+           f"the laws pass output is a FIXED size regardless of world scale, "
+           f"so it must not shrink just because more districts fed it")
+        ids = [l["id"] for l in w.locations] + [n["id"] for n in w.npcs]
+        ok(len(ids) == len(set(ids)),
+           f"{scale}: every id across every district is unique, welded correctly")
+
+
+def test_a_truncated_pass_falls_back_instead_of_failing_the_whole_build():
+    section("D3 - one oversized pass degrades gracefully instead of costing the whole build")
+    # This was the actual bug behind the reported 502s, not the token caps:
+    # `except llm.LLMError: raise HTTPException(502, ...)` turned ANY single
+    # truncated response - out of 6 to 9 calls a region/world build makes -
+    # into total failure, discarding every call that had already succeeded
+    # and been paid for. A retry, then a procedural fallback for just the
+    # one pass that failed, is what actually fixes availability; the token
+    # bump only lowered how often this path gets exercised.
+    from backend import config, llm
+    db.init()
+    real_complete, real_key_for = llm.complete, config.key_for
+
+    def always_truncates(role, system, user, *, user_id, json_mode=False,
+                         max_tokens=700, temperature=0.8, stub=None,
+                         playthrough_id=None, model=None):
+        raise llm.LLMError("no JSON object in model output")
+
+    llm.complete = always_truncates
+    config.key_for = lambda model: "present"   # a real attempt, not a config gap
+    try:
+        stub_calls = {"n": 0}
+
+        def stub():
+            stub_calls["n"] += 1
+            return {"districts": [{"id": "d1", "name": "One", "premise": "p", "connects": []}]}
+
+        out = worldforge._resilient("narrator", "sys", "user", user_id="d3fail",
+                                    max_tokens=100, temperature=1.0, stub=stub)
+        ok(out.get("districts"), "the pass completes via the procedural fallback")
+        ok(stub_calls["n"] == 1,
+           "exactly one retry happened before falling back — not a silent "
+           "first-try surrender, not an infinite retry loop either")
+    finally:
+        llm.complete, config.key_for = real_complete, real_key_for
+
+    # A missing key is NOT a size problem - retrying cannot fix it, and
+    # swallowing it would hide a config error behind bad procedural content.
+    llm.complete = always_truncates
+    config.key_for = lambda model: ""
+    try:
+        try:
+            worldforge._resilient("narrator", "sys", "user", user_id="d3fail2",
+                                  max_tokens=100, temperature=1.0, stub=lambda: {})
+            ok(False, "a missing key must still raise, not silently fall back")
+        except llm.LLMError:
+            ok(True, "a missing key raises cleanly with no retry wasted on it")
+    finally:
+        llm.complete, config.key_for = real_complete, real_key_for
+
+
+def test_locations_are_scenes_not_a_floor_plan():
+    section("D4 - a sub-room is detail, not its own place")
+    # Reported: "Training Ground" inside Butterfly Mansion built as its own
+    # PLACE, and a 24-place city read as granular rather than dense. Neither
+    # prompt ever told the architect a location was a SCENE, not a room -
+    # the schema had a `desc` field and nothing said what belonged in it
+    # versus what belonged as its own id. Both passes that emit locations
+    # (the single-district STRUCTURE_SYSTEM and the multi-district
+    # DISTRICT_FILL_SYSTEM) carry the same instruction now, so a town build
+    # and a world build get the same discipline.
+    for name, prompt in (("STRUCTURE_SYSTEM", worldforge.STRUCTURE_SYSTEM),
+                         ("DISTRICT_FILL_SYSTEM", worldforge.DISTRICT_FILL_SYSTEM)):
+        ok("SCENE" in prompt and "floor plan" in prompt,
+           f"{name} states the actual test: a location is a scene, not a room")
+        ok("sub-room" in prompt.lower(),
+           f"{name} names the exact failure mode with a concrete example "
+           "(a training ground inside a manor), not an abstract rule a "
+           "model can satisfy while still doing the wrong thing")
+        ok("folded into the parent" in prompt,
+           f"{name} says where the detail actually GOES (the parent's desc) "
+           "rather than only saying what not to do")
+
+    # The scale-appropriate per-district cap this sits on top of already
+    # existed (SCALES' locs range) - confirm it still builds at every size
+    # with the new instruction in place, not just that the text is present.
+    db.init()
+    for scale in ("town", "city", "region", "world"):
+        w = worldkit.load(worldforge.bootstrap(
+            "a drowned lighthouse colony", user_id="d4", scale=scale))
+        ok(len(w.locations) > 0, f"{scale} still builds real places with the "
+                                 f"instruction in place ({len(w.locations)})")
+
+
 def test_the_dark_systems_actually_light_up():
     section("density - and the systems downstream of it come on")
     db.init()
@@ -400,6 +546,10 @@ def _all():
             test_an_original_setting_is_still_original,
             test_a_crossover_is_private_even_when_research_misses,
             test_a_forged_world_matches_the_starter,
+            test_f3_generated_content_is_tagged_canon_or_original,
+            test_all_four_scales_build_without_truncating,
+            test_a_truncated_pass_falls_back_instead_of_failing_the_whole_build,
+            test_locations_are_scenes_not_a_floor_plan,
             test_the_dark_systems_actually_light_up,
             test_the_daily_is_genuinely_the_same_world,
             test_the_fate_thread_does_not_spoil_itself,
