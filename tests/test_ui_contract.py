@@ -239,8 +239,33 @@ def test_every_class_written_is_a_class_that_paints():
        "and `.input`, the most-written class in the app, is one of them")
 
 
+def test_a_built_world_is_not_given_a_database_id_it_does_not_have():
+    section("save — a freshly built world can actually be saved")
+    # THE BUG: every save of a newly built world came back 404 "no such world"
+    # in red, so a world could be built and then never kept.
+    #
+    # /forge/bootstrap BUILDS a world; it does not save one. But normalise()
+    # always stamps an id derived from the world's NAME, so a fresh Emberfall
+    # arrives carrying id "emberfall" - which looks like an id and is not one.
+    # The rebuilt forge's bridge passed that straight in as the editor's
+    # world_id, so the first save took worldforge.save's `if world_id` UPDATE
+    # branch, matched no row owned by this user, and raised KeyError -> 404.
+    bridge = JS[JS.find("onWorldBuilt:"):]
+    bridge = bridge[:bridge.find("\n  },")]
+    ok("openEditor(world, world.id" not in bridge,
+       "the built world's name-slug is never passed off as a database id")
+    ok("payload.saved" in bridge,
+       "an id is used only when the payload actually reports a saved world")
+
+    # The older bootstrap path always had this right; the rebuilt one is now
+    # held to the same rule, so the two cannot drift apart again.
+    ok("openEditor(r.world, (r.saved && r.saved.id) || null" in JS,
+       "and the legacy path it diverged from still reads the same way")
+
+
 def _all():
-    return (test_hidden_actually_hides, test_scroll_containers_can_shrink,
+    return (test_a_built_world_is_not_given_a_database_id_it_does_not_have,
+            test_hidden_actually_hides, test_scroll_containers_can_shrink,
             test_mobile_overrides_come_after_base_rules,
             test_responsive_panels_stay_reachable, test_assets_are_cache_busted,
             test_text_is_never_painted_in_a_ground_colour,

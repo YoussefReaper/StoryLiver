@@ -2159,7 +2159,18 @@ window.__appBridge = {
     S.forgeWorld = world;
     closeOverlays();
     if (payload.notice) toast(payload.notice, 'warn');
-    openEditor(world, world.id, payload.notice || 'Built. Edit anything before you play.');
+    // NOT world.id. /forge/bootstrap builds a world, it does not save one, and
+    // normalise() always stamps an id derived from the world's NAME - so a
+    // freshly built Emberfall arrives carrying id "emberfall". Passing that as
+    // the editor's world_id made the first save an UPDATE of a row that has
+    // never existed: worldforge.save took its `if world_id` branch, found
+    // nothing owned by this user, and every single save of a newly built world
+    // came back 404 "no such world" in red. A built world has no database
+    // identity until it is saved, which is exactly what null means here (and
+    // what the older bootstrap path at openEditor(r.world, r.saved?.id || null)
+    // has always passed).
+    const savedId = (payload.saved && payload.saved.id) || null;
+    openEditor(world, savedId, payload.notice || 'Built. Edit anything before you play.');
   },
 };
 
