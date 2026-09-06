@@ -116,7 +116,10 @@ async function initThreshold() {
     $('#qsTitle').textContent = w.name;
     $('#qsTagline').textContent = w.tagline;
     $('#qsPremise').textContent = w.premise;
-    $('#beginBtn').querySelector('span').textContent = `Step into ${w.name}`;
+    // .home-world-go, not querySelector('span'): the world card's first span
+    // is its artwork, and writing the label into that painted the button's
+    // text inside the picture.
+    $('#beginBtn').querySelector('.home-world-go').textContent = `Step into ${w.name}`;
     $('#qsStats').innerHTML = [
       [`${w.npc_count}`, 'living minds'], [`${w.fated_events}`, 'fated events'],
       [`${w.rules}`, 'enforced rules'], ['0', 'subscriptions'],
@@ -2252,6 +2255,42 @@ function wire() {
   $('#joinCode').addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
   });
+  // The home page's witness demo. It is the one claim on that page a visitor
+  // cannot check by reading, so they get to flip it themselves: the same
+  // action, seen and unseen, and who ends up knowing.
+  const WITNESS = {
+    seen: {
+      label: 'YOU WERE SEEN',
+      text: 'The priest says nothing while you do it, which is worse. By morning the guild '
+          + 'knows there is a ledger missing and knows whose hands were on the desk.',
+      knowers: [['THE PRIEST', ''], ['TWO ALTAR BOYS', ''], ['THE GUILD, BY MORNING', 'home-tag-soon']],
+    },
+    unseen: {
+      label: 'NOBODY SAW IT',
+      text: 'The rectory is empty and stays empty. The ledger is simply gone, and for eleven '
+          + 'days the only person in the world who knows where it went is you.',
+      knowers: [['ONLY YOU', 'home-tag-quiet']],
+    },
+  };
+  function showWitness(which) {
+    const w = WITNESS[which] || WITNESS.seen;
+    const box = $('#witnessBox');
+    if (!box) return;
+    box.classList.toggle('seen', which === 'seen');
+    box.classList.toggle('unseen', which !== 'seen');
+    $('#witnessLabel').textContent = w.label;
+    $('#witnessText').textContent = w.text;
+    $('#witnessKnowers').innerHTML = w.knowers
+      .map(([n, extra]) => `<span class="home-tag ${extra}">${esc(n)}</span>`).join('');
+    $$('[data-witness]').forEach((b) =>
+      b.setAttribute('aria-pressed', String(b.dataset.witness === which)));
+  }
+  showWitness('seen');
+  $('#threshold').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-witness]');
+    if (b) showWitness(b.dataset.witness);
+  });
+
   $('#pricingLinkThreshold').addEventListener('click', showPricing);
   $('#ethicsLinkThreshold').addEventListener('click', () => showEthics().catch((e) => toast(e.message, 'err')));
 
