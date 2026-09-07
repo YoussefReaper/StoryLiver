@@ -141,10 +141,13 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   // on - every later call would then fail in a much more confusing place.
   let feed, ws;
   try {
-    [{ feed }, ws] = await Promise.all([
+    let pack;
+    [pack, ws] = await Promise.all([
       api(`/playthroughs/${id}?player=${encodeURIComponent(playerId)}`),
       api(`/playthroughs/${id}/workspace?player=${encodeURIComponent(playerId)}`),
     ]);
+    feed = pack.feed;
+    S.away = pack.away || null;
   } catch (e) {
     localStorage.removeItem('storyliver.last');
     S.ptId = null; S.sessionId = null;
@@ -159,6 +162,7 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   S.legacy = null; S.chronUnseen = 0;
   $('#feed').innerHTML = '';
   renderFeed(feed);
+  renderAway();
   renderAll();
   $('#threshold').hidden = true;
   $('#app').hidden = false;
@@ -811,9 +815,11 @@ function entryHTML(e, meta) {
     }
     default: {
       const tags = [];
-      if (meta.npc_initiated) tags.push(`<span class="tag tag-npc">
-        <svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="5" r="2.4"/><path d="M3 13.5c.5-2.6 2.4-3.9 5-3.9s4.5 1.3 5 3.9"/></svg>
-        ${esc(meta.npc_initiated.name)} acted on their own</span>`);
+      // `${name} acted on their own` was the engine applauding itself. The
+      // character acting under their own steam is ALREADY in the prose below —
+      // labelling it tells the player the interesting thing was a system
+      // firing, when the interesting thing was a person deciding. Dropped
+      // outright rather than restyled: there is nothing here to show.
       if (meta.director_beat) tags.push(`<span class="tag tag-beat">
         <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 9.9 5.7l4.5.5-3.4 3 1 4.4L8 11.4l-4 2.2 1-4.4-3.4-3 4.5-.5z"/></svg>
         Something shifted here</span>`);
@@ -840,11 +846,37 @@ function entryHTML(e, meta) {
   }
 }
 
+// State shows as BEHAVIOUR, never as a scalar. `aff +2 · tru -1` is the engine
+// talking about itself: it tells a player what a number did, not what a person
+// did, and it is the single loudest reason the screen read as an admin panel
+// wrapped around good prose. The raw axes still exist and are still exact —
+// they live in the Power tab, which is where a player who wants the numbers
+// goes to ask for them.
+const REL_BEHAVIOUR = {
+  affinity:   ['warmer toward you', 'colder toward you'],
+  trust:      ['trusts you further', 'trusts you less'],
+  fear:       ['more afraid of you', 'less afraid of you'],
+  obligation: ['feels they owe you', 'feels squarer with you'],
+  love:       ['closer to you', 'further from you'],
+  loyalty:    ['more loyal to you', 'less loyal to you'],
+  respect:    ['respects you more', 'respects you less'],
+};
+
+// One clause, from whichever axis actually moved most. Two people can shift on
+// the same axis and read differently because the phrasing is about them.
+function behaviourOf(deltas, minimum = 0.5) {
+  const moved = Object.entries(deltas || {})
+    .filter(([k, v]) => REL_BEHAVIOUR[k] && Math.abs(v) >= minimum)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))[0];
+  if (!moved) return '';
+  const [axis, value] = moved;
+  return REL_BEHAVIOUR[axis][value > 0 ? 0 : 1];
+}
+
 function relEventChip(r) {
   const npc = S.state?.npcs.find((n) => n.id === r.npc);
-  const parts = Object.entries(r.deltas || {}).filter(([, v]) => Math.abs(v) >= 0.5)
-    .map(([k, v]) => `<span class="${v > 0 ? 'rc-up' : 'rc-dn'}">${k.slice(0, 3)} ${v > 0 ? '+' : ''}${Math.round(v)}</span>`);
-  return `<span class="delta rel-chip"><b>${esc(npc?.name || r.npc)}</b> ${esc(r.event.replace(/_/g, ' '))} ${parts.join(' ')}</span>`;
+  const said = behaviourOf(r.deltas) || esc(r.event.replace(/_/g, ' '));
+  return `<span class="delta rel-chip"><b>${esc(npc?.name || r.npc)}</b> ${esc(said)}</span>`;
 }
 
 function playerName(pid) {
@@ -854,14 +886,25 @@ function playerName(pid) {
 
 function deltaChip(d) {
   const npc = S.state ? S.state.npcs.find((n) => n.id === d.npc) : null;
-  const parts = ['affinity', 'trust', 'fear', 'obligation']
-    .filter((k) => Math.abs(d[k] || 0) >= 1)
-    .map((k) => `${k.slice(0, 3)} ${Math.round(d[k]) > 0 ? '+' : ''}${Math.round(d[k])}`);
-  return `<span class="delta"><b>${esc(npc ? npc.name : d.npc)}</b> ${esc(d.note || parts.join(' · ') || 'shifted')}</span>`;
+  // A written note beats anything generated; otherwise say what they DID, not
+  // which of their four hidden numbers moved and by how much.
+  const said = d.note || behaviourOf(d, 1) || 'has taken a view of you';
+  return `<span class="delta"><b>${esc(npc ? npc.name : d.npc)}</b> ${esc(said)}</span>`;
 }
 
 /* ------------------------------------------------------------ the turn */
 let stageTimer = null;
+
+// What the world says while it is thinking. Deliberately about the WORLD and
+// never about the request: no stages, no percentage, nothing that admits a
+// model is running. The lines are ambient and true-by-construction — they say
+// only that time is passing somewhere, which it is.
+const QUILL_LINES = [
+  'The world is writing',
+  'The hour turns over',
+  'Somewhere, someone decides',
+  'Word is going round',
+];
 
 function thinking(on, who = '') {
   const box = $('#thinking');
@@ -869,15 +912,20 @@ function thinking(on, who = '') {
   $('#thinkingWho').textContent = who;
   if (S.role !== 'spectator') { $('#sendBtn').disabled = on; $('#actionInput').disabled = on; }
   clearInterval(stageTimer);
-  const dots = $$('.stage-dot');
-  if (!on) { dots.forEach((d) => d.classList.remove('on')); return; }
+  if (!on) return;
+
+  // The ambient line is read off the live world clock rather than invented, so
+  // a waiting player is looking at the real hour, weather and place.
+  const bits = [$('#wcTime')?.textContent, $('#wcSky')?.textContent, $('#wcHere')?.textContent]
+    .map((s) => (s || '').trim()).filter(Boolean);
+  $('#thinkingAmbient').textContent = bits.join(' · ');
+
   let i = 0;
-  dots.forEach((d) => d.classList.remove('on'));
-  dots[0].classList.add('on');
+  $('#thinkingSay').textContent = QUILL_LINES[0];
   stageTimer = setInterval(() => {
-    i = (i + 1) % dots.length;
-    dots.forEach((d, j) => d.classList.toggle('on', j <= i));
-  }, 800);
+    i = (i + 1) % QUILL_LINES.length;
+    $('#thinkingSay').textContent = QUILL_LINES[i];
+  }, 2600);
 }
 
 async function submitAction(text) {
@@ -2062,6 +2110,31 @@ async function saveAU() {
 }
 
 /** A town that remembers you is the payoff for having played here before. */
+/* What the world did while nobody was looking. The one thing a chat window
+   cannot do, so it gets a real moment on return rather than a toast that
+   disappears in four seconds. Appended to the END of the feed because that is
+   where the player is reading: it sits between the last thing they did and the
+   next thing they will. */
+function renderAway() {
+  const a = S.away;
+  if (!a || !(a.items || []).length) return;
+  const feed = $('#feed');
+  if (!feed) return;
+  const el = document.createElement('article');
+  el.className = 'entry entry-away';
+  el.innerHTML = `<div class="away-slab">
+    <div class="away-head">
+      <svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.4"/></svg>
+      <span>While you were away</span>
+      <em>${esc(a.away)}</em>
+    </div>
+    <ul class="away-list">${a.items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
+    <div class="away-foot">The story waited. The hour did not.</div>
+  </div>`;
+  feed.appendChild(el);
+  feed.scrollTop = feed.scrollHeight;
+}
+
 function announceReturn() {
   const r = S.state?.returned;
   if (!r || !r.seeded || !(r.factions || []).length) return;

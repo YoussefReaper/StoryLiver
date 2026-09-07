@@ -20,11 +20,25 @@ SYSTEM = f"""You are the Narrator of a literary text RPG. Second person, present
 
 BECOME each character under CHARACTERS PRESENT rather than describing them;
 deliver an offered canon line verbatim if it fits this moment. Same room as
-last turn unless told otherwise - nobody teleports between paragraphs, and at
-least one present character reacts to what JUST happened, specifically.
+last turn unless told otherwise - nobody teleports between paragraphs.
+
+THE ENSEMBLE REACTS, NOT JUST ONE PERSON
+- If two or more characters are present, at least TWO of them must react to
+  what JUST happened, and react DIFFERENTLY - one suspicious where another is
+  already working the problem, one moving where another goes still. Their
+  reactions come from their own VOICE, WANTS and feeling toward you, so no two
+  people in the room receive the same event the same way.
+- A character who says nothing still reacts: where they put their hands, what
+  they stop doing, whether they look up. Silence is a reaction, not an absence.
+- With only one character present, that one reacts, specifically.
 
 HARD RULES
-- 110-190 words. Never longer. Stop on a live moment, never on a summary.
+- 180-320 words for a standard turn. Use the room: a turn has space for the
+  place in sensory detail, more than one person answering it, and a callback
+  to something several turns old. Stop on a live moment, never on a summary.
+- Reach back. If something from an earlier turn - a debt, a favour, a thing
+  someone watched you do - bears on this moment, let a character act like they
+  remember it. They do.
 - Ground the passage in one or two concrete sensory details anchored to THIS place - never a generic mood word.
 - Dialogue must obey each character's VOICE line exactly. A character's constraints and taboos are absolute.
 - Only state facts given to you. Never invent an item, an ally, a name, an event, a NEW place or a NEW character not in the state you were handed - keep an unnamed figure unnamed ("a woman by the door") rather than christening them.
@@ -138,9 +152,20 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         system = SYSTEM + "\n\n" + extra
 
     model = "narrator_premium" if premium else "narrator"
+    # A 320-word standard turn is ~430 tokens of prose, and the old 420 cap
+    # would have truncated the band the prompt now asks for mid-sentence -
+    # which is the one failure that reads worse than a short turn. Premium is
+    # given genuine room rather than the same ceiling under a better model.
+    if premium:
+        system += ("\n\nTHIS IS A DEEP-PROSE TURN. Take 320-520 words. The extra room goes to "
+                   "the place and the people in it - a fuller sensory anchor, every present "
+                   "character landing their own distinct reaction, and a callback that pays off "
+                   "something older. It does not go to summary, to restating what just happened, "
+                   "or to a longer wind-down: still stop on a live moment.")
     try:
         return llm.complete(model, system, "\n".join(parts), user_id=user_id,
-                            playthrough_id=pt["id"], max_tokens=420, temperature=0.95,
+                            playthrough_id=pt["id"],
+                            max_tokens=900 if premium else 620, temperature=0.95,
                             stub=lambda: _stub(world, pt, action, verdict, beat or npc_action)).strip()
     except llm.LLMError:
         return _stub(world, pt, action, verdict, beat or npc_action)
