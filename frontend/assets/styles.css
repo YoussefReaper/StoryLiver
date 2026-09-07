@@ -723,6 +723,76 @@ button { background: none; border: 0; cursor: pointer; }
 .delta .up { color: var(--ok); } .delta .dn { color: var(--crimson); }
 
 /* ------------------------------------------------------------ thinking -- */
+/* ------------------------------------------------------------------ RTL --
+   The feed's whole grammar is carried on a LEFT rule — narration hairline,
+   your own action's ember rule, the speaker plate, the away card. In Arabic
+   every one of those lands on the wrong edge of its own paragraph, which
+   breaks the one thing the grammar is for: telling entry types apart before
+   you read them. These restate the same rules as LOGICAL properties, so the
+   marker follows the text direction instead of the screen.
+
+   Scoped to [dir="rtl"] rather than done globally, because rewriting every
+   physical property in a 2000-line sheet at once is how a working LTR layout
+   gets broken to fix one that has no users yet. */
+[dir="rtl"] { text-align: right; }
+[dir="rtl"] .prose,
+[dir="rtl"] .away-list li,
+[dir="rtl"] .plate-line { text-align: right; }
+
+[dir="rtl"] .you-line,
+[dir="rtl"] .refusal-wrap,
+[dir="rtl"] .plate,
+[dir="rtl"] .away-slab {
+  border-left: none;
+  border-right-style: solid;
+  border-radius: var(--r-sm) 0 0 var(--r-sm);
+}
+[dir="rtl"] .you-line { border-right: 2px solid var(--ember-deep); }
+[dir="rtl"] .refusal-wrap { border-right: 2px solid var(--crimson); padding-left: 0; padding-right: 16px; }
+[dir="rtl"] .plate { border-right: 2px solid var(--ember-deep); }
+[dir="rtl"] .away-slab { border: 1px solid var(--line); border-right: 2px solid var(--violet); }
+[dir="rtl"] .away-list { padding: 0 16px 0 0; }
+
+/* A tabular number does not become right-to-left because the prose around it
+   did. The design's own note: room code, clock and Mana figures stay LTR. */
+[dir="rtl"] .mono,
+[dir="rtl"] .plate-role,
+[dir="rtl"] .away-head em { direction: ltr; unicode-bidi: isolate; }
+
+/* Naskh, not a Latin face straining to render Arabic. */
+:root { --arabic: "Noto Naskh Arabic", "Segoe UI", serif; }
+[dir="rtl"] .prose,
+[dir="rtl"] .plate-line,
+[dir="rtl"] .away-list li,
+[dir="rtl"] .you-line { font-family: var(--arabic), var(--display); line-height: 1.9; }
+
+/* The speaker plate. The design system's signature: a named character gets a
+   stage — portrait, name, role, standing, and their line in the reading serif
+   — rather than a chip announcing that an event fired. */
+.plate {
+  display: flex; gap: 13px; align-items: flex-start; margin-top: 16px;
+  padding: 14px 16px; border-left: 2px solid var(--ember-deep);
+  background: linear-gradient(90deg, var(--panel-2), var(--panel) 72%);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; cursor: pointer;
+}
+.plate:hover { border-left-color: var(--ember); }
+.plate-face {
+  width: 46px; height: 58px; flex: none; border: 1px solid var(--line);
+  border-radius: 3px; display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 5px; font-family: var(--mono); font-size: 9.5px; color: var(--vellum-dim);
+  background: repeating-linear-gradient(135deg, var(--panel-3) 0 6px, var(--panel-2) 6px 12px);
+}
+.plate-body { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.plate-who { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.plate-name { font-size: 14px; font-weight: 600; color: var(--vellum); letter-spacing: .01em; }
+.plate-role {
+  font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+}
+.plate-line {
+  font-family: var(--display); font-size: 16px; line-height: 1.5;
+  color: var(--vellum); text-wrap: pretty;
+}
+
 /* While you were away — the world's own report, in the feed's world-shift
    register (violet rule) because that is exactly what it is: the world moving
    without the player's hand on it. */

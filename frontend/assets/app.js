@@ -233,6 +233,7 @@ function renderAll() {
   // would be a dead button, which is worse than no button.
   const roomTab = $('#roomTab');
   if (roomTab) roomTab.hidden = (S.state?.mode?.id !== 'room');
+  applyDirection();
   renderTopbar();
   renderYouCard();
   renderParty();
@@ -815,11 +816,10 @@ function entryHTML(e, meta) {
     }
     default: {
       const tags = [];
-      // `${name} acted on their own` was the engine applauding itself. The
-      // character acting under their own steam is ALREADY in the prose below —
-      // labelling it tells the player the interesting thing was a system
-      // firing, when the interesting thing was a person deciding. Dropped
-      // outright rather than restyled: there is nothing here to show.
+      // `${name} acted on their own` was the engine applauding itself: a chip
+      // announcing that a SYSTEM had fired, when the interesting thing was a
+      // person deciding. The act is attributed data — npc, name, action — so
+      // it gets a stage instead of a label. See speakerPlate().
       if (meta.director_beat) tags.push(`<span class="tag tag-beat">
         <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 9.9 5.7l4.5.5-3.4 3 1 4.4L8 11.4l-4 2.2 1-4.4-3.4-3 4.5-.5z"/></svg>
         Something shifted here</span>`);
@@ -841,6 +841,7 @@ function entryHTML(e, meta) {
       return `<article class="entry entry-narration">${byline}
         ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}
         <div class="prose">${paras(e.text)}</div>
+        ${speakerPlate(meta.npc_initiated)}
         ${rel.length ? `<div class="deltas">${rel.join('')}</div>` : ''}</article>`;
     }
   }
@@ -871,6 +872,72 @@ function behaviourOf(deltas, minimum = 0.5) {
   if (!moved) return '';
   const [axis, value] = moved;
   return REL_BEHAVIOUR[axis][value > 0 ? 0 : 1];
+}
+
+/* RTL, driven by the world's own language dial rather than by the browser's.
+
+   The engine already lets a world be narrated in any language (the free-text
+   `language` mode), so a world can be written in Arabic today — into a layout
+   that is hard-coded left-to-right, which puts every rule, portrait and
+   speaker plate on the wrong edge of its own prose. The design brief asks for
+   this to be first-class rather than bolted on, and it is far cheaper to set
+   the direction now, while the feed grammar is being built, than to unpick
+   physical margins out of a finished layout later.
+
+   Applied to the READING surfaces only. Per the design's own note, the room
+   code, the clock and the Mana figures stay LTR wherever they appear: a
+   tabular number does not become right-to-left because the prose around it
+   did. That is what `.mono { direction: ltr }` is for. */
+const RTL_LANGS = /(arab|عرب|hebrew|עבר|persian|farsi|فارس|urdu|اردو|pashto|kurdish|sorani|dari|sindhi|uygh)/i;
+
+function isRtlLanguage(lang) {
+  return RTL_LANGS.test(String(lang || ''));
+}
+
+function applyDirection() {
+  const lang = (S.state?.modes || {}).language || '';
+  const rtl = isRtlLanguage(lang);
+  document.documentElement.setAttribute('data-dir', rtl ? 'rtl' : 'ltr');
+  // `dir` goes on the surfaces that carry the world's prose, not on <html>:
+  // the app's own chrome is still authored in English, and flipping the whole
+  // document would mirror the shell around text that never moved.
+  for (const sel of ['#feed', '#roomWrap', '#oocList', '#soulDrawer', '#chronFeed']) {
+    const el = $(sel);
+    if (el) el.setAttribute('dir', rtl ? 'rtl' : 'ltr');
+  }
+  const ta = $('#actionInput');
+  if (ta) ta.setAttribute('dir', rtl ? 'rtl' : 'auto');
+}
+
+/* The speaker plate — the design system's signature component.
+
+   A named character who moved on their own used to be reported by a chip
+   reading "Yeva Marrow acted on their own": the engine narrating its own
+   event log. The data behind it is fully attributed (npc id, name, what they
+   did), so it deserves a stage rather than a label — portrait, name, the role
+   they hold in this world, how they currently stand toward you, and the act
+   itself set in the reading serif.
+
+   Portraits are sigils, not generated art: the world builder does not ship
+   images and inventing faces for real characters would be worse than a
+   monogram. The hatched ground is the design's own placeholder treatment. */
+function speakerPlate(who) {
+  if (!who || !who.name) return '';
+  const npc = S.state?.npcs?.find((n) => n.id === who.npc) || {};
+  const mood = (npc.disposition || '').trim();
+  const role = (npc.role || '').trim();
+  const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
+  return `<aside class="plate" data-soul="${esc(who.npc || '')}">
+    <span class="plate-face" aria-hidden="true">${esc(initials)}</span>
+    <span class="plate-body">
+      <span class="plate-who">
+        <b class="plate-name">${esc(who.name)}</b>
+        ${role ? `<span class="plate-role mono">${esc(role)}</span>` : ''}
+        ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>` : ''}
+      </span>
+      <span class="plate-line">${esc(who.action || '')}</span>
+    </span>
+  </aside>`;
 }
 
 function relEventChip(r) {
