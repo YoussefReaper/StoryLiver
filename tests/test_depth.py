@@ -33,13 +33,16 @@ Run:  python -m tests.test_depth
 import os
 import shutil
 import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-depth-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import (callbacks, db, engine, memory, npc_sim, sessionzero,  # noqa: E402
-                     worldkit, worldforge)
+from backend import (awayworld, callbacks, db, engine, memory, npc_sim,  # noqa: E402
+                     sessionzero, worldkit, worldforge, worldstate)
 
 FAILS, NOTES = [], []
 
@@ -317,8 +320,71 @@ def test_world_scale():
        f"world is not one call and the player should know before pressing the button")
 
 
+def test_the_world_keeps_its_own_hours():
+    section("the moat — the world moved while nobody was looking")
+    from datetime import datetime, timedelta, timezone
+    db.init()
+
+    pt_id = engine.create_playthrough("away-clock-user")
+    pt = db.row("SELECT * FROM playthroughs WHERE id=?", (pt_id,))
+    world = engine.world_for(pt)
+    here = pt["current_location"]
+
+    # Before this existed, worldstate.tick() ran only "after the turn commits",
+    # so a world closed on a rainy night was still on that rainy night a week
+    # later. The whole third pillar was a claim with no mechanism.
+    ok(awayworld.catch_up(pt_id, world) is None,
+       "a story never opened before makes no claim about time it did not measure")
+
+    awayworld.note_seen(pt_id)
+    now = datetime.now(timezone.utc)
+    ok(awayworld.catch_up(pt_id, world, now=now + timedelta(minutes=9)) is None,
+       "reloading the tab, or stepping away for lunch, reports nothing at all")
+
+    before = worldstate.get(pt_id)
+    awayworld.note_seen(pt_id)
+    digest = awayworld.catch_up(pt_id, world, here=here, now=now + timedelta(hours=5))
+    after = worldstate.get(pt_id)
+
+    ok(digest and digest["items"], "five hours away comes back with something to report")
+    ok((after["day"], after["phase"]) != (before["day"], before["phase"]),
+       "and the ambient clock genuinely moved — the hour is not where it was left")
+    ok(db.row("SELECT current_turn FROM playthroughs WHERE id=?", (pt_id,))["current_turn"] == 0,
+       "while the STORY clock did not move at all: fate waits for the player, weather does not")
+
+    # An absence is a texture, not a punishment. Someone with a life should not
+    # return to a world that resolved itself without them.
+    awayworld.note_seen(pt_id)
+    long_gone = awayworld.catch_up(pt_id, world, here=here, now=now + timedelta(days=40))
+    ok(long_gone["phases"] <= awayworld.MAX_PHASES,
+       f"forty days away still drifts at most {awayworld.MAX_PHASES} phases, not forty days of world")
+    ok("week" in long_gone["away"], "though the player is told honestly how long they were gone")
+
+    # Every line has to be readable back out of state. Nothing here is written
+    # by a model, because a model asked 'what happened while they were out'
+    # will happily answer with a war.
+    ok(all(isinstance(i, str) and i for i in long_gone["items"]),
+       "every reported item is a plain deterministic statement, never generated prose")
+
+
+def test_state_shows_as_behaviour_not_as_scalars():
+    section("no admin panel — the engine stops narrating its own numbers")
+    js = (ROOT / "frontend" / "assets" / "app.js").read_text(encoding="utf-8")
+
+    # `aff +2 · tru -1` told the player what a number did, not what a person
+    # did. The axes still exist and are still exact; they live in Power.
+    ok("k.slice(0, 3)" not in js,
+       "no chip abbreviates a relationship axis into aff/tru/fea/obl any more")
+    ok("REL_BEHAVIOUR" in js and "warmer toward you" in js,
+       "a relationship shift is stated as behaviour, in words about the person")
+    ok("tag-npc" not in js,
+       "and the engine no longer congratulates itself when an NPC acts unprompted")
+
+
 def _all():
-    return (test_callbacks, test_banter, test_npc_initiative,
+    return (test_the_world_keeps_its_own_hours,
+            test_state_shows_as_behaviour_not_as_scalars,
+            test_callbacks, test_banter, test_npc_initiative,
             test_npc_stops_reasking_answered_questions,
             test_witnessed_trauma_can_trigger_an_out_of_turn_reaction,
             test_session_zero, test_world_scale, test_ooc_channel,

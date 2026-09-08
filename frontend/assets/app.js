@@ -116,7 +116,10 @@ async function initThreshold() {
     $('#qsTitle').textContent = w.name;
     $('#qsTagline').textContent = w.tagline;
     $('#qsPremise').textContent = w.premise;
-    $('#beginBtn').querySelector('span').textContent = `Step into ${w.name}`;
+    // .home-world-go, not querySelector('span'): the world card's first span
+    // is its artwork, and writing the label into that painted the button's
+    // text inside the picture.
+    $('#beginBtn').querySelector('.home-world-go').textContent = `Step into ${w.name}`;
     $('#qsStats').innerHTML = [
       [`${w.npc_count}`, 'living minds'], [`${w.fated_events}`, 'fated events'],
       [`${w.rules}`, 'enforced rules'], ['0', 'subscriptions'],
@@ -138,10 +141,13 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   // on - every later call would then fail in a much more confusing place.
   let feed, ws;
   try {
-    [{ feed }, ws] = await Promise.all([
+    let pack;
+    [pack, ws] = await Promise.all([
       api(`/playthroughs/${id}?player=${encodeURIComponent(playerId)}`),
       api(`/playthroughs/${id}/workspace?player=${encodeURIComponent(playerId)}`),
     ]);
+    feed = pack.feed;
+    S.away = pack.away || null;
   } catch (e) {
     localStorage.removeItem('storyliver.last');
     S.ptId = null; S.sessionId = null;
@@ -156,6 +162,7 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   S.legacy = null; S.chronUnseen = 0;
   $('#feed').innerHTML = '';
   renderFeed(feed);
+  renderAway();
   renderAll();
   $('#threshold').hidden = true;
   $('#app').hidden = false;
@@ -226,6 +233,7 @@ function renderAll() {
   // would be a dead button, which is worse than no button.
   const roomTab = $('#roomTab');
   if (roomTab) roomTab.hidden = (S.state?.mode?.id !== 'room');
+  applyDirection();
   renderTopbar();
   renderYouCard();
   renderParty();
@@ -808,9 +816,10 @@ function entryHTML(e, meta) {
     }
     default: {
       const tags = [];
-      if (meta.npc_initiated) tags.push(`<span class="tag tag-npc">
-        <svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="5" r="2.4"/><path d="M3 13.5c.5-2.6 2.4-3.9 5-3.9s4.5 1.3 5 3.9"/></svg>
-        ${esc(meta.npc_initiated.name)} acted on their own</span>`);
+      // `${name} acted on their own` was the engine applauding itself: a chip
+      // announcing that a SYSTEM had fired, when the interesting thing was a
+      // person deciding. The act is attributed data — npc, name, action — so
+      // it gets a stage instead of a label. See speakerPlate().
       if (meta.director_beat) tags.push(`<span class="tag tag-beat">
         <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 9.9 5.7l4.5.5-3.4 3 1 4.4L8 11.4l-4 2.2 1-4.4-3.4-3 4.5-.5z"/></svg>
         Something shifted here</span>`);
@@ -832,16 +841,109 @@ function entryHTML(e, meta) {
       return `<article class="entry entry-narration">${byline}
         ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}
         <div class="prose">${paras(e.text)}</div>
+        ${speakerPlate(meta.npc_initiated)}
         ${rel.length ? `<div class="deltas">${rel.join('')}</div>` : ''}</article>`;
     }
   }
 }
 
+// State shows as BEHAVIOUR, never as a scalar. `aff +2 · tru -1` is the engine
+// talking about itself: it tells a player what a number did, not what a person
+// did, and it is the single loudest reason the screen read as an admin panel
+// wrapped around good prose. The raw axes still exist and are still exact —
+// they live in the Power tab, which is where a player who wants the numbers
+// goes to ask for them.
+const REL_BEHAVIOUR = {
+  affinity:   ['warmer toward you', 'colder toward you'],
+  trust:      ['trusts you further', 'trusts you less'],
+  fear:       ['more afraid of you', 'less afraid of you'],
+  obligation: ['feels they owe you', 'feels squarer with you'],
+  love:       ['closer to you', 'further from you'],
+  loyalty:    ['more loyal to you', 'less loyal to you'],
+  respect:    ['respects you more', 'respects you less'],
+};
+
+// One clause, from whichever axis actually moved most. Two people can shift on
+// the same axis and read differently because the phrasing is about them.
+function behaviourOf(deltas, minimum = 0.5) {
+  const moved = Object.entries(deltas || {})
+    .filter(([k, v]) => REL_BEHAVIOUR[k] && Math.abs(v) >= minimum)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))[0];
+  if (!moved) return '';
+  const [axis, value] = moved;
+  return REL_BEHAVIOUR[axis][value > 0 ? 0 : 1];
+}
+
+/* RTL, driven by the world's own language dial rather than by the browser's.
+
+   The engine already lets a world be narrated in any language (the free-text
+   `language` mode), so a world can be written in Arabic today — into a layout
+   that is hard-coded left-to-right, which puts every rule, portrait and
+   speaker plate on the wrong edge of its own prose. The design brief asks for
+   this to be first-class rather than bolted on, and it is far cheaper to set
+   the direction now, while the feed grammar is being built, than to unpick
+   physical margins out of a finished layout later.
+
+   Applied to the READING surfaces only. Per the design's own note, the room
+   code, the clock and the Mana figures stay LTR wherever they appear: a
+   tabular number does not become right-to-left because the prose around it
+   did. That is what `.mono { direction: ltr }` is for. */
+const RTL_LANGS = /(arab|عرب|hebrew|עבר|persian|farsi|فارس|urdu|اردو|pashto|kurdish|sorani|dari|sindhi|uygh)/i;
+
+function isRtlLanguage(lang) {
+  return RTL_LANGS.test(String(lang || ''));
+}
+
+function applyDirection() {
+  const lang = (S.state?.modes || {}).language || '';
+  const rtl = isRtlLanguage(lang);
+  document.documentElement.setAttribute('data-dir', rtl ? 'rtl' : 'ltr');
+  // `dir` goes on the surfaces that carry the world's prose, not on <html>:
+  // the app's own chrome is still authored in English, and flipping the whole
+  // document would mirror the shell around text that never moved.
+  for (const sel of ['#feed', '#roomWrap', '#oocList', '#soulDrawer', '#chronFeed']) {
+    const el = $(sel);
+    if (el) el.setAttribute('dir', rtl ? 'rtl' : 'ltr');
+  }
+  const ta = $('#actionInput');
+  if (ta) ta.setAttribute('dir', rtl ? 'rtl' : 'auto');
+}
+
+/* The speaker plate — the design system's signature component.
+
+   A named character who moved on their own used to be reported by a chip
+   reading "Yeva Marrow acted on their own": the engine narrating its own
+   event log. The data behind it is fully attributed (npc id, name, what they
+   did), so it deserves a stage rather than a label — portrait, name, the role
+   they hold in this world, how they currently stand toward you, and the act
+   itself set in the reading serif.
+
+   Portraits are sigils, not generated art: the world builder does not ship
+   images and inventing faces for real characters would be worse than a
+   monogram. The hatched ground is the design's own placeholder treatment. */
+function speakerPlate(who) {
+  if (!who || !who.name) return '';
+  const npc = S.state?.npcs?.find((n) => n.id === who.npc) || {};
+  const mood = (npc.disposition || '').trim();
+  const role = (npc.role || '').trim();
+  const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
+  return `<aside class="plate" data-soul="${esc(who.npc || '')}">
+    <span class="plate-face" aria-hidden="true">${esc(initials)}</span>
+    <span class="plate-body">
+      <span class="plate-who">
+        <b class="plate-name">${esc(who.name)}</b>
+        ${role ? `<span class="plate-role mono">${esc(role)}</span>` : ''}
+        ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>` : ''}
+      </span>
+      <span class="plate-line">${esc(who.action || '')}</span>
+    </span>
+  </aside>`;
+}
+
 function relEventChip(r) {
   const npc = S.state?.npcs.find((n) => n.id === r.npc);
-  const parts = Object.entries(r.deltas || {}).filter(([, v]) => Math.abs(v) >= 0.5)
-    .map(([k, v]) => `<span class="${v > 0 ? 'rc-up' : 'rc-dn'}">${k.slice(0, 3)} ${v > 0 ? '+' : ''}${Math.round(v)}</span>`);
-  return `<span class="delta rel-chip"><b>${esc(npc?.name || r.npc)}</b> ${esc(r.event.replace(/_/g, ' '))} ${parts.join(' ')}</span>`;
+  const said = behaviourOf(r.deltas) || esc(r.event.replace(/_/g, ' '));
+  return `<span class="delta rel-chip"><b>${esc(npc?.name || r.npc)}</b> ${esc(said)}</span>`;
 }
 
 function playerName(pid) {
@@ -851,14 +953,25 @@ function playerName(pid) {
 
 function deltaChip(d) {
   const npc = S.state ? S.state.npcs.find((n) => n.id === d.npc) : null;
-  const parts = ['affinity', 'trust', 'fear', 'obligation']
-    .filter((k) => Math.abs(d[k] || 0) >= 1)
-    .map((k) => `${k.slice(0, 3)} ${Math.round(d[k]) > 0 ? '+' : ''}${Math.round(d[k])}`);
-  return `<span class="delta"><b>${esc(npc ? npc.name : d.npc)}</b> ${esc(d.note || parts.join(' · ') || 'shifted')}</span>`;
+  // A written note beats anything generated; otherwise say what they DID, not
+  // which of their four hidden numbers moved and by how much.
+  const said = d.note || behaviourOf(d, 1) || 'has taken a view of you';
+  return `<span class="delta"><b>${esc(npc ? npc.name : d.npc)}</b> ${esc(said)}</span>`;
 }
 
 /* ------------------------------------------------------------ the turn */
 let stageTimer = null;
+
+// What the world says while it is thinking. Deliberately about the WORLD and
+// never about the request: no stages, no percentage, nothing that admits a
+// model is running. The lines are ambient and true-by-construction — they say
+// only that time is passing somewhere, which it is.
+const QUILL_LINES = [
+  'The world is writing',
+  'The hour turns over',
+  'Somewhere, someone decides',
+  'Word is going round',
+];
 
 function thinking(on, who = '') {
   const box = $('#thinking');
@@ -866,15 +979,20 @@ function thinking(on, who = '') {
   $('#thinkingWho').textContent = who;
   if (S.role !== 'spectator') { $('#sendBtn').disabled = on; $('#actionInput').disabled = on; }
   clearInterval(stageTimer);
-  const dots = $$('.stage-dot');
-  if (!on) { dots.forEach((d) => d.classList.remove('on')); return; }
+  if (!on) return;
+
+  // The ambient line is read off the live world clock rather than invented, so
+  // a waiting player is looking at the real hour, weather and place.
+  const bits = [$('#wcTime')?.textContent, $('#wcSky')?.textContent, $('#wcHere')?.textContent]
+    .map((s) => (s || '').trim()).filter(Boolean);
+  $('#thinkingAmbient').textContent = bits.join(' · ');
+
   let i = 0;
-  dots.forEach((d) => d.classList.remove('on'));
-  dots[0].classList.add('on');
+  $('#thinkingSay').textContent = QUILL_LINES[0];
   stageTimer = setInterval(() => {
-    i = (i + 1) % dots.length;
-    dots.forEach((d, j) => d.classList.toggle('on', j <= i));
-  }, 800);
+    i = (i + 1) % QUILL_LINES.length;
+    $('#thinkingSay').textContent = QUILL_LINES[i];
+  }, 2600);
 }
 
 async function submitAction(text) {
@@ -2059,6 +2177,31 @@ async function saveAU() {
 }
 
 /** A town that remembers you is the payoff for having played here before. */
+/* What the world did while nobody was looking. The one thing a chat window
+   cannot do, so it gets a real moment on return rather than a toast that
+   disappears in four seconds. Appended to the END of the feed because that is
+   where the player is reading: it sits between the last thing they did and the
+   next thing they will. */
+function renderAway() {
+  const a = S.away;
+  if (!a || !(a.items || []).length) return;
+  const feed = $('#feed');
+  if (!feed) return;
+  const el = document.createElement('article');
+  el.className = 'entry entry-away';
+  el.innerHTML = `<div class="away-slab">
+    <div class="away-head">
+      <svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.4"/></svg>
+      <span>While you were away</span>
+      <em>${esc(a.away)}</em>
+    </div>
+    <ul class="away-list">${a.items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
+    <div class="away-foot">The story waited. The hour did not.</div>
+  </div>`;
+  feed.appendChild(el);
+  feed.scrollTop = feed.scrollHeight;
+}
+
 function announceReturn() {
   const r = S.state?.returned;
   if (!r || !r.seeded || !(r.factions || []).length) return;
@@ -2159,7 +2302,18 @@ window.__appBridge = {
     S.forgeWorld = world;
     closeOverlays();
     if (payload.notice) toast(payload.notice, 'warn');
-    openEditor(world, world.id, payload.notice || 'Built. Edit anything before you play.');
+    // NOT world.id. /forge/bootstrap builds a world, it does not save one, and
+    // normalise() always stamps an id derived from the world's NAME - so a
+    // freshly built Emberfall arrives carrying id "emberfall". Passing that as
+    // the editor's world_id made the first save an UPDATE of a row that has
+    // never existed: worldforge.save took its `if world_id` branch, found
+    // nothing owned by this user, and every single save of a newly built world
+    // came back 404 "no such world" in red. A built world has no database
+    // identity until it is saved, which is exactly what null means here (and
+    // what the older bootstrap path at openEditor(r.world, r.saved?.id || null)
+    // has always passed).
+    const savedId = (payload.saved && payload.saved.id) || null;
+    openEditor(world, savedId, payload.notice || 'Built. Edit anything before you play.');
   },
 };
 
@@ -2241,6 +2395,42 @@ function wire() {
   $('#joinCode').addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
   });
+  // The home page's witness demo. It is the one claim on that page a visitor
+  // cannot check by reading, so they get to flip it themselves: the same
+  // action, seen and unseen, and who ends up knowing.
+  const WITNESS = {
+    seen: {
+      label: 'YOU WERE SEEN',
+      text: 'The priest says nothing while you do it, which is worse. By morning the guild '
+          + 'knows there is a ledger missing and knows whose hands were on the desk.',
+      knowers: [['THE PRIEST', ''], ['TWO ALTAR BOYS', ''], ['THE GUILD, BY MORNING', 'home-tag-soon']],
+    },
+    unseen: {
+      label: 'NOBODY SAW IT',
+      text: 'The rectory is empty and stays empty. The ledger is simply gone, and for eleven '
+          + 'days the only person in the world who knows where it went is you.',
+      knowers: [['ONLY YOU', 'home-tag-quiet']],
+    },
+  };
+  function showWitness(which) {
+    const w = WITNESS[which] || WITNESS.seen;
+    const box = $('#witnessBox');
+    if (!box) return;
+    box.classList.toggle('seen', which === 'seen');
+    box.classList.toggle('unseen', which !== 'seen');
+    $('#witnessLabel').textContent = w.label;
+    $('#witnessText').textContent = w.text;
+    $('#witnessKnowers').innerHTML = w.knowers
+      .map(([n, extra]) => `<span class="home-tag ${extra}">${esc(n)}</span>`).join('');
+    $$('[data-witness]').forEach((b) =>
+      b.setAttribute('aria-pressed', String(b.dataset.witness === which)));
+  }
+  showWitness('seen');
+  $('#threshold').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-witness]');
+    if (b) showWitness(b.dataset.witness);
+  });
+
   $('#pricingLinkThreshold').addEventListener('click', showPricing);
   $('#ethicsLinkThreshold').addEventListener('click', () => showEthics().catch((e) => toast(e.message, 'err')));
 

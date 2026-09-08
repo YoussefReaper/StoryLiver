@@ -121,7 +121,15 @@ def check(ctx):
     # exact byte count varies turn to turn with which NPCs/goals a seeded
     # run happens to surface - a ceiling sitting a handful of tokens above
     # one observed run is a flaky test waiting to happen, not a guardrail.
-    solo_ceiling = 1750
+    # Raised a second time, on the same reasoning and re-measured the same way:
+    # SYSTEM grew again to require an ENSEMBLE reaction (two or more present
+    # characters reacting differently) and the wider 180-320 word band. Both
+    # are fixed per-call costs paid once per narration regardless of how many
+    # players are at the table, so the ratio check above - the guarantee that
+    # actually matters - is untouched by them and still passes at 4 players.
+    # Measured 1753 immediately after the change; set with real headroom rather
+    # than a handful of tokens above one seeded run.
+    solo_ceiling = 1900
     ok(b <= solo_ceiling,
        f"a 4-player broadcast prompt is {b:.0f} tok, under the {solo_ceiling} single-player ceiling")
 

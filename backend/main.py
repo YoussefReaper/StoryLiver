@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from typing import Optional
 
-from . import (aftermath, arcs, atlas, auth, authority, awareness, betrayal, budget,
+from . import (aftermath, arcs, atlas, auth, authority, awareness, awayworld, betrayal, budget,
                canon, combat, durable, ladder, legacy, legibility, modetree,
                ooc, research, room, sessionzero, submodes, uploads,
                config, db,
@@ -381,8 +381,17 @@ def new_playthrough(body: NewPlaythrough):
 
 @app.get("/api/playthroughs/{pt_id}")
 def get_playthrough(pt_id: str, user_id: str = Query(default=""), player: str = Query(default=memory.SOLO)):
-    _own(pt_id, user_id)
-    return {"state": engine.snapshot(pt_id, player), "feed": engine.feed(pt_id)}
+    pt = _own(pt_id, user_id)
+    # The world kept its own hours while nobody was looking. Computed BEFORE the
+    # snapshot so the state the player sees is the drifted one - otherwise the
+    # card would announce a nightfall the rest of the screen had not had yet.
+    away = None
+    try:
+        away = awayworld.catch_up(pt_id, engine.world_for(pt), player=player,
+                                  here=pt.get("current_location") or "")
+    except Exception:
+        away = None
+    return {"state": engine.snapshot(pt_id, player), "feed": engine.feed(pt_id), "away": away}
 
 
 @app.delete("/api/playthroughs/{pt_id}")

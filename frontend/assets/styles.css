@@ -45,6 +45,15 @@
   --serif: "Spectral", "Iowan Old Style", "Palatino Linotype", Georgia, "Times New Roman", serif;
   --sans:  "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
+  /* The design system's own three faces: a display serif for anything that
+     is read as prose, a sans for controls, a mono for the numbers and the
+     small caps labels. Introduced by the home page; the shell still runs on
+     --serif/--sans above until the rest of it is rebuilt on these. */
+  --display: "Newsreader", Georgia, "Iowan Old Style", serif;
+  --ui:      "Archivo", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:    "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --ember-line: #3A2F1C;
+
   --r-sm: 8px;  --r: 12px;  --r-lg: 18px;  --r-xl: 26px;
   --rail-l: 300px;
   --rail-r: 336px;
@@ -69,6 +78,7 @@
   --ember-soft:  #C4862F;
   --ember-deep:  #7A4A10;
   --ember-glow:  rgba(156,95,22,.10);
+  --ember-line:  #D8C7A4;
 
   --verdigris:   #1F7A6E;
   --crimson:     #A63A22;
@@ -116,38 +126,299 @@ button { background: none; border: 0; cursor: pointer; }
 .brand-lg { font-size: 26px; justify-content: center; }
 .brand-sm { font-size: 16px; }
 
-/* =========================================================== THRESHOLD == */
+/* ================================================================ HOME == */
+/* The front door. It was a single centred card that said "Step into
+   Emberfall" - one world, named before the player had been told what any of
+   this was. This is the marketing page from the design canvas, built on the
+   app's OWN tokens rather than a second palette, so it themes with everything
+   else and the shell language stays one language. */
 .threshold {
-  position: fixed; inset: 0; overflow-y: auto;
-  background:
-    radial-gradient(900px 520px at 50% -10%, var(--ember-glow), transparent 65%),
-    linear-gradient(180deg, var(--ink), var(--void) 60%);
-  display: grid; place-items: start center;
-  padding: clamp(28px, 6vh, 76px) 20px 64px;
+  position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden;
+  background: var(--void);
+  font-family: var(--ui);
 }
-.threshold-glow {
-  position: fixed; left: 50%; top: -220px; width: 760px; height: 520px;
-  transform: translateX(-50%);
-  background: radial-gradient(closest-side, var(--ember-glow), transparent);
-  filter: blur(30px); pointer-events: none;
-  animation: breathe 7s var(--ease) infinite;
+.home-nav {
+  position: sticky; top: 0; z-index: 5; height: 58px;
+  display: flex; align-items: center; gap: 16px; padding: 0 clamp(16px, 4vw, 40px);
+  background: var(--panel); border-bottom: 1px solid var(--line);
 }
-@keyframes breathe { 0%,100% { opacity: .75; } 50% { opacity: 1; } }
+/* The brand is an <a> here (it was a <button> in the old threshold), and
+   nothing in this sheet sets a colour for a bare anchor - so it painted in
+   the browser's default link blue, in the one place the brand appears. */
+.home-nav .brand { font-size: 16px; color: var(--vellum); text-decoration: none; }
+.home-nav-links { display: flex; gap: 26px; flex: 1; justify-content: center; }
+.home-nav-links a { text-decoration: none; }
+.home-nav-links a { font-size: 13px; color: var(--muted); }
+.home-nav-links a:hover { color: var(--vellum); }
+.home-nav-actions { display: flex; align-items: center; gap: 10px; }
+.home-nav-actions em { font-style: normal; color: var(--faint); font-size: 11px; }
 
-.threshold-inner { width: min(660px, 100%); position: relative; }
-.threshold-tag {
-  text-align: center; margin-top: 14px; color: var(--vellum-dim);
-  font-family: var(--serif); font-size: 18px; font-style: italic; letter-spacing: .01em;
+.btn-sm { padding: 8px 14px; font-size: 12.5px; border-radius: var(--r-sm); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* -- shared section chrome -- */
+.home-band {
+  max-width: 1160px; margin: 0 auto;
+  padding: clamp(48px, 7vw, 80px) clamp(16px, 4vw, 40px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.home-band-alive { max-width: none; background:
+  radial-gradient(80% 100% at 78% 40%, var(--panel-2), var(--void) 70%); }
+/* The nav is sticky, so an in-page jump would otherwise land with the
+   heading underneath it. */
+.home-hero, .home-band[id] { scroll-margin-top: 74px; }
+.home-head { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; margin-bottom: 34px; }
+.home-kicker { font-size: 10.5px; letter-spacing: .2em; color: var(--faint); }
+.home-kicker-ember { color: var(--ember-soft); }
+.home-h1 {
+  font-family: var(--display); font-weight: 300; margin: 0;
+  font-size: clamp(38px, 5.4vw, 76px); line-height: 1.02; letter-spacing: -.025em;
+  max-width: 15ch; text-wrap: pretty; color: var(--vellum);
+}
+.home-h1-sm { font-size: clamp(30px, 4vw, 52px); line-height: 1.08; max-width: 22ch; }
+.home-h2 {
+  font-family: var(--display); font-weight: 300; margin: 0;
+  font-size: clamp(26px, 3.2vw, 44px); line-height: 1.15; letter-spacing: -.02em;
+  max-width: 30ch; text-wrap: pretty; color: var(--vellum);
+}
+.home-h2-sm { font-size: clamp(23px, 2.6vw, 38px); }
+.home-lead {
+  font-family: var(--display); font-size: clamp(17px, 1.5vw, 21px); line-height: 1.55;
+  color: var(--vellum-dim); max-width: 48ch; margin: 0; text-wrap: pretty;
+}
+.home-lead-sm { font-size: clamp(16px, 1.3vw, 19px); max-width: 52ch; }
+.home-eyebrow {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .2em;
+  color: var(--ember-deep); margin: 0;
+}
+.home-tag {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
+  border: 1px solid var(--ember-line); border-radius: 3px; padding: 4px 8px;
+  color: var(--ember-soft); white-space: nowrap;
+}
+.home-tag-more { border-color: var(--line); color: var(--faint); }
+.home-tag-close { border-color: var(--ok); color: var(--ok); border-radius: 999px; }
+.home-caret {
+  display: inline-block; width: 1.5px; height: 1em; background: var(--ember);
+  margin-left: 3px; vertical-align: -2px; animation: emberPulse 1.1s steps(2) infinite;
+}
+@keyframes emberPulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+
+/* -- hero -- */
+.home-hero {
+  max-width: 1160px; margin: 0 auto;
+  padding: clamp(48px, 7vw, 92px) clamp(16px, 4vw, 40px) clamp(56px, 7vw, 100px);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 500px); gap: clamp(32px, 5vw, 72px);
+  align-items: center; border-bottom: 1px solid var(--line-soft);
+  background: radial-gradient(100% 80% at 26% 0%, var(--panel-2), var(--void) 62%);
+}
+.home-hero-copy { display: flex; flex-direction: column; gap: clamp(18px, 2.4vw, 30px); }
+.home-cta { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.home-cta .btn-lg { width: auto; padding: 15px 30px; }
+.home-cta-note { font-family: var(--mono); font-size: 11px; color: var(--faint); line-height: 1.6; }
+
+/* -- the feed mock: the real shell language, not a marketing illustration -- */
+.home-mock {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--ink);
+  box-shadow: var(--shadow-3); overflow: hidden; min-width: 0;
+}
+.home-mock-bar {
+  display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  font-size: 11.5px; color: var(--vellum-dim);
+}
+.home-mock-bar .mono { font-size: 10.5px; }
+.home-mock-sep { width: 1px; height: 12px; background: var(--line); }
+.home-mock-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-mock-spacer { flex: 1; }
+.home-mock-mana { display: flex; align-items: center; gap: 6px; color: var(--ember-soft); }
+.home-mock-mana .ico { fill: var(--ember); stroke: var(--ember); }
+.home-mock-body { padding: 22px 22px 18px; display: flex; flex-direction: column; gap: 16px; }
+.home-mock-prose {
+  margin: 0; padding-left: 16px; border-left: 1px solid var(--line);
+  font-family: var(--display); font-size: 15.5px; line-height: 1.6; color: var(--vellum);
+}
+.home-mock-npc {
+  display: flex; gap: 13px; align-items: flex-start; padding: 14px 16px;
+  border-left: 2px solid var(--ember-deep);
+  background: linear-gradient(90deg, var(--panel-2), var(--panel) 72%);
+}
+.home-mock-face {
+  width: 42px; height: 54px; flex: none; border: 1px solid var(--line); border-radius: 3px;
+  background: repeating-linear-gradient(135deg, var(--panel-3) 0 5px, var(--panel-2) 5px 10px);
+}
+.home-mock-who { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
+.home-mock-name { font-size: 13px; font-weight: 600; color: var(--vellum); }
+.home-mock-line { margin: 0; font-family: var(--display); font-size: 15.5px; line-height: 1.5; color: var(--vellum); }
+.home-mock-lie { padding: 12px 15px; border: 1px solid var(--crimson); border-radius: var(--r-sm); background: var(--panel-2); }
+.home-mock-lie-label { font-size: 9.5px; letter-spacing: .14em; color: var(--crimson); margin-bottom: 7px; }
+.home-mock-lie-text { margin: 0; font-family: var(--display); font-size: 15px; line-height: 1.5; color: var(--vellum); }
+.home-mock-foot {
+  display: flex; align-items: center; gap: 12px; padding: 13px 18px 16px;
+  background: var(--panel); border-top: 1px solid var(--line);
+}
+.home-mock-input {
+  flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--ink); padding: 10px 13px;
+  font-family: var(--display); font-size: 15px; color: var(--vellum-dim);
 }
 
-.threshold-card {
-  margin-top: 34px; background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--r-xl); padding: 30px 30px 26px; box-shadow: var(--shadow-3);
-  position: relative; overflow: hidden;
+/* -- the two-card comparison -- */
+.home-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; margin-top: 34px; }
+.home-card {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
+  padding: 24px; display: flex; flex-direction: column; gap: 14px;
 }
-.threshold-card::before {
-  content: ""; position: absolute; inset: 0 0 auto; height: 1px;
-  background: linear-gradient(90deg, transparent, var(--ember), transparent); opacity: .5;
+.home-card h3 { font-family: var(--display); font-weight: 400; font-size: 20px; line-height: 1.25; margin: 0; color: var(--vellum); }
+.home-card p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--vellum-dim); text-wrap: pretty; }
+.home-card-dead { background: var(--ink); }
+.home-card-live {
+  border-color: var(--ember-deep);
+  background: linear-gradient(160deg, var(--panel-2), var(--ink));
+  box-shadow: inset 0 0 50px var(--ember-glow);
+}
+.home-card-head { display: flex; align-items: center; gap: 10px; color: var(--faint); }
+.home-card-live .home-card-head .ico { fill: var(--ember); stroke: var(--ember); }
+.home-card-line {
+  margin: 0; flex: 1; font-family: var(--display); font-size: 16.5px; line-height: 1.55;
+  color: var(--faint); text-wrap: pretty;
+}
+.home-card-line-live { color: var(--vellum); }
+.home-card-foot {
+  margin: 0; border-top: 1px solid var(--line-soft); padding-top: 13px;
+  font-size: 12.5px; line-height: 1.5; color: var(--faint);
+}
+.home-card-tags { display: flex; gap: 8px; flex-wrap: wrap; border-top-color: var(--ember-line); }
+.home-ico-lg { font-size: 22px; color: var(--ember); }
+
+/* -- how it works -- */
+/* Two rows of subgrid so the three mocks share one baseline and the three
+   captions share another - otherwise each column sizes its own mock and the
+   headings sit at three different heights. Browsers without subgrid ignore
+   the row template and fall back to independent columns, which is only the
+   staggering, not a broken layout. */
+.home-steps { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: auto auto; gap: 22px; }
+.home-step { display: grid; grid-template-rows: subgrid; grid-row: span 2; gap: 16px; }
+.home-step-mock {
+  min-height: 150px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--ink); padding: 17px; display: flex; flex-direction: column;
+  justify-content: center; gap: 10px;
+}
+.home-step-typed { margin: 0; font-family: var(--display); font-size: 15px; line-height: 1.5; color: var(--vellum); }
+.home-step-flag { font-size: 9.5px; letter-spacing: .1em; color: var(--ember-deep); }
+.home-step-tags { display: flex; gap: 5px; flex-wrap: wrap; }
+.home-step-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.home-step-checks li { display: flex; align-items: center; gap: 9px; font-size: 11.5px; color: var(--vellum-dim); }
+.home-step-checks .ico { color: var(--ok); }
+.home-step-checks li:last-child { color: var(--ember-soft); }
+.home-spin {
+  width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 1.5px solid var(--ember-deep); border-top-color: var(--ember);
+}
+.home-step-said {
+  margin: 0; padding-left: 13px; border-left: 2px solid var(--ember);
+  font-family: var(--display); font-style: italic; font-size: 15px; line-height: 1.45; color: var(--ember-soft);
+}
+.home-step-back {
+  margin: 0; padding-left: 13px; border-left: 1px solid var(--line);
+  font-family: var(--display); font-size: 15px; line-height: 1.45; color: var(--vellum);
+}
+.home-step-copy { display: flex; flex-direction: column; gap: 8px; }
+.home-step-copy p { margin: 0; font-family: var(--display); font-size: 15px; line-height: 1.55; color: var(--vellum-dim); text-wrap: pretty; }
+.home-step-num { display: flex; align-items: baseline; gap: 10px; color: var(--vellum); font-size: 16px; }
+.home-step-num .mono { font-size: 10.5px; color: var(--ember-deep); }
+
+/* -- the witness demo: the one thing on this page that is interactive -- */
+.home-alive {
+  max-width: 1160px; margin: 0 auto; display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 468px); gap: clamp(28px, 4vw, 64px); align-items: center;
+}
+.home-alive-copy { display: flex; flex-direction: column; gap: 22px; }
+.home-switch { display: flex; gap: 10px; flex-wrap: wrap; }
+.home-switch .btn[aria-pressed="true"] {
+  color: var(--ember-soft); background: var(--ember-glow); border-color: var(--ember-deep);
+}
+.home-proof {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--ink);
+  box-shadow: var(--shadow-2); overflow: hidden;
+}
+.home-proof-head {
+  padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+  font-size: 10px; letter-spacing: .14em; color: var(--faint);
+}
+.home-proof-body { padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+.home-proof-box { padding: 15px 17px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--panel); }
+.home-proof-box.seen { border-left: 2px solid var(--violet); }
+.home-proof-box.unseen { border-style: dashed; background: var(--ink); }
+.home-proof-box p { margin: 0; font-family: var(--display); font-size: 16px; line-height: 1.55; color: var(--vellum); text-wrap: pretty; }
+.home-proof-label { font-size: 10px; letter-spacing: .14em; margin-bottom: 9px; color: var(--violet); }
+.home-proof-box.unseen .home-proof-label { color: var(--faint); }
+.home-proof-who { border-top: 1px solid var(--line-soft); padding-top: 14px; display: flex; flex-direction: column; gap: 9px; }
+.home-proof-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+.home-proof-tags .home-tag-quiet { border-color: var(--line); color: var(--faint); }
+.home-proof-tags .home-tag-soon { border-style: dashed; }
+
+/* -- the four systems -- */
+.home-systems { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+
+/* -- real, playable worlds; Emberfall is one of them, not the front door -- */
+.home-worlds { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: clamp(20px, 3vw, 44px); align-items: start; }
+.home-world {
+  display: block; width: 100%; text-align: left; padding: 0; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
+  cursor: pointer; transition: border-color .18s var(--ease), transform .12s var(--ease);
+}
+.home-world:hover { border-color: var(--ember-deep); transform: translateY(-1px); }
+.home-world-art {
+  display: block; height: 92px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(160deg, var(--panel-2), var(--ink));
+}
+.home-world-body { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px 20px; }
+.home-world-name { font-family: var(--display); font-weight: 400; font-size: 24px; color: var(--vellum); }
+.home-world-tag { font-family: var(--display); font-style: italic; font-size: 15px; color: var(--ember-soft); }
+.home-world-premise { font-family: var(--display); font-size: 14.5px; line-height: 1.65; color: var(--vellum-dim); }
+.home-world-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.home-world-go {
+  margin-top: 8px; align-self: flex-start; font-size: 13px; font-weight: 600; color: var(--ember);
+}
+.home-world:hover .home-world-go { color: var(--ember-soft); }
+.home-side { display: flex; flex-direction: column; gap: 12px; }
+.home-join {
+  display: flex; flex-direction: column; gap: 10px; padding: 18px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
+}
+
+/* -- closing -- */
+.home-final {
+  max-width: 760px; margin: 0 auto; text-align: center;
+  padding: clamp(56px, 8vw, 104px) clamp(16px, 4vw, 40px) clamp(56px, 8vw, 96px);
+  display: flex; flex-direction: column; align-items: center; gap: 26px;
+  background: radial-gradient(80% 120% at 50% 100%, var(--ember-glow), transparent 62%);
+}
+.home-final .home-h1-sm, .home-final .home-lead { max-width: 26ch; }
+.home-final .home-lead { max-width: 48ch; }
+.home-final .btn-lg { width: auto; padding: 16px 34px; }
+.home-final-note { font-size: 11px; color: var(--faint); letter-spacing: .04em; }
+.home-foot {
+  max-width: 1160px; margin: 0 auto;
+  padding: 32px clamp(16px, 4vw, 40px) 64px; border-top: 1px solid var(--line-soft);
+}
+.home-promises { margin: 0 0 20px; padding: 0; list-style: none; display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.home-promises li { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+.home-promises b { color: var(--vellum-dim); font-weight: 600; }
+
+@media (max-width: 1040px) {
+  .home-hero, .home-alive, .home-worlds { grid-template-columns: minmax(0, 1fr); }
+  .home-systems { grid-template-columns: repeat(2, 1fr); }
+  .home-h1 { max-width: none; }
+}
+@media (max-width: 720px) {
+  .home-nav-links { display: none; }
+  .home-compare, .home-steps { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .home-systems { grid-template-columns: minmax(0, 1fr); }
 }
 .eyebrow {
   font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
@@ -452,7 +723,118 @@ button { background: none; border: 0; cursor: pointer; }
 .delta .up { color: var(--ok); } .delta .dn { color: var(--crimson); }
 
 /* ------------------------------------------------------------ thinking -- */
+/* ------------------------------------------------------------------ RTL --
+   The feed's whole grammar is carried on a LEFT rule — narration hairline,
+   your own action's ember rule, the speaker plate, the away card. In Arabic
+   every one of those lands on the wrong edge of its own paragraph, which
+   breaks the one thing the grammar is for: telling entry types apart before
+   you read them. These restate the same rules as LOGICAL properties, so the
+   marker follows the text direction instead of the screen.
+
+   Scoped to [dir="rtl"] rather than done globally, because rewriting every
+   physical property in a 2000-line sheet at once is how a working LTR layout
+   gets broken to fix one that has no users yet. */
+[dir="rtl"] { text-align: right; }
+[dir="rtl"] .prose,
+[dir="rtl"] .away-list li,
+[dir="rtl"] .plate-line { text-align: right; }
+
+[dir="rtl"] .you-line,
+[dir="rtl"] .refusal-wrap,
+[dir="rtl"] .plate,
+[dir="rtl"] .away-slab {
+  border-left: none;
+  border-right-style: solid;
+  border-radius: var(--r-sm) 0 0 var(--r-sm);
+}
+[dir="rtl"] .you-line { border-right: 2px solid var(--ember-deep); }
+[dir="rtl"] .refusal-wrap { border-right: 2px solid var(--crimson); padding-left: 0; padding-right: 16px; }
+[dir="rtl"] .plate { border-right: 2px solid var(--ember-deep); }
+[dir="rtl"] .away-slab { border: 1px solid var(--line); border-right: 2px solid var(--violet); }
+[dir="rtl"] .away-list { padding: 0 16px 0 0; }
+
+/* A tabular number does not become right-to-left because the prose around it
+   did. The design's own note: room code, clock and Mana figures stay LTR. */
+[dir="rtl"] .mono,
+[dir="rtl"] .plate-role,
+[dir="rtl"] .away-head em { direction: ltr; unicode-bidi: isolate; }
+
+/* Naskh, not a Latin face straining to render Arabic. */
+:root { --arabic: "Noto Naskh Arabic", "Segoe UI", serif; }
+[dir="rtl"] .prose,
+[dir="rtl"] .plate-line,
+[dir="rtl"] .away-list li,
+[dir="rtl"] .you-line { font-family: var(--arabic), var(--display); line-height: 1.9; }
+
+/* The speaker plate. The design system's signature: a named character gets a
+   stage — portrait, name, role, standing, and their line in the reading serif
+   — rather than a chip announcing that an event fired. */
+.plate {
+  display: flex; gap: 13px; align-items: flex-start; margin-top: 16px;
+  padding: 14px 16px; border-left: 2px solid var(--ember-deep);
+  background: linear-gradient(90deg, var(--panel-2), var(--panel) 72%);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; cursor: pointer;
+}
+.plate:hover { border-left-color: var(--ember); }
+.plate-face {
+  width: 46px; height: 58px; flex: none; border: 1px solid var(--line);
+  border-radius: 3px; display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 5px; font-family: var(--mono); font-size: 9.5px; color: var(--vellum-dim);
+  background: repeating-linear-gradient(135deg, var(--panel-3) 0 6px, var(--panel-2) 6px 12px);
+}
+.plate-body { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.plate-who { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.plate-name { font-size: 14px; font-weight: 600; color: var(--vellum); letter-spacing: .01em; }
+.plate-role {
+  font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+}
+.plate-line {
+  font-family: var(--display); font-size: 16px; line-height: 1.5;
+  color: var(--vellum); text-wrap: pretty;
+}
+
+/* While you were away — the world's own report, in the feed's world-shift
+   register (violet rule) because that is exactly what it is: the world moving
+   without the player's hand on it. */
+.entry-away { max-width: 68ch; margin: 0 auto 30px; }
+.away-slab {
+  border: 1px solid var(--line); border-left: 2px solid var(--violet);
+  border-radius: var(--r-sm); background: var(--panel-2); padding: 16px 20px;
+}
+.away-head {
+  display: flex; align-items: center; gap: 9px; margin-bottom: 11px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--violet);
+}
+.away-head .ico { font-size: 13px; }
+.away-head em { font-style: normal; margin-left: auto; color: var(--faint); letter-spacing: .06em; }
+.away-list { margin: 0; padding: 0 0 0 16px; display: grid; gap: 7px; }
+.away-list li {
+  font-family: var(--display); font-size: 15.5px; line-height: 1.55;
+  color: var(--vellum); text-wrap: pretty;
+}
+.away-list li::marker { color: var(--violet); }
+.away-foot {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft);
+  font-size: 11.5px; color: var(--muted); font-style: italic;
+}
+
 .thinking { max-width: 68ch; margin: 0 auto; padding: 0 24px 6px; width: 100%; }
+/* A diegetic wait. The quill moves, the world states its own hour, and nothing
+   here mentions a model, a stage or a percentage. */
+.quilling { display: flex; align-items: center; justify-content: center; gap: 9px; }
+.quilling .quill { font-size: 14px; color: var(--ember); animation: quill 1.9s var(--ease) infinite; }
+@keyframes quill {
+  0%, 100% { transform: translateX(0) rotate(-8deg); opacity: .55; }
+  50%      { transform: translateX(3px) rotate(-2deg); opacity: 1; }
+}
+.quilling-say {
+  font-family: var(--display); font-style: italic; font-size: 14.5px; color: var(--vellum-dim);
+}
+.thinking-ambient {
+  text-align: center; margin: 6px 0 0; font-size: 10.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--faint);
+}
 .pipeline { display: flex; align-items: center; gap: 8px; justify-content: center; margin-bottom: 9px; flex-wrap: wrap; }
 .stage-dot { font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase; color: var(--faint); transition: color .3s; }
 .stage-dot.on { color: var(--ember); }

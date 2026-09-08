@@ -428,7 +428,10 @@ def characters_from_wikipedia(setting: str, canonical: str, budget: _Budget) -> 
                 and not any(w in low for w in furniture)
                 and not re.search(r"\d", line)):
             names.append(line)
-    clean = _dedupe(names)[:14]
+    # Was 14. Wikipedia's cast list is the main cast by construction, so a
+    # name cut here is a real character the builder had to replace with an
+    # invented one.
+    clean = _dedupe(names)[:26]
     return [{"name": n, "note": ""} for n in clean] if len(clean) >= 3 else []
 
 
@@ -544,8 +547,15 @@ CATEGORY_SETS = {
 
 # How many of each bucket to keep. Characters carry the world; a power list of
 # 40 techniques is noise the player will never read.
-BUCKET_KEEP = {"characters": 16, "places": 12, "factions": 12,
+# How much canon survives ranking. These were 16/12, tuned when a world was
+# one model call asking for 10-12 characters. A world-scale build asks for
+# 48-64, so every name cut here became a name the builder invented instead.
+BUCKET_KEEP = {"characters": 26, "places": 18, "factions": 14,
                "powers": 10, "arcs": 12}
+
+# How much of the dossier reaches the prompt. Separate from BUCKET_KEEP so the
+# dossier can hold more than any single pass shows.
+BRIEF_KEEP = {"characters": 26, "places": 18, "factions": 12}
 
 
 def category_members(host: str, category: str, budget: _Budget, limit=40) -> list:
@@ -1046,12 +1056,20 @@ def _cache_put(key, payload):
 # What the generator is told
 # ---------------------------------------------------------------------------
 
-def grounding_brief(d: dict) -> str:
+def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
     """Turn a dossier into instructions for the world architect.
 
     Names and roles only. The wording is deliberate: the model is told these are
     REAL and must be used, which is the whole point - an ungrounded build
-    invents 'Tanjiro Kamada' and a grounded one does not."""
+    invents 'Tanjiro Kamada' and a grounded one does not.
+
+    `need_npcs`/`need_locs` are how many the CURRENT pass was asked for. They
+    exist because the old brief ended with "Invent freely for anything not
+    listed" while a world-scale build asks for 48-64 characters against a
+    roster of 9-14 - so the model was being handed a shortfall of forty people
+    and an explicit licence to make them up. Telling it the budget, and that
+    the roster must be exhausted first, is the difference between a cast that
+    is mostly real and one that is mostly invented."""
     if not d.get("found"):
         return ""
     lines = ["RESEARCHED CANON (gathered live from public wikis - these are REAL "
@@ -1068,7 +1086,10 @@ def grounding_brief(d: dict) -> str:
         if not items:
             continue
         rendered = []
-        for it in items[:14]:
+        # Was 14 across the board. A researched franchise routinely yields more
+        # real names than that, and every one truncated here is a name the
+        # builder then had to invent a replacement for.
+        for it in items[:BRIEF_KEEP.get(bucket, 14)]:
             name = (it.get("name") or "").strip()
             if not name:                      # a blank entry teaches nothing
                 continue
@@ -1077,12 +1098,38 @@ def grounding_brief(d: dict) -> str:
             continue
         lines.append(f"{label}:\n" + "\n".join(rendered))
 
-    lines.append(
-        "Use these real names for people, places and groups wherever they fit. Spell "
-        "them exactly as written above. Do NOT copy any sentence from the research "
-        "text - write your own descriptions of these people and places. Invent "
-        "freely for anything not listed."
+    n_chars = len([c for c in (d.get("characters") or []) if (c.get("name") or "").strip()])
+    n_places = len([p for p in (d.get("places") or []) if (p.get("name") or "").strip()])
+    budget = [
+        "HOW TO USE THAT LIST - this is a hard rule, not a preference:",
+        f"1. Every one of those {n_chars} real characters and {n_places} real places must be "
+        "used before you invent a single new person or place. Spell them exactly as "
+        "written above.",
+        "2. Never rename, re-spell, translate or 'improve' a real name, and never invent "
+        "a relative, student, rival or successor of a real character.",
+    ]
+    # The shortfall is the whole problem, so name it rather than leaving the
+    # model to discover it and fill the gap however it likes.
+    short_n = max(0, need_npcs - n_chars)
+    short_l = max(0, need_locs - n_places)
+    if short_n or short_l:
+        budget.append(
+            f"3. This pass asks for more than the roster holds, so you must invent about "
+            f"{short_n} extra people and {short_l} extra places - and ONLY that many. "
+            "Everyone you invent is an ORDINARY BACKGROUND RESIDENT of this setting: a "
+            "stallholder, a courier, a gate guard, someone's aunt. Never a new hero, "
+            "never a new villain, never a new named power or technique, never anyone who "
+            "could rival or outrank a real character."
+        )
+    else:
+        budget.append(
+            "3. The roster covers everything this pass asks for. Do not invent anyone new."
+        )
+    budget.append(
+        "4. Do NOT copy any sentence from the research text - write your own descriptions "
+        "of these real people and places."
     )
+    lines.append("\n".join(budget))
     return "\n\n".join(lines)
 
 

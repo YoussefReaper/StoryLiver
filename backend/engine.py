@@ -516,8 +516,12 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                 moved_to = new_loc
             else:
                 new_loc = pt["current_location"]
-        db.run("UPDATE playthroughs SET current_turn=?, current_location=?, updated_at=? WHERE id=?",
-               (turn, new_loc, db.now(), pt_id))
+        # last_seen_at moves with every turn, not just with opening the story:
+        # "away" has to mean away from THIS world, or a player mid-session would
+        # be told the hour had drifted while they were sitting right there.
+        db.run("UPDATE playthroughs SET current_turn=?, current_location=?, updated_at=?,"
+               " last_seen_at=? WHERE id=?",
+               (turn, new_loc, db.now(), db.now(), pt_id))
         rt.cache_drop(f"sl:pt:{pt_id}:snapshot")
         pt = _pt(pt_id)
         entries.append(_render(pt_id, turn, "you", action, actor=player,

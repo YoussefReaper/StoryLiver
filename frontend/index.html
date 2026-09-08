@@ -8,83 +8,295 @@
 <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,300;1,6..72,400&family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Noto+Naskh+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/styles.css">
 <link rel="stylesheet" href="/app/forge.css">
 </head>
 <body>
 
-<!-- ============================ THRESHOLD ============================ -->
+<!-- ============================ HOME ============================ -->
+<!-- The front door. It used to be a single card that said "Step into
+     Emberfall": one world, named before the player had been told what any of
+     this was. Emberfall is now one card among several down in `#worlds`, and
+     the front door does what the product actually does - it asks you to
+     describe a world. -->
 <section id="threshold" class="threshold">
-  <div class="threshold-glow" aria-hidden="true"></div>
-  <div class="threshold-inner">
-    <header class="brand brand-lg">
+
+  <header class="home-nav">
+    <a class="brand" href="#top">
       <span class="mark" aria-hidden="true">
         <svg viewBox="0 0 40 40" fill="none"><path class="mk-page" d="M9 5h14l8 8v22H9z"/><path class="mk-fold" d="M23 5v8h8"/><path class="mk-pulse" d="M12.5 24.5h3.2l2-5.4 3 10.2 2.3-7 1.6 2.2h3.1"/></svg>
       </span>
       <span class="brand-text">Story<em>Liver</em></span>
-    </header>
-    <p class="threshold-tag">Don't read the story. Live in it.</p>
+    </a>
+    <nav class="home-nav-links" aria-label="Page sections">
+      <a href="#how">How it works</a>
+      <a href="#alive">Why it remembers</a>
+      <a href="#worlds">Worlds</a>
+    </nav>
+    <div class="home-nav-actions">
+      <button class="btn btn-ghost btn-sm" data-open="library" id="libraryBtn" hidden>
+        <span>Your stories</span><em id="libraryCount"></em>
+      </button>
+      <button class="btn btn-primary btn-sm" data-open="forge">Start your story</button>
+    </div>
+  </header>
 
-    <div class="threshold-card">
-      <div class="quickstart">
-        <div class="qs-head">
-          <span class="eyebrow" id="qsEyebrow">Start in one tap</span>
-          <h1 id="qsTitle">Emberfall</h1>
-          <p class="tc-tagline" id="qsTagline">Three days before the valley burns.</p>
-        </div>
-        <p class="tc-premise" id="qsPremise"></p>
-        <div class="tc-stats" id="qsStats"></div>
-        <button class="btn btn-primary btn-lg" id="beginBtn">
-          <span>Step into Emberfall</span>
+  <div class="home-hero" id="top">
+    <div class="home-hero-copy">
+      <p class="home-eyebrow">A LIVING TEXT RPG</p>
+      <h1 class="home-h1">Nobody here forgets what you did.</h1>
+      <p class="home-lead">Write what you do. The world narrates what happens, and then goes on
+        living with it — the people you helped, the ones you crossed, the room you should not
+        have walked into.</p>
+      <div class="home-cta">
+        <button class="btn btn-primary btn-lg" data-open="forge">
+          <span>Start your story</span>
           <svg viewBox="0 0 16 16" class="ico"><path d="M2 8h11M9 4l4 4-4 4"/></svg>
         </button>
-        <p class="qs-sub">Alone, right now. No account, no setup.</p>
+        <span class="home-cta-note">NO ACCOUNT NEEDED TO PLAY<br>NOTHING TO SUBSCRIBE TO</span>
       </div>
+    </div>
 
-      <div class="or-rule"><span>or</span></div>
-
-      <form class="joinbar" id="joinForm" autocomplete="off">
-        <div class="joinbar-row">
-          <input id="joinCode" class="code-input" maxlength="6" placeholder="ROOM CODE"
-                 aria-label="Room code" inputmode="latin" autocapitalize="characters" spellcheck="false">
-          <input id="joinName" class="name-input" maxlength="24" placeholder="Your name" aria-label="Your name">
-          <button type="submit" class="btn btn-ghost" id="joinBtn">Join</button>
+    <div class="home-mock" role="img" aria-label="A sample moment: the narrator describes forty burnt-down candles on the chapel steps, a character named Yeva Marrow quietly warns you not to go up there tonight, and the story catches a lie another character told you.">
+      <div class="home-mock-bar">
+        <span class="mono">DAY 6 · 23:41</span>
+        <span class="home-mock-sep"></span>
+        <span class="home-mock-where">Emberfall · the chapel steps</span>
+        <span class="home-mock-spacer"></span>
+        <span class="home-mock-mana">
+          <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.5 4 8.6h3L6.5 14.5 12 7h-3z"/></svg>
+          <span class="mono">26/40</span>
+        </span>
+      </div>
+      <div class="home-mock-body">
+        <p class="home-mock-prose">Forty candle stubs stand in a ring on the flagstones, burnt to
+          the height of a thumb. The wax is still soft, which means whoever set them out did it
+          inside the hour, in the rain, and did not care that the rain would put them out.</p>
+        <div class="home-mock-npc">
+          <div class="home-mock-face" aria-hidden="true"></div>
+          <div>
+            <div class="home-mock-who">
+              <span class="home-mock-name">Yeva Marrow</span>
+              <span class="home-tag home-tag-close">close</span>
+            </div>
+            <p class="home-mock-line">“You brought me jugs in the wet season and asked for nothing.
+              So I will say this once, quietly, and then deny it: don't go up there tonight.”</p>
+          </div>
         </div>
-        <label class="mini-check"><input type="checkbox" id="joinSpectate"><span>Watch only</span></label>
-      </form>
+        <div class="home-mock-lie">
+          <div class="mono home-mock-lie-label">THE LIE COMES APART</div>
+          <p class="home-mock-lie-text">Halden told you the mill smelled of pitch when it went up.
+            Halden has never once been on the mill road.</p>
+        </div>
+      </div>
+      <div class="home-mock-foot">
+        <div class="home-mock-input">I ask her who lit them<span class="home-caret" aria-hidden="true"></span></div>
+        <span class="btn btn-primary btn-sm">Do it</span>
+      </div>
+    </div>
+  </div>
 
-      <div class="threshold-more">
+  <div class="home-band">
+    <h2 class="home-h2">It reads like the best AI narration — and then never forgets you.</h2>
+    <div class="home-compare">
+      <div class="home-card home-card-dead">
+        <div class="home-card-head">
+          <svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="5.5" stroke-dasharray="2.5 2.5"/></svg>
+          <span class="mono home-kicker">AN ORDINARY AI CHAT, THREE WEEKS LATER</span>
+        </div>
+        <p class="home-card-line">“Welcome! Tell me about your character and the world you'd like to explore.”</p>
+        <p class="home-card-foot">The window closed. Everything in it closed with it.</p>
+      </div>
+      <div class="home-card home-card-live">
+        <div class="home-card-head">
+          <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.5 4 8.6h3L6.5 14.5 12 7h-3z"/></svg>
+          <span class="mono home-kicker home-kicker-ember">STORYLIVER, THREE WEEKS LATER</span>
+        </div>
+        <p class="home-card-line home-card-line-live">Yeva sees you on the terrace road and does not
+          stop working. “The jugs,” she says, to the wax. “I still have the jugs.”</p>
+        <p class="home-card-foot home-card-tags">
+          <span class="home-tag">SHE REMEMBERS DAY 2</span>
+          <span class="home-tag">THE TERRACE GUILD REMEMBERS TOO</span>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="home-band" id="how">
+    <div class="home-head">
+      <span class="mono home-kicker">HOW IT WORKS</span>
+      <h2 class="home-h2 home-h2-sm">Three things, then you're playing</h2>
+    </div>
+    <div class="home-steps">
+      <div class="home-step">
+        <div class="home-step-mock">
+          <p class="home-step-typed">A mining town where the priest is the only one who can
+            read.<span class="home-caret" aria-hidden="true"></span></p>
+          <div class="mono home-step-flag">BUILDING SOMETHING ORIGINAL</div>
+        </div>
+        <div class="home-step-copy">
+          <div class="home-step-num"><span class="mono">01</span><b>Describe any world</b></div>
+          <p>Your own idea, a setting you love, or two of them crossed over. A sentence is enough.</p>
+        </div>
+      </div>
+      <div class="home-step">
+        <div class="home-step-mock">
+          <div class="home-step-tags">
+            <span class="home-tag">Ashfield Cut</span>
+            <span class="home-tag">The Rectory</span>
+            <span class="home-tag">Shaft Four</span>
+            <span class="home-tag home-tag-more">+8</span>
+          </div>
+          <ul class="home-step-checks">
+            <li><svg viewBox="0 0 16 16" class="ico"><path d="M3 8.5 6.5 12 13 4.5"/></svg>Eleven places named</li>
+            <li><svg viewBox="0 0 16 16" class="ico"><path d="M3 8.5 6.5 12 13 4.5"/></svg>Nineteen people, each wanting something</li>
+            <li><span class="home-spin" aria-hidden="true"></span>Who owes whom</li>
+          </ul>
+        </div>
+        <div class="home-step-copy">
+          <div class="home-step-num"><span class="mono">02</span><b>It builds itself</b></div>
+          <p>Real places, real people with wants and grudges, and things already fated to happen
+            whether you show up or not.</p>
+        </div>
+      </div>
+      <div class="home-step">
+        <div class="home-step-mock">
+          <p class="home-step-said">I tell the priest I can read too.</p>
+          <p class="home-step-back">He does not answer for a long moment, and in that moment he
+            decides what you are for.</p>
+        </div>
+        <div class="home-step-copy">
+          <div class="home-step-num"><span class="mono">03</span><b>Play, and it holds</b></div>
+          <p>Every choice lands somewhere and stays there. Come back in a month and the town still
+            has an opinion about you.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="home-band home-band-alive" id="alive">
+    <div class="home-alive">
+      <div class="home-alive-copy">
+        <span class="mono home-kicker">WHAT THE WORLD KNOWS ABOUT YOU</span>
+        <h2 class="home-h2">Nobody is told what they didn't see.</h2>
+        <p class="home-lead home-lead-sm">The world tracks who witnessed what. Do a thing in an empty
+          room and it stays in that room until somebody talks. Do it in the square and the story
+          arrives ahead of you, changed by whoever carried it.</p>
+        <div class="home-switch" role="group" aria-label="Show the same action, witnessed or not">
+          <button class="btn btn-ghost btn-sm" data-witness="seen" aria-pressed="true">Someone saw you</button>
+          <button class="btn btn-ghost btn-sm" data-witness="unseen" aria-pressed="false">Nobody saw you</button>
+        </div>
+      </div>
+      <div class="home-proof">
+        <div class="mono home-proof-head">THE SAME ACTION, TWO WAYS</div>
+        <div class="home-proof-body">
+          <p class="home-step-said">I take the ledger from the rectory desk.</p>
+          <div class="home-proof-box" id="witnessBox">
+            <div class="mono home-proof-label" id="witnessLabel">YOU WERE SEEN</div>
+            <p id="witnessText">The priest says nothing while you do it, which is worse. By morning
+              the guild knows there is a ledger missing and knows whose hands were on the desk.</p>
+          </div>
+          <div class="home-proof-who">
+            <span class="mono home-kicker">WHO KNOWS, AFTERWARDS</span>
+            <div class="home-proof-tags" id="witnessKnowers"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="home-band">
+    <div class="home-head">
+      <span class="mono home-kicker">UNDERNEATH</span>
+      <h2 class="home-h2 home-h2-sm">Four things that make it hold</h2>
+    </div>
+    <div class="home-systems">
+      <div class="home-card">
+        <svg viewBox="0 0 16 16" class="ico home-ico-lg"><path d="M4 2h8v12l-4-2.6L4 14z"/></svg>
+        <h3>Standing is behaviour</h3>
+        <p>No reputation bar. The guild simply stops holding the gate for you, and you work out why.</p>
+      </div>
+      <div class="home-card">
+        <svg viewBox="0 0 16 16" class="ico home-ico-lg"><path d="M2 4.5c2.6-2 3.3 2 6 .6s3.9 1.9 3.9 1.9M2 10c2.6-2 3.3 2 6 .6s3.9 1.9 3.9 1.9"/></svg>
+        <h3>Consequences travel</h3>
+        <p>On foot, at the speed of a carter. Word from the next valley arrives late and slightly wrong.</p>
+      </div>
+      <div class="home-card">
+        <svg viewBox="0 0 16 16" class="ico home-ico-lg"><path d="M2.5 11.5V6l2.6 2.6L8 4l2.9 4.6L13.5 6v5.5z"/></svg>
+        <h3>Death isn't the end of it</h3>
+        <p>Someone inherits what you built, and the world says out loud what you were to it.</p>
+      </div>
+      <div class="home-card">
+        <svg viewBox="0 0 16 16" class="ico home-ico-lg"><path d="M2 8l6-4 6 4-6 4z"/><circle cx="8" cy="8" r="1.4"/></svg>
+        <h3>A table, witnessed</h3>
+        <p>Play with friends and the world tracks each of you separately. It never broadcasts what
+          only one of you saw.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="home-band" id="worlds">
+    <div class="home-head">
+      <span class="mono home-kicker">WORLDS PEOPLE ARE LIVING IN NOW</span>
+      <h2 class="home-h2 home-h2-sm">Or step into one that already exists</h2>
+    </div>
+    <div class="home-worlds">
+      <button class="home-world" id="beginBtn">
+        <span class="home-world-art" aria-hidden="true"></span>
+        <span class="home-world-body">
+          <b class="home-world-name" id="qsTitle">Emberfall</b>
+          <em class="home-world-tag" id="qsTagline">Three days before the valley burns.</em>
+          <span class="home-world-premise" id="qsPremise"></span>
+          <span class="home-world-stats" id="qsStats"></span>
+          <span class="home-world-go">Step into Emberfall</span>
+        </span>
+      </button>
+      <div class="home-side">
+        <form class="home-join" id="joinForm" autocomplete="off">
+          <span class="mono home-kicker">JOIN SOMEONE'S TABLE</span>
+          <div class="joinbar-row">
+            <input id="joinCode" class="code-input" maxlength="6" placeholder="ROOM CODE"
+                   aria-label="Room code" inputmode="latin" autocapitalize="characters" spellcheck="false">
+            <input id="joinName" class="name-input" maxlength="24" placeholder="Your name" aria-label="Your name">
+            <button type="submit" class="btn btn-ghost" id="joinBtn">Join</button>
+          </div>
+          <label class="mini-check"><input type="checkbox" id="joinSpectate"><span>Watch only</span></label>
+        </form>
         <button class="more-btn" data-open="host">
           <svg viewBox="0 0 16 16" class="ico"><circle cx="5.5" cy="5" r="2.2"/><circle cx="11" cy="6" r="1.8"/><path d="M1.6 13.5c.4-2.4 1.9-3.6 3.9-3.6s3.5 1.2 3.9 3.6M10 9.9c1.7.1 2.9 1.3 3.3 3.3"/></svg>
           <span><b>Host a room</b>Play with up to 5 friends — they pay nothing</span>
         </button>
         <button class="more-btn" data-open="play">
           <svg viewBox="0 0 16 16" class="ico"><path d="M2 8h12M8 2v12"/><circle cx="8" cy="8" r="6.2"/></svg>
-          <span><b>Play it differently</b>Detective, Ironman, a daily world everyone shares &mdash; six ways to play alone</span>
-        </button>
-        <button class="more-btn" data-open="forge">
-          <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 14 5v6l-6 3.4L2 11V5z"/><path d="M8 8v6.4M8 8l6-3M8 8 2 5"/></svg>
-          <span><b>Build a world</b>Forge your own, or name any setting and let it build</span>
-        </button>
-        <button class="more-btn" data-open="library" id="libraryBtn" hidden>
-          <svg viewBox="0 0 16 16" class="ico"><path d="M2.5 3.5h5a2 2 0 0 1 2 2v7a1.6 1.6 0 0 0-1.6-1.6H2.5zM13.5 3.5h-5a2 2 0 0 0-2 2v7a1.6 1.6 0 0 1 1.6-1.6h5.4z"/></svg>
-          <span><b>Your stories</b><em id="libraryCount"></em></span>
+          <span><b>Play it differently</b>Detective, Ironman, a daily world everyone shares — six ways to play alone</span>
         </button>
       </div>
     </div>
+  </div>
 
-    <ul class="threshold-promises">
+  <div class="home-final">
+    <h2 class="home-h1 home-h1-sm">Somewhere there is a town that hasn't met you yet.</h2>
+    <p class="home-lead">Describe it in a sentence and go and see what it makes of you.</p>
+    <button class="btn btn-primary btn-lg" data-open="forge">
+      <span>Start your story</span>
+      <svg viewBox="0 0 16 16" class="ico"><path d="M2 8h11M9 4l4 4-4 4"/></svg>
+    </button>
+    <span class="mono home-final-note">FREE TO PLAY AS A GUEST · NO SUBSCRIPTION · NO PLAYTIME CAP</span>
+  </div>
+
+  <footer class="home-foot">
+    <ul class="home-promises">
       <li><b>It does not forget.</b> Structured memory, not a transcript. Turn 200 remembers turn 2.</li>
-      <li><b>The world runs whether you look or not.</b> Weather, routines, rumours travelling at walking pace, factions that only know what someone told them.</li>
+      <li><b>The world runs whether you look or not.</b> Weather, routines, rumours travelling at walking pace.</li>
       <li><b>Fate is fixed. You are not.</b> Seven events will happen. Who stands beside you is yours.</li>
-      <li><b>No subscription. No playtime cap.</b> Out of Mana just means a quieter world, never a locked door.</li>
+      <li><b>Out of Mana is a quieter world</b>, never a locked door.</li>
     </ul>
     <div class="threshold-links">
       <button class="link-btn" id="pricingLinkThreshold">How Mana works →</button>
       <button class="link-btn" id="ethicsLinkThreshold">Your data is yours →</button>
     </div>
-  </div>
+  </footer>
 </section>
 
 <!-- ============================== THE TABLE ============================== -->
@@ -197,14 +409,18 @@
       <!-- STORY -->
       <div class="view view-story on" data-pane="story">
         <div class="feed" id="feed"></div>
+        <!-- Waiting is diegetic. This used to name the engine's four internal
+             stages (World Master / World tick / The living / Narrator) and
+             march a progress bar across them, which told the player they were
+             watching a pipeline rather than standing in a place. Now the wait
+             is the world's, stated in the world's own terms: the hour, the
+             weather and where you are standing, all read from live state. -->
         <div class="thinking" id="thinking" hidden>
-          <div class="pipeline">
-            <span class="stage-dot" data-s="wm">World Master</span><span class="sep"></span>
-            <span class="stage-dot" data-s="det">World tick</span><span class="sep"></span>
-            <span class="stage-dot" data-s="npc">The living</span><span class="sep"></span>
-            <span class="stage-dot" data-s="nar">Narrator</span>
+          <div class="quilling">
+            <svg viewBox="0 0 16 16" class="ico quill" aria-hidden="true"><path d="M13 2.5 5.5 10l-1.4 3.9 3.9-1.4z"/><path d="M4.1 13.9 2.6 15.4"/></svg>
+            <span class="quilling-say" id="thinkingSay">The world is writing</span>
           </div>
-          <div class="thinking-bar"><i></i></div>
+          <p class="thinking-ambient mono" id="thinkingAmbient"></p>
           <p class="thinking-who" id="thinkingWho"></p>
         </div>
       </div>

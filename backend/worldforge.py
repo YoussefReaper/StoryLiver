@@ -523,6 +523,56 @@ def _top_up(raw: dict) -> dict:
     return raw
 
 
+def _seat_unused_canon(raw: dict, found: dict) -> dict:
+    """Put real names research actually found into the world, by taking over
+    the seats the model filled with invented people instead.
+
+    F3 tagged every generated NPC canon-or-original, which made the problem
+    VISIBLE without making it any smaller: a build could still come back with
+    the real cast half-missing and a crowd of invented strangers wearing the
+    world's only speaking parts, correctly labelled "original". Labelling is
+    not the fix the player asked for - they asked for their setting.
+
+    So this is the guarantee the prompt cannot give: any researched name that
+    did not make it in displaces an invented one. The seat's structure is
+    kept (its id, where it stands, who it is near - all of which other records
+    point at) and only the IDENTITY is rewritten, because the seat is a
+    position in the local situation and the real character is now the one
+    standing in it. The invented person's motives go with them: a stallholder's
+    goals and memories are not Tanjiro's, and inheriting them would be a
+    stranger wearing his name, which is the same bug in a better costume."""
+    canon_chars = [c for c in (found.get("characters") or []) if (c.get("name") or "").strip()]
+    canon_places = [p for p in (found.get("places") or []) if (p.get("name") or "").strip()]
+    if not (canon_chars or canon_places):
+        return raw
+
+    def seat(records, roster, *, is_npc):
+        present = {_fold(r.get("name", "")) for r in records}
+        unused = [x for x in roster if _fold(x["name"]) not in present]
+        if not unused:
+            return
+        # The tail is the filler: a model front-loads whoever it thinks
+        # matters, so the last invented seats are the most generic ones.
+        seats = [i for i, r in enumerate(records) if r.get("origin") == "original"]
+        for idx, real in zip(reversed(seats), unused):
+            rec = records[idx]
+            rec["name"] = real["name"]
+            rec["origin"] = "canon"
+            note = (real.get("note") or "").strip()
+            if is_npc:
+                if note:
+                    rec["role"] = note[:120]
+                # Written for whoever used to sit here, not for this person.
+                rec.pop("anchors", None)
+                rec.pop("seed_memories", None)
+            elif note:
+                rec["desc"] = note[:200]
+
+    seat(raw.get("npcs") or [], canon_chars, is_npc=True)
+    seat(raw.get("locations") or [], canon_places, is_npc=False)
+    return raw
+
+
 def _empty_dossier(setting):
     """Original mode looks nothing up, so it hands back the same empty shape
     the research layer would - one code path, not two."""
@@ -569,16 +619,60 @@ def _build_districts(brief, *, user_id, spec, setting, personal):
     return plan, districts[:spec["districts"]]
 
 
-def _fill_district(district, others, brief, *, user_id, spec, setting):
+def _allocate_canon(found: dict, n: int) -> list:
+    """Deal the researched roster out to n districts in DISJOINT slices.
+
+    Every district used to receive the identical roster and be asked for its
+    own 6-8 people, with no idea what the other seven districts were doing.
+    Two things followed, both reported: the same real character turned up in
+    several districts (deduped away by _stitch, so their slots came back as
+    invented filler instead), and once a district had spent the handful of
+    names it recognised it invented the rest. Dealing disjoint slices means
+    the roster is spent ACROSS the world exactly once rather than raced for
+    eight times over."""
+    if n <= 0:
+        return []
+    chars = [c for c in (found.get("characters") or []) if (c.get("name") or "").strip()]
+    places = [p for p in (found.get("places") or []) if (p.get("name") or "").strip()]
+    out = []
+    for i in range(n):
+        out.append({"characters": chars[i::n], "places": places[i::n]})
+    return out
+
+
+def _district_roster(share: dict) -> str:
+    """The district's own slice of canon, named, plus the reminder that the
+    rest of the roster is somebody else's."""
+    if not share or not (share.get("characters") or share.get("places")):
+        return ""
+    parts = ["YOUR SHARE OF THE REAL ROSTER - these specific real names live in "
+             "THIS district and must appear here, spelled exactly as written:"]
+    if share.get("characters"):
+        parts.append("REAL PEOPLE HERE:\n" + "\n".join(
+            f"- {c['name']}" + (f": {c['note'][:110]}" if c.get("note") else "")
+            for c in share["characters"]))
+    if share.get("places"):
+        parts.append("REAL PLACES HERE:\n" + "\n".join(
+            f"- {p['name']}" + (f": {p['note'][:110]}" if p.get("note") else "")
+            for p in share["places"]))
+    parts.append("Every other real name in this brief belongs to a DIFFERENT district. "
+                 "Do not place them here, do not mention them as residents, and do not "
+                 "invent a local stand-in for them.")
+    return "\n\n".join(parts)
+
+
+def _fill_district(district, others, brief, *, user_id, spec, setting, share=None):
     """One pass per district. Small enough to always come back whole."""
     lo, hi = spec["locs"]
     nlo, nhi = spec["npcs"]
+    roster = _district_roster(share or {})
     ask = (
         f"{brief}\n\n"
         f"THIS DISTRICT: {district['id']} - {district.get('name', '')}\n"
         f"{district.get('premise', '')}\n"
-        f"NEIGHBOURING DISTRICTS: {', '.join(o['id'] for o in others) or 'none'}\n\n"
-        f"Give it {lo}-{hi} locations and {nlo}-{nhi} characters. "
+        f"NEIGHBOURING DISTRICTS: {', '.join(o['id'] for o in others) or 'none'}\n"
+        + (f"\n{roster}\n" if roster else "")
+        + f"\nGive it {lo}-{hi} locations and {nlo}-{nhi} characters. "
         f"Prefix every id with '{district['id']}_'. JSON only."
     )
     out = _resilient(
@@ -755,7 +849,14 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         if era_places:
             found = {**found, "places": era_places}
 
-    grounding = research.grounding_brief(found)
+    # The scale is needed BEFORE the grounding brief is written: how many
+    # people this build is about to ask for is exactly what decides whether
+    # the roster covers it or the model is being handed a shortfall.
+    spec = SCALES.get(scale) or SCALES["town"]
+    grounding = research.grounding_brief(
+        found,
+        need_npcs=spec["npcs"][1] * spec["districts"],
+        need_locs=spec["locs"][1] * spec["districts"])
     premise = research.premise_brief(found)
     parsed = found.get("premise") or {}
 
@@ -829,7 +930,6 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # A town is one call. Anything larger is built district by district, so
     # the world can actually be as big as the player asked for instead of
     # being silently capped at whatever fits in a single response.
-    spec = SCALES.get(scale) or SCALES["town"]
     if spec["districts"] <= 1:
         structure = _resilient(
             "narrator", STRUCTURE_SYSTEM,
@@ -845,10 +945,12 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         # back to the same procedural stub offline mode uses for just that
         # one district, so a region/world build completes even when a single
         # pass comes back oversized.
+        shares = _allocate_canon(found, len(districts))
         filled = [
             _fill_district(d, [o for o in districts if o["id"] != d["id"]],
-                           brief, user_id=user_id, spec=spec, setting=setting)
-            for d in districts
+                           brief, user_id=user_id, spec=spec, setting=setting,
+                           share=shares[i] if i < len(shares) else None)
+            for i, d in enumerate(districts)
         ]
         structure = _stitch(plan, districts, filled)
 
@@ -896,6 +998,10 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
             npc["origin"] = "canon" if _fold(npc.get("name", "")) in grounded else "original"
         for loc in raw.get("locations") or []:
             loc["origin"] = "canon" if _fold(loc.get("name", "")) in grounded else "original"
+
+        # Tagging alone left the real cast half-missing and correctly
+        # labelled. Seat whoever research found but the builder skipped.
+        raw = _seat_unused_canon(raw, found)
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)

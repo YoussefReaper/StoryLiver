@@ -178,6 +178,132 @@ def test_grounding_brief():
        "an unresearched setting adds nothing to the prompt")
 
 
+def test_the_brief_never_licenses_invention():
+    section("canon fidelity — the brief no longer tells the model to invent")
+    # The reported bug: worlds came back full of characters and places that
+    # were not in the setting. The brief itself was the cause. It ended with
+    # "Invent freely for anything not listed" while a world-scale build asks
+    # for 48-64 people against a roster of 9-14 - a forty-person shortfall
+    # handed over with an explicit licence to fill it however it liked.
+    d = {"found": True, "canonical_name": "Kimetsu no Yaiba", "summary": "",
+         "characters": canon_seed.fallback_cast("demon slayer"),
+         "places": canon_seed.fallback_places("demon slayer"),
+         "factions": [], "sources": []}
+
+    brief = research.grounding_brief(d, need_npcs=12, need_locs=10)
+    ok("Invent freely" not in brief,
+       "the words that caused it are gone from the prompt entirely")
+    ok("must be used before you invent" in brief,
+       "the roster must be exhausted before anything is invented")
+    ok("never invent a relative" in brief.lower() or "never invent a relative" in brief,
+       "and inventing a cousin/student/successor of a real character is named and refused")
+
+    # The shortfall is stated as a NUMBER rather than left for the model to
+    # discover, and what may fill it is constrained to background residents.
+    big = research.grounding_brief(d, need_npcs=64, need_locs=48)
+    ok("ORDINARY BACKGROUND RESIDENT" in big,
+       "when the roster genuinely cannot cover the ask, the filler is scoped to extras")
+    low = big.lower()
+    ok("never a new hero" in low and "never a new villain" in low,
+       "an invented person can never be a new hero or villain competing with the real cast")
+    n_chars = len(d["characters"])
+    ok(f"about {64 - n_chars} extra people" in big,
+       "the exact shortfall is named, so the model is not left to guess how many to add")
+
+    # And when the roster DOES cover the ask, invention is refused outright.
+    small = research.grounding_brief(d, need_npcs=3, need_locs=2)
+    ok("Do not invent anyone new." in small,
+       "a roster that covers the ask forbids invention rather than merely discouraging it")
+
+
+def test_canon_supply_reaches_the_prompt():
+    section("canon fidelity — enough real names survive to fill the world")
+    # The second half of the same bug: the caps were tuned when a world was
+    # one call asking for 10-12 people. Every real name cut here was a name
+    # the builder then had to invent a replacement for.
+    ok(research.BUCKET_KEEP["characters"] >= 24,
+       "research keeps enough of a researched cast to fill a large world")
+    ok(research.BRIEF_KEEP["characters"] >= 24,
+       "and the brief shows them rather than truncating at 14")
+
+    many = [{"name": f"Real Person {i}", "note": ""} for i in range(30)]
+    brief = research.grounding_brief(
+        {"found": True, "characters": many, "places": [], "factions": [],
+         "canonical_name": "", "summary": "", "sources": []},
+        need_npcs=30, need_locs=0)
+    shown = sum(1 for line in brief.splitlines() if line.startswith("- Real Person"))
+    ok(shown >= 24, f"a 30-strong researched cast reaches the prompt ({shown} names, was capped at 14)")
+
+
+def test_canon_is_dealt_across_districts_not_raced_for():
+    section("canon fidelity — each district gets its own slice of the roster")
+    # A world is 8 districts, each asked for 6-8 people, each previously handed
+    # the IDENTICAL roster with no idea what the others were doing.
+    found = {"characters": [{"name": f"C{i}", "note": ""} for i in range(9)],
+             "places": [{"name": f"P{i}", "note": ""} for i in range(6)]}
+    shares = worldforge._allocate_canon(found, 4)
+    ok(len(shares) == 4, "one share per district")
+
+    dealt = [c["name"] for s in shares for c in s["characters"]]
+    ok(sorted(dealt) == sorted(f"C{i}" for i in range(9)),
+       "every real character is dealt exactly once across the whole world")
+    ok(len(dealt) == len(set(dealt)),
+       "and no two districts are handed the same person to place")
+
+    # The district's own prompt names its people and disowns everyone else's.
+    text = worldforge._district_roster(shares[0])
+    ok("must appear here" in text, "a district is told its share must actually appear")
+    ok("belongs to a DIFFERENT district" in text,
+       "and that the rest of the roster is not its to spend")
+    ok(worldforge._district_roster({}) == "",
+       "a district with no share adds nothing to its prompt")
+
+
+def test_unused_canon_is_seated_not_merely_labelled():
+    section("canon fidelity — real names that were skipped take back their seats")
+    # F3 tagged invented content "original", which made the problem visible
+    # without making it smaller: the world could still come back with the real
+    # cast half-missing and a crowd of strangers holding the speaking parts.
+    found = {"characters": [{"name": "Tanjiro Kamado", "note": "carries his sister"},
+                            {"name": "Nezuko Kamado", "note": "turned demon"},
+                            {"name": "Giyu Tomioka", "note": "Water Hashira"}],
+             "places": [{"name": "Butterfly Mansion", "note": "half hospital"}]}
+    raw = {
+        "npcs": [
+            {"id": "n1", "name": "Tanjiro Kamado", "role": "slayer", "origin": "canon"},
+            {"id": "n2", "name": "Kaname Aoi", "role": "a tea seller", "origin": "original",
+             "anchors": {"goals": ["sell more tea"]}, "seed_memories": ["opened the stall"]},
+            {"id": "n3", "name": "Aiko Sato", "role": "a courier", "origin": "original"},
+        ],
+        "locations": [
+            {"id": "l1", "name": "The Rusty Kettle", "desc": "a tea house", "origin": "original"},
+        ],
+    }
+    out = worldforge._seat_unused_canon(raw, found)
+    names = [n["name"] for n in out["npcs"]]
+    ok("Nezuko Kamado" in names and "Giyu Tomioka" in names,
+       "researched characters the builder skipped are seated in the world")
+    ok("Kaname Aoi" not in names and "Aiko Sato" not in names,
+       "and the invented strangers holding those seats are gone")
+    ok(names.count("Tanjiro Kamado") == 1,
+       "someone already present is not seated a second time")
+    ok(all(n["origin"] == "canon" for n in out["npcs"]),
+       "the seated characters are tagged canon, because now they really are")
+
+    seated = next(n for n in out["npcs"] if n["name"] == "Giyu Tomioka")
+    ok("anchors" not in seated and "seed_memories" not in seated,
+       "a real character does not inherit the invented person's goals and memories")
+    ok("Water Hashira" in seated["role"],
+       "they arrive with what research actually knows about them")
+    ok(out["locations"][0]["name"] == "Butterfly Mansion",
+       "the same holds for places")
+
+    # It must not fire when there is nothing to seat, or nothing to seat into.
+    untouched = {"npcs": [{"id": "n1", "name": "Someone", "origin": "original"}]}
+    ok(worldforge._seat_unused_canon(dict(untouched), {})["npcs"][0]["name"] == "Someone",
+       "an ungrounded build is left exactly as the model wrote it")
+
+
 def test_character_list_furniture():
     section("correctness — an article's furniture is not a character")
     import re as _re
@@ -428,7 +554,11 @@ def test_two_modes():
 def _all():
     return (test_allowlist, test_resolved_ip_guard, test_fetcher_guards,
             test_article_ranking, test_wiki_identity, test_slug_generation,
-            test_grounding_brief, test_character_list_furniture,
+            test_grounding_brief, test_the_brief_never_licenses_invention,
+            test_canon_supply_reaches_the_prompt,
+            test_canon_is_dealt_across_districts_not_raced_for,
+            test_unused_canon_is_seated_not_merely_labelled,
+            test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
             test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,
             test_cache_shape)

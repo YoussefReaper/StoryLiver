@@ -855,6 +855,10 @@ CREATE TABLE IF NOT EXISTS town_memory (
 # Columns added after the MVP shipped. Applied to existing databases in place.
 MIGRATIONS = [
     ("npc_memories", "player_id", "TEXT NOT NULL DEFAULT '*'"),
+    # The wall clock, as opposed to the story clock in current_turn. Without it
+    # the world could not tell a player who stepped away for lunch from one who
+    # has been gone a fortnight - so it told neither of them anything.
+    ("playthroughs", "last_seen_at", "TEXT NOT NULL DEFAULT ''"),
     ("playthroughs", "session_id", "TEXT NOT NULL DEFAULT ''"),
     ("playthroughs", "world_json", "TEXT NOT NULL DEFAULT ''"),
     ("relationships", "love", "REAL NOT NULL DEFAULT 0"),
