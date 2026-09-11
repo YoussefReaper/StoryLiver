@@ -683,6 +683,49 @@ JSON only:
 """
 
 
+CHAPTERS_SYSTEM = """You are a canon consultant. Give the story arcs of a published work, in the
+order the work tells them.
+
+Use the arc names the work's own audience uses - the names a fan would recognise
+from a contents page or an episode guide, not invented chapter titles. Include
+only arcs that actually exist in the source. If a setting genuinely has no arc
+structure, return one entry naming the story as a whole.
+
+JSON only:
+{"arcs":[{"name":"The arc's real name","note":"one clause: what happens in it"}]}
+"""
+
+
+def canon_chapters(setting: str, *, user_id: str) -> list:
+    """The source's running order, from the model, when research cannot supply it.
+
+    Arcs decide a canon world's CHAPTERS, and research gets them from a Fandom
+    wiki's arc categories - which in production is never. A live dossier for
+    Demon Slayer comes back `wiki: ""`, so every Fandom-sourced bucket is empty:
+    no arcs, no places, no factions, no powers, with only Wikipedia's curated
+    cast surviving. Chapters therefore fell back to a single chapter named after
+    the town on every real setting, which is the whole feature absent.
+
+    The model knows the running order of most published fiction perfectly well.
+    Asking it is the same move that fixed canon personas: the knowledge was
+    always one call away, and the pipeline was busy reconstructing a worse
+    version of it from a source that was not answering."""
+    if not (setting or "").strip():
+        return []
+    out = _resilient("narrator", CHAPTERS_SYSTEM,
+                     f"WORK: {setting}\n\nIts arcs, in order. JSON only.",
+                     user_id=user_id, max_tokens=1400, temperature=0.2,
+                     stub=lambda: {"arcs": []})
+    arcs = []
+    for a in (out.get("arcs") or []):
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get("name") or "").strip()
+        if name:
+            arcs.append({"name": name[:80], "note": str(a.get("note") or "").strip()[:200]})
+    return arcs[:12]
+
+
 def _record_beyond(raw: dict, found: dict, *, keep: int = 6) -> dict:
     """Canon places the build did not use become somewhere you can walk to.
 
@@ -1399,7 +1442,15 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # original world, which has no canon to follow and never needed one.
     if canon:
         from . import chapters as _chapters
-        raw["chapters"] = _chapters.plan(found, fallback=str(raw.get("name") or ""))
+        source = found.get("canonical_name") or parsed.get("host") or setting
+        # Research first; it is free and authoritative when a wiki answers.
+        # When it does not - which in production is always, see canon_chapters -
+        # ask the model rather than shipping a one-chapter world.
+        book = found.get("arcs") or []
+        if not book:
+            book = canon_chapters(source, user_id=user_id)
+        raw["chapters"] = _chapters.plan({"arcs": book},
+                                         fallback=str(raw.get("name") or ""))
     raw["researched"] = bool(found.get("found"))
     raw["personal_only"] = personal
     raw["inspired_by"] = found.get("canonical_name") or (setting if personal else "")
