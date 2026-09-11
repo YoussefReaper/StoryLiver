@@ -477,6 +477,42 @@ def test_the_price_of_a_world_is_quoted_correctly():
        "moment the player is committing")
 
 
+def test_the_player_is_somebody_before_turn_one():
+    section("session zero - who the player IS, and what the town already thinks")
+    from backend import sessionzero
+
+    # Session Zero settled what the player could DO - role, power, limit, which
+    # arc they enter on - and nothing about who they WERE. So the builder
+    # invented it: a protagonist with no name, no past and no reason to be
+    # standing there, in a town that had no opinion of them either way. Every
+    # question here is a fact the build acts on.
+    d = {"setting": "demon slayer", "canonical_name": "Kimetsu no Yaiba", "found": True,
+         "arcs": [], "characters": [{"name": "Tanjiro Kamado"}], "places": [],
+         "premise": {"imports": []}}
+    ids = [q["id"] for q in sessionzero.questions(d)["questions"]]
+    for q in ("name", "origin", "known", "ties", "cast_mix"):
+        ok(q in ids, f"the player is asked {q!r}")
+
+    b = sessionzero.brief({"name": "Yuki, a courier", "origin": "Two valleys over",
+                           "known": "local", "ties": "Zenitsu - we trained together",
+                           "cast_mix": "canon_only"}, d)
+    ok("Yuki, a courier" in b and "do not invent another one" in b,
+       "their own name reaches the builder, and is not overwritten")
+    ok("Somebody here should have an opinion about that place" in b,
+       "where they are from is something the world can react to")
+    ok("GREW UP here" in b and "remembers them small" in b,
+       "being a local is built as history that predates the story, not as a label")
+    ok("Zenitsu" in b and "not as an introduction" in b,
+       "a named existing tie starts as a real relationship rather than a first meeting")
+    ok("Invent at most one or two ordinary residents" in b,
+       "and the player decides how much of the town is invented around the real cast")
+
+    # A stranger is the opposite instruction, not the absence of one.
+    stranger = sessionzero.brief({"known": "stranger"}, d)
+    ok("No character starts with a relationship to them" in stranger,
+       "a stranger starts with nothing, which is a built fact too")
+
+
 def test_a_crossover_is_asked_crossover_questions():
     section("session zero - the two questions a crossover actually raises")
     # Session Zero asked about entry point, role and power level: setting
@@ -677,6 +713,27 @@ def test_the_opening_scene_has_people_in_it():
     ok(all(n["schedule"]["morning"] == w["start_location"] for n in here),
        "and they are actually there on the opening phase, not scheduled elsewhere")
 
+    # OBSERVED LIVE: a Demon Slayer build opened with Muzan Kibutsuji standing
+    # in the town square on turn one - a character whose entire existence is
+    # concealment - purely because this fill takes from the end of the cast
+    # list and the arch-villain happened to be last. Populating a first scene
+    # must never cost the setting its biggest secret.
+    hidden = {"name": "Scatterville", "start_location": "p0", "locations": locs,
+              "npcs": [{"id": "n0", "name": "A Baker", "start_location": "p0"}]
+                      + [{"id": f"h{i}", "name": f"Local {i}", "start_location": f"p{i+1}"}
+                         for i in range(3)]
+                      + [{"id": "villain", "name": "The Hidden One",
+                          "start_location": "p5", "hidden_start": True}],
+              "rules": raw["rules"], "fated_events": raw["fated_events"]}
+    hw = worldkit.normalise(hidden, strict=True)
+    opening = [n["name"] for n in hw["npcs"]
+               if n["start_location"] == hw["start_location"]]
+    ok(len(opening) >= worldkit.OPENING_CAST,
+       "the opening scene is still filled")
+    ok("The Hidden One" not in opening,
+       "but never with somebody a stranger could not walk up to — the setting's "
+       "hidden antagonist does not loiter in the square to pad turn one")
+
     # The people the builder DID place deliberately keep their homes.
     moved = [n["id"] for n in w["npcs"] if n["start_location"] == w["start_location"]]
     ok("n0" in moved, "whoever the builder put at the opening place is still there")
@@ -694,7 +751,8 @@ def test_the_opening_scene_has_people_in_it():
 
 
 def _all():
-    return (test_a_canon_world_is_told_in_chapters,
+    return (test_the_player_is_somebody_before_turn_one,
+            test_a_canon_world_is_told_in_chapters,
             test_the_world_grows_into_its_own_canon,
             test_the_opening_scene_has_people_in_it,
             test_a_premise_is_parsed_not_searched,

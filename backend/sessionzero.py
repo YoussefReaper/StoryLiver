@@ -181,6 +181,88 @@ def questions(dossier: dict) -> dict:
             ],
         })
 
+    # WHO THE PLAYER IS, and what the world already thinks of them.
+    #
+    # The questions above settle what the player can DO. None of them settle
+    # who they ARE, so the builder invented it: a world would come back with a
+    # protagonist who had no name, no past, no reason to be standing there, and
+    # a town that had no opinion of them either way. Every one of these is a
+    # fact the build can act on, and three of them change the world's state
+    # before turn one rather than only its prose.
+    out["questions"].extend([
+        {
+            "id": "name",
+            "q": "Who are you, here?",
+            "why": "A name and a few words of who you are. The cast uses this - "
+                   "what they call you is the first thing that makes you a person "
+                   "in this world rather than a camera moving through it.",
+            "kind": "text",
+            "placeholder": "Yuki, a courier who reads more than she admits",
+        },
+        {
+            "id": "origin",
+            "q": "Where did you come from?",
+            "why": "Where somebody is from decides who trusts them on sight. It is "
+                   "also the first thing anybody asks a face they do not know.",
+            "kind": "text",
+            "placeholder": "Two valleys over, and nobody here has been there",
+        },
+        {
+            "id": "known",
+            "q": "Do the people here already know you?",
+            "why": "This is the single biggest difference in how a world opens. A "
+                   "stranger earns every door; somebody who grew up here starts "
+                   "with history they cannot put down.",
+            "kind": "choice",
+            "options": [
+                {"id": "stranger", "label": "Nobody knows your face",
+                 "blurb": "You arrived. Everything you get here, you get by earning it."},
+                {"id": "known", "label": "Known, and ordinary",
+                 "blurb": "You have been around long enough to be unremarkable. "
+                          "People nod. Nobody watches you."},
+                {"id": "local", "label": "You grew up here",
+                 "blurb": "They knew you as a child. Some of them have been waiting "
+                          "years to say something to you."},
+                {"id": "notorious", "label": "They know exactly who you are",
+                 "blurb": "Your name arrived before you did, and not everyone is "
+                          "glad about it."},
+            ],
+        },
+        {
+            "id": "ties",
+            "q": "Is there anyone here you already know?",
+            "why": "Names one real relationship the world starts with instead of "
+                   "making you build every bond from zero. Say who, and what you "
+                   "are to each other.",
+            "kind": "text",
+            "placeholder": "Zenitsu — we trained together, and he still owes me",
+        },
+    ])
+
+    # Only where there is a real cast to balance against. An original world has
+    # nothing but invented people in it, so asking how many of them to invent
+    # alongside the canon ones is a question about nothing.
+    if dossier.get("found") or (dossier.get("characters") or []):
+        out["questions"].append({
+            "id": "cast_mix",
+            "q": "Who should fill this world?",
+            "why": "A canon world has a limited real cast. This decides whether the "
+                   "rest of the town is invented locals or whether the story stays "
+                   "tight on the people the source actually wrote.",
+            "kind": "choice",
+            "options": [
+                {"id": "canon_only", "label": "The real cast, and almost nobody else",
+                 "blurb": "Only the people from the source. A smaller, denser world "
+                          "where everyone you meet is someone you have heard of."},
+                {"id": "balanced", "label": "The real cast, plus locals",
+                 "blurb": "The source's people, and ordinary residents around them "
+                          "to make the place feel lived in."},
+                {"id": "populated", "label": "A full town around them",
+                 "blurb": "Plenty of invented residents with their own business, "
+                          "and the real cast moving through it."},
+            ],
+        })
+
     out["questions"].extend(GENERAL)
     return out
 
@@ -254,6 +336,44 @@ def brief(answers: dict, dossier: dict) -> str:
                     "what they had, and they know it.",
         }.get(a["keeps"], a["keeps"])
         lines.append(f"- WHAT CARRIED OVER: {band}")
+
+    if a.get("name"):
+        lines.append(f"- WHO THEY ARE: {a['name'][:160]}. This is the protagonist. Use this "
+                     f"name; do not invent another one for them.")
+    if a.get("origin"):
+        lines.append(f"- WHERE THEY CAME FROM: {a['origin'][:160]}. Somebody here should "
+                     f"have an opinion about that place.")
+    if a.get("known"):
+        standing = {
+            "stranger": "NOBODY here knows their face. No character starts with a "
+                        "relationship to them, every door is closed until it is earned, "
+                        "and at least one person should treat a new face as a problem.",
+            "known": "they have been around long enough to be unremarkable. People nod. "
+                     "Two or three characters know them by name and think nothing of it.",
+            "local": "they GREW UP here. Give three characters a shared history with them "
+                     "that predates the story - somebody who taught them, somebody who "
+                     "remembers them small, somebody they wronged and never fixed.",
+            "notorious": "their name got here before they did. At least two characters "
+                         "have already decided what they think, one of them wrongly, and "
+                         "one faction has a standing position on them.",
+        }.get(a["known"], a["known"])
+        lines.append(f"- WHAT THIS PLACE ALREADY KNOWS: {standing}")
+    if a.get("ties"):
+        lines.append(f"- SOMEBODY THEY ALREADY KNOW: {a['ties'][:200]}. Build that "
+                     f"relationship in as an existing fact with history behind it, not as "
+                     f"an introduction, and set their starting feeling accordingly.")
+    if a.get("cast_mix"):
+        mix = {
+            "canon_only": "Keep the cast almost entirely to the source's real people. "
+                          "Invent at most one or two ordinary residents, and only where a "
+                          "scene would otherwise be empty.",
+            "balanced": "The source's real people, with a handful of ordinary invented "
+                        "residents around them so the place feels inhabited.",
+            "populated": "A full town: plenty of invented residents with their own "
+                         "business and grievances, and the source's real people moving "
+                         "through it.",
+        }.get(a["cast_mix"], a["cast_mix"])
+        lines.append(f"- WHO FILLS THIS WORLD: {mix}")
 
     lines.append("Give at least two named characters a reason to care that this specific person "
                  "is here - a use for them, a suspicion of them, or a grudge.")

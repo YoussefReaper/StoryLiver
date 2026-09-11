@@ -310,6 +310,11 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "start_location": start,
             # F3: see the matching note on locations above.
             "origin": str(npc.get("origin") or "canon"),
+            # Somebody a stranger could not simply walk up to at the start:
+            # the hidden antagonist, the sealed thing, the one who rules from
+            # a distance. Whitelisted here or it would be dropped, and the
+            # opening-cast fill would put them back in the square.
+            "hidden_start": bool(npc.get("hidden_start")),
             # The five original fields, plus the persona card when the world
             # carries one. memory.anchor_block switches to the full identity
             # block the moment any card field is present, so a world authored
@@ -396,6 +401,14 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             if len(here) >= OPENING_CAST:
                 break
             if npc["start_location"] == start_location:
+                continue
+            # Never drag somebody into the opening square who would not be
+            # standing in one. A live build opened with Muzan Kibutsuji in
+            # public view on turn one - a character whose whole existence is
+            # concealment - purely because this loop fills from the end of the
+            # list and he was last. Populating a first scene must not cost the
+            # setting its most important secret.
+            if npc.get("hidden_start"):
                 continue
             npc["start_location"] = start_location
             for phase in PHASES:
