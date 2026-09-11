@@ -410,14 +410,11 @@ function renderFate() {
     count.textContent = ahead ? `${ahead} still to come` : 'all of it, now';
     count.title = 'Fate is fixed. What it is, you find out when it lands.';
   }
-  $('#fateList').innerHTML = st.fate.map((f) => `
-    <li class="fate-item ${f.status}">
-      <span class="ft">T${f.turn}${f.status === 'next' ? ' · next' : ''}</span>
-      <span class="fx">${f.title
-    ? esc(f.title)
-    : `<em class="fate-sealed">${f.status === 'next'
-      ? 'Something lands here.' : 'Sealed.'}</em>`}</span>
-    </li>`).join('');
+  // The list itself is gone from the shell. The payload still carries fate
+  // because `ended` and the Chronicle are computed from it, but a player is
+  // never shown the schedule of their own story.
+  const list = $('#fateList');
+  if (list) list.innerHTML = '';
 }
 
 /* --------------------------------------------------------------- souls */

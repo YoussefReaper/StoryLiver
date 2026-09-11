@@ -13,6 +13,7 @@ actually better at; the cap is enforced in llm.complete, not trusted here.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 from . import (arcs, atlas, authority, awareness, betrayal, budget, callbacks, canon,
@@ -31,6 +32,85 @@ def _pt(pt_id):
 
 def world_for(pt):
     return world_registry.resolve(pt["world_id"], pt["world_json"] or None)
+
+
+# How many distinct turns of deliberate work it takes to change who a fated
+# event reaches. One is a wish; two is a plan the world can see you carrying
+# out. Deliberately low: the point is that trying is worth something, not that
+# fate is a boss fight with a hit-point bar.
+FATE_BRACE = 2
+
+_FATE_INTENT = re.compile(
+    r"\b(stop|prevent|avert|cancel|undo|forestall|call off|hold back|warn|evacuate"
+    r"|get .* out|move|hide|protect|guard|shield|save|clear out|empty)\b", re.I)
+
+
+def _fate_targets(world, turn: int, action: str) -> str:
+    """Which upcoming fated event, if any, this action is working against.
+
+    Matched on shared uncommon words between the action and the event's own
+    title and description - the same crude overlap the refusal used, kept
+    because it is conservative in the right direction: it can miss an oblique
+    attempt, and a miss simply means the turn is an ordinary turn."""
+    if not _FATE_INTENT.search(action or ""):
+        return ""
+    words = {w for w in re.findall(r"[a-z]{5,}", (action or "").lower())}
+    if not words:
+        return ""
+    best, score = "", 0
+    for f in world.fated_events:
+        if f["turn"] <= turn:
+            continue
+        against = {w for w in re.findall(
+            r"[a-z]{5,}", f"{f['title']} {f.get('desc', '')}".lower())}
+        hit = len(words & against)
+        if hit > score:
+            best, score = f["id"], hit
+    return best if score >= 1 else ""
+
+
+def _fate_fired(pt_id: str) -> set:
+    return {r["rule_ref"] for r in db.rows(
+        "SELECT DISTINCT rule_ref FROM timeline_events"
+        " WHERE playthrough_id=? AND kind='fate' AND rule_ref IS NOT NULL", (pt_id,))}
+
+
+def _fate_ready(pt_id, world, f, index: int, turn: int, here: str, fired: set) -> bool:
+    """Whether the world is ready for this, rather than whether a counter says so.
+
+    Fate used to fire on `f["turn"] == turn` and nothing else: seven events on
+    turns 7, 14, 21, whatever the player was doing. That is a metronome, and it
+    is why the most important things in the world could land in the middle of
+    an unrelated conversation, or be waited out by a player doing nothing.
+
+    What is actually fixed about a fated event is THAT it happens and in what
+    order. When is a question the world should answer by looking at itself:
+
+      * Order holds. Nothing jumps its predecessor, so the escalation the
+        builder wrote still escalates.
+      * It can arrive EARLY when the player has walked into it - standing where
+        it happens is the most direct way a story says "now".
+      * Its authored turn stays as a BACKSTOP. Left alone, the story still
+        moves on its own schedule and a world always reaches its ending; the
+        turn is a deadline now instead of a trigger.
+    """
+    if index and world.fated_events[index - 1]["id"] not in fired:
+        return False          # order is the part that is genuinely fixed
+    if turn >= f["turn"]:
+        return True           # the deadline: the story moves with or without you
+    # Early, because the player is standing in it. Never on the very first
+    # turns, or an opening scene at the wrong address detonates the spine.
+    where = f.get("location") or ""
+    return bool(where) and where == here and turn >= max(2, f["turn"] - 3)
+
+
+def _fate_pressure(pt_id: str, f: dict) -> int:
+    """How many separate turns the player spent working against this event."""
+    rows = db.rows(
+        "SELECT COUNT(DISTINCT turn) n FROM timeline_events"
+        " WHERE playthrough_id=? AND kind='fate_push' AND rule_ref=?",
+        (pt_id, f["id"]))
+    return int(rows[0]["n"]) if rows else 0
 
 
 def _feed(pt_id, turn, kind, text, actor=None, meta=None):
@@ -158,11 +238,28 @@ def _apply_fate(pt, world, turn, entries, *, player=memory.SOLO, here=""):
     # schedule anyway makes it a Story with the label filed off.
     if modetree.suppresses_fate(mode_of(pt)):
         return fired
-    for f in world.fated_events:
-        if f["turn"] != turn:
+    fired_ids = _fate_fired(pt["id"])
+    for i, f in enumerate(world.fated_events):
+        if f["id"] in fired_ids or not _fate_ready(
+                pt["id"], world, f, i, turn, here, fired_ids):
             continue
-        memory.add_event(pt["id"], turn, "fate", f["title"], f["desc"],
-                         rule_ref="fate", kind="fate", importance=5, location=f["location"])
+        # What the player did about this, before it got here.
+        braced = _fate_pressure(pt["id"], f)
+        if braced >= FATE_BRACE and f.get("kills"):
+            # The event still happens, on its turn, at its place. What changes
+            # is who it takes - which is the half that was never meant to be
+            # fixed. A player who worked against this specific event, more than
+            # once, in ways the world could act on, does not get to cancel it;
+            # they get the person out.
+            f = dict(f, kills=None, braced=True)
+            memory.add_event(
+                pt["id"], turn, "fate", f["title"],
+                f"{f['desc']} What was done beforehand held: the cost fell short of who it "
+                f"was reaching for.",
+                rule_ref=f["id"], kind="fate", importance=5, location=f["location"])
+        else:
+            memory.add_event(pt["id"], turn, "fate", f["title"], f["desc"],
+                             rule_ref=f["id"], kind="fate", importance=5, location=f["location"])
         npc_sim.observe_fate(pt["id"], turn, f)
         narrgraph.add(pt["id"], turn, "fate", f["title"], detail=f["desc"],
                       place_id=f.get("location", ""), weight=5)
@@ -219,6 +316,11 @@ def _apply_fate(pt, world, turn, entries, *, player=memory.SOLO, here=""):
                         meta={"fate_id": f["id"], "title": "", "immutable": True,
                              "as_news": True}))
                     break
+        # Tracked in-loop, not just from the database read above: when several
+        # events are overdue at once - a fast-forward, a long absence - they
+        # all land in this call, in order, rather than one per turn while the
+        # story waits for a counter it no longer uses.
+        fired_ids.add(f["id"])
         fired.append(f)
     return fired
 
@@ -542,6 +644,17 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         narrgraph.add(pt_id, turn, "action", action[:90], detail=verdict.get("consequence", ""),
                       place_id=new_loc, actor=actor_name or "you",
                       weight=verdict.get("importance", 2), fact_key=action_key)
+
+        # Working against a fated event is an ordinary action that happens to
+        # be aimed at the one thing the world has already decided. It is
+        # allowed, and it is remembered: enough separate turns of it and the
+        # event arrives having been braced for. See _fate_pressure.
+        pushed = _fate_targets(world, turn, action)
+        if pushed:
+            memory.add_event(pt_id, turn, actor_name or "you", action[:120],
+                             verdict.get("consequence", "")[:200],
+                             rule_ref=pushed, kind="fate_push", importance=4,
+                             location=new_loc)
 
         state = world_master.build_state(pt, world, player)
         npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],

@@ -677,6 +677,109 @@ JSON only:
 """
 
 
+FRICTION_SYSTEM = """You are a canon consultant. A character has been carried out of their own
+story and into somebody else's. Work out what that COSTS them on arrival.
+
+The collision is the whole point of a crossover and it is almost never neutral.
+Charlie Morningstar is the princess of Hell - a demon - walking into a world
+whose central institution exists to hunt and behead demons. A slayer who did
+not react to that would not be a slayer. Ask what each of these specific
+characters, being who they are, does on sight.
+
+Reactions differ by person. The gentle one hesitates, the hot-headed one draws,
+the clever one asks a question designed to catch a lie, the one with authority
+weighs what the rules demand. Some may not notice at all. A character whose
+nature makes them sympathetic may be the exception that matters.
+
+Values: affinity and trust -100..100, fear 0..100. Hostility is negative trust
+and negative affinity; being frightened of someone is fear, not hate.
+
+JSON only:
+{
+  "nature": "what the outsider IS, in terms THIS world cares about, one line",
+  "tell": "what gives them away here - horns, dress, speech, what they do not know",
+  "stakes": "one line: what happens to them if the wrong people decide what they are",
+  "reactions": [
+    {"name": "host character's exact name", "affinity": -60, "trust": -70, "fear": 30,
+     "why": "one clause, in their own logic"}
+  ]
+}
+Return a reaction for every character listed. If someone genuinely would not
+care, say so with values near zero and a why that explains the indifference."""
+
+
+def _crossover_friction(raw: dict, imports: list, host: str, *, user_id: str) -> dict:
+    """Make the collision real: the host world reacts to what the outsider IS.
+
+    A carried-in character used to arrive as a neutral stranger - every
+    relationship zero, nothing in the world aware of what they were. So the
+    princess of Hell walked into a town of demon slayers and everybody was
+    perfectly friendly, which is both the least interesting and the least
+    faithful thing that could happen. A chat model running the same premise
+    makes the corps hostile on sight without being asked, because the conflict
+    is obvious the moment you hold the two settings next to each other.
+
+    This asks for that reaction per character and writes it as npc_edges, which
+    the relationship engine already seeds - so the hostility is real state the
+    whole game can see, not a line of flavour in the opening paragraph. The
+    friction note goes on the world for the narrator, and each host character
+    gets it as a seed memory so their FIRST reaction is informed rather than
+    discovered three turns in."""
+    wanted = [i for i in (imports or []) if (i.get("character") or "").strip()]
+    npcs = raw.get("npcs") or []
+    if not wanted or len(npcs) < 2:
+        return raw
+
+    by_name = {_fold(n.get("name", "")): n for n in npcs if n.get("name")}
+    notes = []
+    for imp in wanted:
+        name = imp["character"].strip()
+        rec = by_name.get(_fold(name))
+        if not rec:
+            continue
+        others = [n for n in npcs if n is not rec and n.get("name")]
+        if not others:
+            continue
+        roster = "\n".join(f"- {n['name']}: {n.get('role', '')}"[:120] for n in others[:14])
+        ask = (f"OUTSIDER: {name}, from {imp.get('from') or 'another story'}\n"
+               f"ARRIVING IN: {host}\n\nTHE PEOPLE WHO SEE THEM:\n{roster}\n\n"
+               f"JSON only.")
+        out = _resilient("narrator", FRICTION_SYSTEM, ask, user_id=user_id,
+                         max_tokens=2200, temperature=0.5,
+                         stub=lambda: {"reactions": []})
+
+        edges = list(raw.get("npc_edges") or [])
+        for r in (out.get("reactions") or []):
+            if not isinstance(r, dict):
+                continue
+            who = by_name.get(_fold(str(r.get("name", ""))))
+            if not who or who is rec:
+                continue
+            vals = [float(r.get("affinity") or 0), float(r.get("trust") or 0),
+                    max(0.0, float(r.get("fear") or 0)), 0.0]
+            edges.append([who["id"], rec["id"], vals])
+            why = str(r.get("why") or "").strip()
+            if why:
+                seeds = list(who.get("seed_memories") or [])
+                seeds.append(f"About {name}, the moment I saw them: {why}"[:240])
+                who["seed_memories"] = seeds[:6]
+        raw["npc_edges"] = edges[:60]
+
+        nature = str(out.get("nature") or "").strip()
+        tell = str(out.get("tell") or "").strip()
+        stakes = str(out.get("stakes") or "").strip()
+        if nature or stakes:
+            notes.append(" ".join(x for x in (
+                f"{name}: {nature}" if nature else "",
+                f"What gives them away: {tell}" if tell else "",
+                f"If the wrong people decide what they are: {stakes}" if stakes else "",
+            ) if x))
+
+    if notes:
+        raw["friction"] = " | ".join(notes)[:600]
+    return raw
+
+
 def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
     """Give every canon character the persona the MODEL already knows.
 
@@ -1192,6 +1295,12 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if canon:
         raw = _apply_canon_personas(
             raw, found.get("canonical_name") or setting, user_id=user_id)
+        # And then make the collision real. A crossover's whole interest is
+        # what the host world does about the outsider being what they are.
+        raw = _crossover_friction(
+            raw, parsed.get("imports") or [],
+            parsed.get("host") or found.get("canonical_name") or setting,
+            user_id=user_id)
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)

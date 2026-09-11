@@ -228,7 +228,13 @@ def test_fate_is_location_gated():
     entries = []
     fired = engine._apply_fate(pt, world, fate["turn"], entries,
                                player="user", here="broken_bell")
-    ok(fired and fired[0]["id"] == fate["id"], "the fate still fires — it is not skippable")
+    # Looked up in the list rather than assumed to be first: fate now fires on
+    # readiness rather than on a turn counter, and it fires IN ORDER, so a
+    # fresh playthrough asked to resolve turn 9 lands f1 and f2 together
+    # because both are overdue. Which is the point - the schedule was never
+    # what mattered, the sequence is.
+    ok(any(x["id"] == fate["id"] for x in fired),
+       "the fate still fires — it is not skippable")
     ok(not any(e.get("kind") == "fate" and e.get("meta", {}).get("immutable")
               and not e.get("meta", {}).get("as_news")
               for e in entries),
@@ -240,9 +246,12 @@ def test_fate_is_location_gated():
        "and it is recorded through the same witness/awareness pipeline an "
        "ordinary event uses — it did not just vanish, it became news")
 
-    # Player IS at the fate's location.
+    # Player IS at the fate's location. A FRESH playthrough, because an event
+    # now fires exactly once per story - the run above already spent this one,
+    # and re-firing it on the same playthrough would be the bug, not the test.
+    pt2 = engine._pt(engine.create_playthrough("journey-fate-present"))
     entries2 = []
-    engine._apply_fate(pt, world, fate["turn"], entries2, player="user", here="ash_chapel")
+    engine._apply_fate(pt2, world, fate["turn"], entries2, player="user", here="ash_chapel")
     ok(any(e.get("kind") == "fate" and e.get("meta", {}).get("title") == fate["title"]
           for e in entries2),
        "present, the same event renders as the full immersive block")

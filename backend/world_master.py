@@ -141,16 +141,21 @@ def _mechanical(world, action: str, state: dict) -> Optional[dict]:
                     "rule_ref": _rule_id(world, "one_place", "presence", "location"),
                     "reason": f"{absent[0]['name']} is not at {state['location_name']}."}
 
-    if PREVENT_FATE.search(text):
-        upcoming = [f for f in world.fated_events if f["turn"] > state["turn"]]
-        fate_words = set()
-        for f in world.fated_events:
-            fate_words |= {w for w in re.findall(r"[a-z]{5,}", f["title"].lower())}
-        if upcoming and fate_words & set(re.findall(r"[a-z]{5,}", text)):
-            return {"valid": False,
-                    "rule_ref": _rule_id(world, "fate", "immutable") or "fate",
-                    "reason": "You cannot unwrite what is already written. You can decide who is "
-                              "standing beside you when it comes."}
+    # Acting against a fated event is no longer refused.
+    #
+    # It used to be: any "stop / prevent / avert" sharing a word with a fated
+    # title was rejected before the player could even try, which made the most
+    # dramatic thing in the world the one thing they were forbidden to engage
+    # with. Told a fire is coming and answering "I warn the village and get
+    # them out", a player got "You cannot unwrite what is already written" -
+    # the correct rule, delivered as a closed door, and the fastest way to
+    # teach somebody they are watching rather than playing.
+    #
+    # The guarantee that matters is that the EVENT still happens. Who it takes
+    # and what it costs were never supposed to be fixed - "fate is fixed, you
+    # are not" is the pitch. So the attempt is allowed, and engine.py records
+    # it as pressure against that specific event; enough of it, and the event
+    # arrives having been braced for. See engine._fate_pressure.
 
     for rule in world.rules:
         check = rule.get("check")

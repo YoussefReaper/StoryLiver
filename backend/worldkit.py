@@ -400,6 +400,10 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         "tagline": str(raw.get("tagline") or ""),
         "premise": str(raw.get("premise") or ""),
         "fate_note": str(raw.get("fate_note") or "Fate is fixed. Your path through it is not."),
+        # What a carried-in character costs themselves by being here: what this
+        # world reads them as, what gives them away, and what it does about it.
+        # Empty for every world that is not a crossover.
+        "friction": str(raw.get("friction") or ""),
         "start_location": start_location,
         "default_protagonist": str(raw.get("default_protagonist") or "a traveller nobody here has heard of"),
         "opening": str(raw.get("opening") or raw.get("premise") or ""),
