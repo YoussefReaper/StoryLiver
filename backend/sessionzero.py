@@ -192,7 +192,10 @@ def questions(dossier: dict) -> dict:
     out["questions"].extend([
         {
             "id": "name",
-            "q": "Who are you, here?",
+            # Not "Who are you here?" - that is the `role` question below, and
+            # the live forge rendered the two of them four rows apart with
+            # effectively identical wording. This one asks for a name.
+            "q": "What are you called?",
             "why": "A name and a few words of who you are. The cast uses this - "
                    "what they call you is the first thing that makes you a person "
                    "in this world rather than a camera moving through it.",

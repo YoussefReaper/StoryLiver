@@ -348,6 +348,51 @@ def test_the_narrator_stays_inside_the_story():
        "is a request and this one has already been ignored once")
 
 
+def test_chapters_survive_a_wiki_that_never_answers():
+    section("chapters — the running order does not depend on Fandom being reachable")
+    # THE ACTUAL CAUSE, found by reading a live dossier rather than guessing.
+    # A production lookup for Demon Slayer returns:
+    #
+    #     found: true, wiki: "", characters: 11,
+    #     arcs: [], places: 0, factions: 0, powers: 0
+    #
+    # The Fandom wiki is never found, so every Fandom-sourced bucket is dark
+    # and only Wikipedia's curated cast survives. Chapters are built from arcs,
+    # so every real setting fell back to a single chapter named after its town -
+    # the whole feature absent, on every world anyone would actually build.
+    # Reordering the buckets, which is what I tried first, fixed a starvation
+    # that was not happening.
+    asked = {}
+
+    def spy(role, system, user, **kw):
+        asked["system"], asked["user"] = system, user
+        return {"arcs": [{"name": "Final Selection", "note": "the trial on the mountain"},
+                         {"name": "Mount Natagumo", "note": "the spider family"},
+                         {"name": ""}]}
+
+    real, worldforge._resilient = worldforge._resilient, spy
+    try:
+        arcs = worldforge.canon_chapters("Demon Slayer", user_id="u_test")
+    finally:
+        worldforge._resilient = real
+
+    ok([a["name"] for a in arcs] == ["Final Selection", "Mount Natagumo"],
+       "the model supplies the running order a wiki could not")
+    ok("the names a fan would recognise" in asked["system"],
+       "asked for the arc names the audience actually uses, not invented titles")
+    ok(worldforge.canon_chapters("", user_id="u_test") == [],
+       "and nothing is asked for a setting with no name")
+
+    # Offline the stub answers empty, and a world is simply one chapter again -
+    # the old behaviour, rather than a broken one.
+    real, worldforge._resilient = worldforge._resilient, lambda *a, **k: {"arcs": []}
+    try:
+        ok(worldforge.canon_chapters("Demon Slayer", user_id="u_test") == [],
+           "offline it claims nothing rather than inventing a running order")
+    finally:
+        worldforge._resilient = real
+
+
 def test_the_chapter_list_is_not_starved_by_the_request_budget():
     section("chapters — arcs are fetched before the budget runs out")
     # OBSERVED LIVE. A Demon Slayer build came back with no arcs at all, so
@@ -802,6 +847,7 @@ def _all():
             test_the_character_the_player_named_actually_turns_up,
             test_an_empty_room_is_told_it_is_empty,
             test_the_chapter_list_is_not_starved_by_the_request_budget,
+            test_chapters_survive_a_wiki_that_never_answers,
             test_the_narrator_stays_inside_the_story,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
