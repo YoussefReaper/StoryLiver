@@ -308,6 +308,46 @@ def test_unused_canon_is_seated_not_merely_labelled():
        "the same holds for places")
 
 
+def test_the_narrator_stays_inside_the_story():
+    section("immersion — the register failures a played turn actually produced")
+    from backend import narrator
+
+    # ALL THREE OBSERVED IN ONE LIVE PASSAGE, with the right cast present and
+    # every character in voice. Nothing here is a hallucination or a contra-
+    # diction, which is why none of the existing rules caught any of it - these
+    # are the tells that make good prose still read as machine-written.
+    rules = narrator.SYSTEM
+
+    # 1. "You turn to her, still feeling the lingering weight of her words.
+    #     'What do you make of this place, Charlie?'" - the narrator wrote the
+    #    player's feelings AND their dialogue, replaying an action they had
+    #    already taken.
+    ok("NEVER put words in the player's mouth" in rules,
+       "the narrator may not write the player's dialogue")
+    ok('"you say"' in rules and '"you ask"' in rules,
+       "and the exact construction that shipped is named")
+    ok("write what it" in rules and "MET" in rules,
+       "a finished action is answered, not performed again")
+
+    # 2. "Charlie turns to the traveller and asks what they think..." - the
+    #    closing line dropped second person and handed the turn back as a
+    #    question, which is the menu rule wearing a costume.
+    ok('The player is "you" to the last word' in rules and "the traveller" in rules,
+       "second person holds to the last line")
+    ok("smuggle" in rules and "asking what you think" in rules,
+       "and a character asking the player what they think is refused as the "
+       "menu it is")
+
+    # 3. "...as the characters embody their beliefs." The narrator stepping
+    #    outside the story to admire it. Breaks no other rule: invents nothing,
+    #    contradicts nothing, and is the loudest tell of the three.
+    ok("Stay inside the story" in rules and "what any of it means" in rules,
+       "no authorial voice above the world")
+    ok("the characters" in narrator.BANNED and "embody their beliefs" in narrator.BANNED,
+       "and the phrases it reached for are banned outright, because a prompt "
+       "is a request and this one has already been ignored once")
+
+
 def test_an_empty_room_is_told_it_is_empty():
     section("immersion — the narrator cannot invent people into an empty room")
     # OBSERVED LIVE. The engine reported "0 here" and the passage had Nezuko
@@ -734,6 +774,7 @@ def _all():
             test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
             test_the_character_the_player_named_actually_turns_up,
             test_an_empty_room_is_told_it_is_empty,
+            test_the_narrator_stays_inside_the_story,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
             test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,
