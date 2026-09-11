@@ -22,7 +22,7 @@ from . import (arcs, atlas, authority, awareness, betrayal, budget, callbacks, c
                fastforward, identity, legacy, mana, memory, modes, modetree,
                narrator, narrgraph,
                npc_sim, precommit, relationships, rt, runs, streaks, world_master,
-               worldstate)
+               worldkit, worldstate)
 from . import worlds as world_registry
 
 
@@ -111,6 +111,38 @@ def _fate_pressure(pt_id: str, f: dict) -> int:
         " WHERE playthrough_id=? AND kind='fate_push' AND rule_ref=?",
         (pt_id, f["id"]))
     return int(rows[0]["n"]) if rows else 0
+
+
+def _expand_on_arrival(pt, world, loc_id: str, *, user_id: str):
+    """Build a frontier place when the player walks into it, and keep it.
+
+    The grown world is written back to this playthrough's own world_json, so
+    the expansion is permanent for this story and invisible to every other one
+    - two players who both walk to the Butterfly Mansion get their own, and
+    neither edits the world the other forged. A failure here must never cost
+    the player their move: they arrive regardless, at a place that is simply
+    still thin, and the next visit can try again."""
+    loc = world.loc_by_id.get(loc_id)
+    if not loc or not loc.get("frontier"):
+        return world
+    try:
+        from . import worldforge
+        grown = worldforge.expand_frontier(
+            json.loads(json.dumps(world.data)), loc_id,
+            setting=(world.get("inspired_by") or world.get("source_prompt")
+                     or world.get("name") or ""),
+            user_id=user_id)
+        fresh = worldkit.load(grown)
+        db.run("UPDATE playthroughs SET world_json=? WHERE id=?",
+               (json.dumps(fresh.data), pt["id"]))
+        world_registry.forget(world.id)
+        rt.invalidate_playthrough(pt["id"])
+        # The people who came with the place need their memories seeded, or
+        # they arrive with no interiority at all.
+        memory.seed(pt["id"], fresh, player=memory.SOLO)
+        return fresh
+    except Exception:
+        return world
 
 
 def _feed(pt_id, turn, kind, text, actor=None, meta=None):
@@ -616,6 +648,13 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         if new_loc != pt["current_location"]:
             if new_loc in world.connects(pt["current_location"]) and not atlas.blocked(pt_id, new_loc):
                 moved_to = new_loc
+                # Arriving at a place the world knew the name of and had not
+                # built is what builds it. A town is a town, not the edge of
+                # the universe: the canon geography the build did not use is
+                # on the map from the start, empty, and fills in when somebody
+                # actually goes there. Never on the way out, never speculative,
+                # and never more than once per place.
+                world = _expand_on_arrival(pt, world, new_loc, user_id=user_id)
             else:
                 new_loc = pt["current_location"]
         # last_seen_at moves with every turn, not just with opening the story:

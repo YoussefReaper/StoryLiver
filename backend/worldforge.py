@@ -677,6 +677,131 @@ JSON only:
 """
 
 
+def _record_beyond(raw: dict, found: dict, *, keep: int = 6) -> dict:
+    """Canon places the build did not use become somewhere you can walk to.
+
+    The build is told - correctly - that researched places are the setting's
+    GEOGRAPHY rather than this town's contents, because a town containing
+    Infinity Castle, the Mugen Train and Yoshiwara at once is a tour of a
+    franchise rather than a place to live in. That fixed the town and created
+    a worse problem: the rest of the setting became unreachable. A Demon Slayer
+    world where Mount Natagumo and the Butterfly Mansion are names research
+    found and nothing more is a world that ends at the edge of one square.
+
+    So they are put on the map as FRONTIER locations: real, named, connected,
+    and empty until somebody goes there. Walking to one is what builds it.
+    Nothing is spent on a place the player never visits, and the world is a
+    world rather than a diorama."""
+    places = [p for p in (found.get("places") or []) if (p.get("name") or "").strip()]
+    if not places:
+        return raw
+    locs = raw.get("locations") or []
+    if not locs:
+        return raw
+    used = {_fold(l.get("name", "")) for l in locs}
+    hub = locs[0]["id"]
+    added = 0
+    for p in places:
+        if added >= keep:
+            break
+        if _fold(p["name"]) in used:
+            continue
+        lid = f"beyond_{_fold(p['name']).replace(' ', '_')[:28]}"
+        if any(l.get("id") == lid for l in locs):
+            continue
+        locs.append({
+            "id": lid,
+            "name": p["name"],
+            "kind": "frontier",
+            "desc": (p.get("note") or "").strip()[:200] or f"{p['name']}, somewhere out there.",
+            "connects": [hub],
+            "frontier": True,
+            "origin": "canon",
+        })
+        used.add(_fold(p["name"]))
+        added += 1
+    raw["locations"] = locs
+    return raw
+
+
+FRONTIER_SYSTEM = """You are a world architect for a turn-based text RPG engine. You output data, never prose commentary.
+
+A player has travelled to a place this world knew the name of and had not built. Build it now.
+
+Build what is ACTUALLY there in the source: its real character, who would be found there, what is wrong with it. This is a real location of a real setting - use what you know of it. It is a PLACE, not a tour: somewhere a person walks around in an evening, with rooms and thresholds that belong to each other.
+
+Characters here are the ones who belong here. Use the setting's real people where they genuinely live or work here, spelled exactly. Anyone you invent is an ordinary resident - never a new hero, villain or named power.
+
+Return ONLY JSON:
+{
+  "desc": "30-50 words: what the player sees on arriving",
+  "locations": [{"id":"snake_case","name":"The Name","kind":"place","desc":"20-40 words","connects":["other_id_here"]}],
+  "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"one of the ids above",
+            "anchors":{"voice":"","constraints":[],"goals":[],"taboos":[]},
+            "seed_memories":[],"initial_relationship":{"affinity":0,"trust":0,"fear":0,"obligation":0}}]
+}
+Give 3-5 locations and 3-5 characters. Every connects[] and start_location id must be one you defined here."""
+
+
+def expand_frontier(world_data: dict, loc_id: str, *, setting: str, user_id: str) -> dict:
+    """Build a frontier place the moment the player arrives at it.
+
+    Returns the world dict with the place filled in - its own interior
+    locations wired to it, its people standing in them - and the frontier flag
+    cleared so it never rebuilds. One model call, paid only by a player who
+    actually walked there."""
+    locs = world_data.get("locations") or []
+    gate = next((l for l in locs if l.get("id") == loc_id and l.get("frontier")), None)
+    if not gate:
+        return world_data
+
+    ask = (f"SETTING: {setting}\n"
+           f"THE PLACE: {gate['name']} - {gate.get('desc', '')}\n"
+           f"IT CONNECTS BACK TO: {', '.join(gate.get('connects') or []) or 'the road'}\n\n"
+           f"Build it. JSON only.")
+    out = _resilient("narrator", FRONTIER_SYSTEM, ask, user_id=user_id,
+                     max_tokens=5000, temperature=0.9,
+                     stub=lambda: {"locations": [], "npcs": []})
+
+    known = {l["id"] for l in locs}
+    fresh, mapping = [], {}
+    for i, l in enumerate(out.get("locations") or []):
+        raw_id = str(l.get("id") or f"{loc_id}_p{i}")
+        nid = f"{loc_id}_{re.sub(r'[^a-z0-9_]+', '', raw_id.lower())}"[:48]
+        if nid in known:
+            continue
+        mapping[raw_id] = nid
+        known.add(nid)
+        fresh.append({**l, "id": nid, "origin": l.get("origin") or "canon"})
+    for l in fresh:
+        l["connects"] = [mapping.get(c, c) for c in (l.get("connects") or [])
+                         if mapping.get(c, c) in known]
+        if gate["id"] not in l["connects"]:
+            l["connects"].append(gate["id"])
+
+    npcs = list(world_data.get("npcs") or [])
+    taken = {n.get("id") for n in npcs}
+    here = [f["id"] for f in fresh] or [gate["id"]]
+    for i, n in enumerate(out.get("npcs") or []):
+        nid = f"{loc_id}_{re.sub(r'[^a-z0-9_]+', '', str(n.get('id') or i).lower())}"[:48]
+        if nid in taken or not str(n.get("name") or "").strip():
+            continue
+        taken.add(nid)
+        start = mapping.get(str(n.get("start_location") or ""), "")
+        npcs.append({**n, "id": nid, "origin": n.get("origin") or "canon",
+                     "start_location": start if start in known else here[i % len(here)]})
+
+    if out.get("desc"):
+        gate["desc"] = str(out["desc"])[:400]
+    gate["frontier"] = False
+    gate["kind"] = "place"
+    gate["connects"] = list(dict.fromkeys(
+        (gate.get("connects") or []) + [f["id"] for f in fresh]))
+    world_data["locations"] = locs + fresh
+    world_data["npcs"] = npcs
+    return world_data
+
+
 FRICTION_SYSTEM = """You are a canon consultant. A character has been carried out of their own
 story and into somebody else's. Work out what that COSTS them on arrival.
 
@@ -1301,6 +1426,9 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
             raw, parsed.get("imports") or [],
             parsed.get("host") or found.get("canonical_name") or setting,
             user_id=user_id)
+        # The rest of the setting's geography, reachable rather than merely
+        # mentioned. Costs nothing until somebody walks there.
+        raw = _record_beyond(raw, found)
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)

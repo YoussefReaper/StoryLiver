@@ -540,6 +540,65 @@ def test_the_forge_sends_what_the_endpoint_requires():
        "this app has ever raised")
 
 
+def test_the_world_grows_into_its_own_canon():
+    section("the frontier — a town is not the edge of the universe")
+    # The build is told, correctly, that researched places are the setting's
+    # GEOGRAPHY rather than this town's contents - a town holding Infinity
+    # Castle, the Mugen Train and Yoshiwara at once is a tour of a franchise,
+    # not a place to live in. That fixed the town and stranded the rest of the
+    # setting: Mount Natagumo became a name research found and nothing more,
+    # and atlas.discover only ever REVEALS places that already exist, so the
+    # world could not grow. A Demon Slayer world that ends at one square is
+    # not the Demon Slayer world.
+    base = {"name": "Kagura", "id": "kagura", "start_location": "square",
+            "locations": [{"id": "square", "name": "Town Square", "connects": ["inn"]},
+                          {"id": "inn", "name": "The Inn", "connects": ["square"]}],
+            "npcs": [{"id": "n1", "name": "A"}, {"id": "n2", "name": "B"}],
+            "rules": [{"id": f"R{i}", "text": "t"} for i in range(9)],
+            "fated_events": [{"id": f"F{i}", "turn": i + 1, "title": "t"} for i in range(7)]}
+    found = {"places": [{"name": "Butterfly Mansion", "note": "half hospital, half school"},
+                        {"name": "Mount Natagumo", "note": "a mountain of spiders"},
+                        {"name": "Town Square", "note": "already built"}]}
+
+    w = worldkit.load(worldforge._record_beyond(dict(base), found))
+    frontier = [l for l in w.locations if l["frontier"]]
+    ok(len(frontier) == 2,
+       f"canon places the build did not use are on the map, reachable ({len(frontier)})")
+    ok(all(l["connects"] for l in frontier),
+       "and connected, so a player can actually walk to one")
+    ok(not any(l["frontier"] for l in w.locations if l["name"] == "Town Square"),
+       "a place the build DID use is not duplicated as a frontier")
+
+    # Arriving builds it. One call, paid only by a player who went there.
+    card = {"desc": "Wisteria over the courtyard.",
+            "locations": [{"id": "ward", "name": "The Recovery Ward", "connects": ["garden"]},
+                          {"id": "garden", "name": "The Wisteria Garden", "connects": ["ward"]}],
+            "npcs": [{"id": "shinobu", "name": "Shinobu Kocho", "role": "Insect Hashira",
+                      "start_location": "ward"}]}
+    real, worldforge._resilient = worldforge._resilient, lambda *a, **k: card
+    try:
+        grown = worldforge.expand_frontier(w.data, "beyond_butterfly_mansion",
+                                           setting="Demon Slayer", user_id="wg")
+    finally:
+        worldforge._resilient = real
+    g = worldkit.load(grown)
+    gate = next(l for l in g.locations if l["id"] == "beyond_butterfly_mansion")
+    ok(not gate["frontier"], "arriving builds the place, and it is never rebuilt")
+    ok(len(g.locations) == len(w.locations) + 2,
+       "its interior is added to the world, not swapped in for it")
+    ok(all(gate["id"] in l["connects"] for l in g.locations
+           if l["id"].startswith("beyond_butterfly_mansion_")),
+       "every new room connects back to the way in, so nowhere is stranded")
+
+    shinobu = next(n for n in g.npcs if n["name"] == "Shinobu Kocho")
+    ok(shinobu["start_location"] == "beyond_butterfly_mansion_ward",
+       "and the people built for the new place STAY there — the opening-cast "
+       "rule fills a first scene once, at creation, and must not drag a "
+       "character built hours later back to the town square")
+    ok(next(l for l in g.locations if l["id"] == "beyond_mount_natagumo")["frontier"],
+       "the frontier nobody visited is untouched, and cost nothing")
+
+
 def test_the_opening_scene_has_people_in_it():
     section("the opening scene is inhabited, not staffed")
     # OBSERVED LIVE. A Demon Slayer build put its seven characters on seven
@@ -581,7 +640,8 @@ def test_the_opening_scene_has_people_in_it():
 
 
 def _all():
-    return (test_the_opening_scene_has_people_in_it,
+    return (test_the_world_grows_into_its_own_canon,
+            test_the_opening_scene_has_people_in_it,
             test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
             test_an_original_setting_is_still_original,
