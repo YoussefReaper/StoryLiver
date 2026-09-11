@@ -121,9 +121,25 @@ def check(pt_id, anchors_before, counts):
     expected = [f for f in WORLD.fated_events if f["turn"] <= turn]
     ok(len(fired) == len(expected),
        f"{len(fired)}/{len(expected)} fated events fired by turn {turn}")
+    # The contract changed deliberately, and this is the new one. Fate used to
+    # fire on `f["turn"] == turn` and nothing else - a metronome, which meant
+    # the most important events in a world could land mid-sentence in an
+    # unrelated scene, and a player could watch the schedule tick down in the
+    # rail. It now fires on readiness: in ORDER, no later than its authored
+    # turn, and possibly earlier when the player has walked into the place it
+    # happens. So the three things worth asserting are once, in order, and
+    # never overdue - not "on turn 9".
     for f in expected:
-        hits = [x for x in fired if x["turn"] == f["turn"] and x["action"] == f["title"]]
-        ok(len(hits) == 1, f"fate {f['id']} fired exactly once, on turn {f['turn']} ({len(hits)} hits)")
+        hits = [x for x in fired if x["action"] == f["title"]]
+        ok(len(hits) == 1, f"fate {f['id']} fired exactly once ({len(hits)} hits)")
+        if hits:
+            ok(hits[0]["turn"] <= f["turn"],
+               f"fate {f['id']} landed by its deadline "
+               f"(turn {hits[0]['turn']} <= {f['turn']})")
+    order = [x["action"] for x in fired]
+    ok(order == [f["title"] for f in WORLD.fated_events if f["title"] in order],
+       "and they arrived in the order the world was written in — the escalation "
+       "is the part of fate that is genuinely fixed")
 
     # 5 ---------------------------------------- fate was never prevented
     prevented = db.rows(
@@ -182,9 +198,17 @@ def check(pt_id, anchors_before, counts):
     # 9 ------------------------------------------- memory is retrievable, not a blob
     # Probe three distinct early moments. Each must still surface at turn 60 —
     # the property a summarisation window loses.
+    # The two fate probes resolve their turn from what actually fired rather
+    # than hard-coding 4 and 9: fate is no longer on a schedule, so the turn a
+    # given event landed on is a property of how this run was played. What the
+    # probe is actually testing - that a distinct early moment is still
+    # retrievable fifty turns later - does not care which turn it was.
+    def _fired_turn(word, fallback):
+        return next((x["turn"] for x in fired if word in x["action"].lower()), fallback)
+
     for query, want_turn in [
-        ("the wells went bitter, black water tasting of iron", 4),
-        ("the chapel bell cracked on the noon toll", 9),
+        ("the wells went bitter, black water tasting of iron", _fired_turn("well", 4)),
+        ("the chapel bell cracked on the noon toll", _fired_turn("bell", 9)),
         ("I arrived in Emberfall off the low road", 0),
     ]:
         hits = memory.retrieve_events(pt_id, turn, query, k=6)

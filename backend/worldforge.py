@@ -677,6 +677,234 @@ JSON only:
 """
 
 
+def _record_beyond(raw: dict, found: dict, *, keep: int = 6) -> dict:
+    """Canon places the build did not use become somewhere you can walk to.
+
+    The build is told - correctly - that researched places are the setting's
+    GEOGRAPHY rather than this town's contents, because a town containing
+    Infinity Castle, the Mugen Train and Yoshiwara at once is a tour of a
+    franchise rather than a place to live in. That fixed the town and created
+    a worse problem: the rest of the setting became unreachable. A Demon Slayer
+    world where Mount Natagumo and the Butterfly Mansion are names research
+    found and nothing more is a world that ends at the edge of one square.
+
+    So they are put on the map as FRONTIER locations: real, named, connected,
+    and empty until somebody goes there. Walking to one is what builds it.
+    Nothing is spent on a place the player never visits, and the world is a
+    world rather than a diorama."""
+    places = [p for p in (found.get("places") or []) if (p.get("name") or "").strip()]
+    if not places:
+        return raw
+    locs = raw.get("locations") or []
+    if not locs:
+        return raw
+    used = {_fold(l.get("name", "")) for l in locs}
+    hub = locs[0]["id"]
+    added = 0
+    for p in places:
+        if added >= keep:
+            break
+        if _fold(p["name"]) in used:
+            continue
+        lid = f"beyond_{_fold(p['name']).replace(' ', '_')[:28]}"
+        if any(l.get("id") == lid for l in locs):
+            continue
+        locs.append({
+            "id": lid,
+            "name": p["name"],
+            "kind": "frontier",
+            "desc": (p.get("note") or "").strip()[:200] or f"{p['name']}, somewhere out there.",
+            "connects": [hub],
+            "frontier": True,
+            "origin": "canon",
+        })
+        used.add(_fold(p["name"]))
+        added += 1
+    raw["locations"] = locs
+    return raw
+
+
+FRONTIER_SYSTEM = """You are a world architect for a turn-based text RPG engine. You output data, never prose commentary.
+
+A player has travelled to a place this world knew the name of and had not built. Build it now.
+
+Build what is ACTUALLY there in the source: its real character, who would be found there, what is wrong with it. This is a real location of a real setting - use what you know of it. It is a PLACE, not a tour: somewhere a person walks around in an evening, with rooms and thresholds that belong to each other.
+
+Characters here are the ones who belong here. Use the setting's real people where they genuinely live or work here, spelled exactly. Anyone you invent is an ordinary resident - never a new hero, villain or named power.
+
+Return ONLY JSON:
+{
+  "desc": "30-50 words: what the player sees on arriving",
+  "locations": [{"id":"snake_case","name":"The Name","kind":"place","desc":"20-40 words","connects":["other_id_here"]}],
+  "npcs": [{"id":"snake_case","name":"Full Name","role":"what they do here","start_location":"one of the ids above",
+            "anchors":{"voice":"","constraints":[],"goals":[],"taboos":[]},
+            "seed_memories":[],"initial_relationship":{"affinity":0,"trust":0,"fear":0,"obligation":0}}]
+}
+Give 3-5 locations and 3-5 characters. Every connects[] and start_location id must be one you defined here."""
+
+
+def expand_frontier(world_data: dict, loc_id: str, *, setting: str, user_id: str) -> dict:
+    """Build a frontier place the moment the player arrives at it.
+
+    Returns the world dict with the place filled in - its own interior
+    locations wired to it, its people standing in them - and the frontier flag
+    cleared so it never rebuilds. One model call, paid only by a player who
+    actually walked there."""
+    locs = world_data.get("locations") or []
+    gate = next((l for l in locs if l.get("id") == loc_id and l.get("frontier")), None)
+    if not gate:
+        return world_data
+
+    ask = (f"SETTING: {setting}\n"
+           f"THE PLACE: {gate['name']} - {gate.get('desc', '')}\n"
+           f"IT CONNECTS BACK TO: {', '.join(gate.get('connects') or []) or 'the road'}\n\n"
+           f"Build it. JSON only.")
+    out = _resilient("narrator", FRONTIER_SYSTEM, ask, user_id=user_id,
+                     max_tokens=5000, temperature=0.9,
+                     stub=lambda: {"locations": [], "npcs": []})
+
+    known = {l["id"] for l in locs}
+    fresh, mapping = [], {}
+    for i, l in enumerate(out.get("locations") or []):
+        raw_id = str(l.get("id") or f"{loc_id}_p{i}")
+        nid = f"{loc_id}_{re.sub(r'[^a-z0-9_]+', '', raw_id.lower())}"[:48]
+        if nid in known:
+            continue
+        mapping[raw_id] = nid
+        known.add(nid)
+        fresh.append({**l, "id": nid, "origin": l.get("origin") or "canon"})
+    for l in fresh:
+        l["connects"] = [mapping.get(c, c) for c in (l.get("connects") or [])
+                         if mapping.get(c, c) in known]
+        if gate["id"] not in l["connects"]:
+            l["connects"].append(gate["id"])
+
+    npcs = list(world_data.get("npcs") or [])
+    taken = {n.get("id") for n in npcs}
+    here = [f["id"] for f in fresh] or [gate["id"]]
+    for i, n in enumerate(out.get("npcs") or []):
+        nid = f"{loc_id}_{re.sub(r'[^a-z0-9_]+', '', str(n.get('id') or i).lower())}"[:48]
+        if nid in taken or not str(n.get("name") or "").strip():
+            continue
+        taken.add(nid)
+        start = mapping.get(str(n.get("start_location") or ""), "")
+        npcs.append({**n, "id": nid, "origin": n.get("origin") or "canon",
+                     "start_location": start if start in known else here[i % len(here)]})
+
+    if out.get("desc"):
+        gate["desc"] = str(out["desc"])[:400]
+    gate["frontier"] = False
+    gate["kind"] = "place"
+    gate["connects"] = list(dict.fromkeys(
+        (gate.get("connects") or []) + [f["id"] for f in fresh]))
+    world_data["locations"] = locs + fresh
+    world_data["npcs"] = npcs
+    return world_data
+
+
+FRICTION_SYSTEM = """You are a canon consultant. A character has been carried out of their own
+story and into somebody else's. Work out what that COSTS them on arrival.
+
+The collision is the whole point of a crossover and it is almost never neutral.
+Charlie Morningstar is the princess of Hell - a demon - walking into a world
+whose central institution exists to hunt and behead demons. A slayer who did
+not react to that would not be a slayer. Ask what each of these specific
+characters, being who they are, does on sight.
+
+Reactions differ by person. The gentle one hesitates, the hot-headed one draws,
+the clever one asks a question designed to catch a lie, the one with authority
+weighs what the rules demand. Some may not notice at all. A character whose
+nature makes them sympathetic may be the exception that matters.
+
+Values: affinity and trust -100..100, fear 0..100. Hostility is negative trust
+and negative affinity; being frightened of someone is fear, not hate.
+
+JSON only:
+{
+  "nature": "what the outsider IS, in terms THIS world cares about, one line",
+  "tell": "what gives them away here - horns, dress, speech, what they do not know",
+  "stakes": "one line: what happens to them if the wrong people decide what they are",
+  "reactions": [
+    {"name": "host character's exact name", "affinity": -60, "trust": -70, "fear": 30,
+     "why": "one clause, in their own logic"}
+  ]
+}
+Return a reaction for every character listed. If someone genuinely would not
+care, say so with values near zero and a why that explains the indifference."""
+
+
+def _crossover_friction(raw: dict, imports: list, host: str, *, user_id: str) -> dict:
+    """Make the collision real: the host world reacts to what the outsider IS.
+
+    A carried-in character used to arrive as a neutral stranger - every
+    relationship zero, nothing in the world aware of what they were. So the
+    princess of Hell walked into a town of demon slayers and everybody was
+    perfectly friendly, which is both the least interesting and the least
+    faithful thing that could happen. A chat model running the same premise
+    makes the corps hostile on sight without being asked, because the conflict
+    is obvious the moment you hold the two settings next to each other.
+
+    This asks for that reaction per character and writes it as npc_edges, which
+    the relationship engine already seeds - so the hostility is real state the
+    whole game can see, not a line of flavour in the opening paragraph. The
+    friction note goes on the world for the narrator, and each host character
+    gets it as a seed memory so their FIRST reaction is informed rather than
+    discovered three turns in."""
+    wanted = [i for i in (imports or []) if (i.get("character") or "").strip()]
+    npcs = raw.get("npcs") or []
+    if not wanted or len(npcs) < 2:
+        return raw
+
+    by_name = {_fold(n.get("name", "")): n for n in npcs if n.get("name")}
+    notes = []
+    for imp in wanted:
+        name = imp["character"].strip()
+        rec = by_name.get(_fold(name))
+        if not rec:
+            continue
+        others = [n for n in npcs if n is not rec and n.get("name")]
+        if not others:
+            continue
+        roster = "\n".join(f"- {n['name']}: {n.get('role', '')}"[:120] for n in others[:14])
+        ask = (f"OUTSIDER: {name}, from {imp.get('from') or 'another story'}\n"
+               f"ARRIVING IN: {host}\n\nTHE PEOPLE WHO SEE THEM:\n{roster}\n\n"
+               f"JSON only.")
+        out = _resilient("narrator", FRICTION_SYSTEM, ask, user_id=user_id,
+                         max_tokens=2200, temperature=0.5,
+                         stub=lambda: {"reactions": []})
+
+        edges = list(raw.get("npc_edges") or [])
+        for r in (out.get("reactions") or []):
+            if not isinstance(r, dict):
+                continue
+            who = by_name.get(_fold(str(r.get("name", ""))))
+            if not who or who is rec:
+                continue
+            vals = [float(r.get("affinity") or 0), float(r.get("trust") or 0),
+                    max(0.0, float(r.get("fear") or 0)), 0.0]
+            edges.append([who["id"], rec["id"], vals])
+            why = str(r.get("why") or "").strip()
+            if why:
+                seeds = list(who.get("seed_memories") or [])
+                seeds.append(f"About {name}, the moment I saw them: {why}"[:240])
+                who["seed_memories"] = seeds[:6]
+        raw["npc_edges"] = edges[:60]
+
+        nature = str(out.get("nature") or "").strip()
+        tell = str(out.get("tell") or "").strip()
+        stakes = str(out.get("stakes") or "").strip()
+        if nature or stakes:
+            notes.append(" ".join(x for x in (
+                f"{name}: {nature}" if nature else "",
+                f"What gives them away: {tell}" if tell else "",
+                f"If the wrong people decide what they are: {stakes}" if stakes else "",
+            ) if x))
+
+    if notes:
+        raw["friction"] = " | ".join(notes)[:600]
+    return raw
+
+
 def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
     """Give every canon character the persona the MODEL already knows.
 
@@ -1151,6 +1379,12 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # Attribution travels with the world: CC BY-SA asks for it, and a
     # player deserves to know which wiki their world was grounded on.
     raw["sources"] = research.attribution(found)
+    # The source's own running order, kept on the world so a playthrough can
+    # be told which chapter it is in without a second lookup. Empty for an
+    # original world, which has no canon to follow and never needed one.
+    if canon:
+        from . import chapters as _chapters
+        raw["chapters"] = _chapters.plan(found, fallback=str(raw.get("name") or ""))
     raw["researched"] = bool(found.get("found"))
     raw["personal_only"] = personal
     raw["inspired_by"] = found.get("canonical_name") or (setting if personal else "")
@@ -1192,6 +1426,15 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if canon:
         raw = _apply_canon_personas(
             raw, found.get("canonical_name") or setting, user_id=user_id)
+        # And then make the collision real. A crossover's whole interest is
+        # what the host world does about the outsider being what they are.
+        raw = _crossover_friction(
+            raw, parsed.get("imports") or [],
+            parsed.get("host") or found.get("canonical_name") or setting,
+            user_id=user_id)
+        # The rest of the setting's geography, reachable rather than merely
+        # mentioned. Costs nothing until somebody walks there.
+        raw = _record_beyond(raw, found)
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)

@@ -248,6 +248,12 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "kind": str(loc.get("kind") or "place"),
             "desc": str(loc.get("desc") or ""),
             "connects": [slug(c) for c in _as_list(loc.get("connects"))],
+            # A real place of the setting that this world knows the name of and
+            # has not built yet. You can walk to it; arriving is what makes it
+            # real. See worldforge.expand_frontier - a town is a town, not the
+            # edge of the universe, and the canon geography the build did not
+            # use is the obvious place for it to grow into.
+            "frontier": bool(loc.get("frontier")),
             # F3: "canon" (a real, researched/seeded name) or "original"
             # (invented to fill a scale the source material didn't cover) -
             # worldforge stamps this when it knows the difference; a
@@ -377,8 +383,12 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
     # start_location the builder got wrong used to be round-robined across the
     # map by `locations[i % len]`, which spread exactly the characters that had
     # no home of their own as widely as possible.
+    # Once, at creation. Re-running it on every normalise made the world grow
+    # wrong: a character built FOR the Butterfly Mansion, on the turn the
+    # player walked into it, was immediately dragged back to the town square
+    # to pad an opening scene that had been populated hours ago.
     here = [n for n in npcs if n["start_location"] == start_location]
-    if len(here) < OPENING_CAST:
+    if len(here) < OPENING_CAST and not raw.get("opening_cast_set"):
         # Pull from whoever is furthest down the list - the builder front-loads
         # the people who matter, so the tail is the safest thing to move, and
         # anyone with a schedule that already names the opening place stays.
@@ -400,6 +410,16 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         "tagline": str(raw.get("tagline") or ""),
         "premise": str(raw.get("premise") or ""),
         "fate_note": str(raw.get("fate_note") or "Fate is fixed. Your path through it is not."),
+        # What a carried-in character costs themselves by being here: what this
+        # world reads them as, what gives them away, and what it does about it.
+        # Empty for every world that is not a crossover.
+        "friction": str(raw.get("friction") or ""),
+        # Set once the opening scene has been given its cast, so a world that
+        # grows later is never re-arranged around its own first turn.
+        "opening_cast_set": True,
+        # The source's own chapters, in its own order. Empty for an original
+        # world: there is no canon running order to follow.
+        "chapters": [c for c in (raw.get("chapters") or []) if isinstance(c, dict)][:12],
         "start_location": start_location,
         "default_protagonist": str(raw.get("default_protagonist") or "a traveller nobody here has heard of"),
         "opening": str(raw.get("opening") or raw.get("premise") or ""),

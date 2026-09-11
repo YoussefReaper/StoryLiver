@@ -13,15 +13,17 @@ actually better at; the cap is enforced in llm.complete, not trusted here.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 from . import (arcs, atlas, authority, awareness, betrayal, budget, callbacks, canon,
+               chapters,
                config,
                db, director,
                fastforward, identity, legacy, mana, memory, modes, modetree,
                narrator, narrgraph,
                npc_sim, precommit, relationships, rt, runs, streaks, world_master,
-               worldstate)
+               worldkit, worldstate)
 from . import worlds as world_registry
 
 
@@ -31,6 +33,175 @@ def _pt(pt_id):
 
 def world_for(pt):
     return world_registry.resolve(pt["world_id"], pt["world_json"] or None)
+
+
+# How many distinct turns of deliberate work it takes to change who a fated
+# event reaches. One is a wish; two is a plan the world can see you carrying
+# out. Deliberately low: the point is that trying is worth something, not that
+# fate is a boss fight with a hit-point bar.
+FATE_BRACE = 2
+
+_FATE_INTENT = re.compile(
+    r"\b(stop|prevent|avert|cancel|undo|forestall|call off|hold back|warn|evacuate"
+    r"|get .* out|move|hide|protect|guard|shield|save|clear out|empty)\b", re.I)
+
+
+def _fate_targets(world, turn: int, action: str) -> str:
+    """Which upcoming fated event, if any, this action is working against.
+
+    Matched on shared uncommon words between the action and the event's own
+    title and description - the same crude overlap the refusal used, kept
+    because it is conservative in the right direction: it can miss an oblique
+    attempt, and a miss simply means the turn is an ordinary turn."""
+    if not _FATE_INTENT.search(action or ""):
+        return ""
+    words = {w for w in re.findall(r"[a-z]{5,}", (action or "").lower())}
+    if not words:
+        return ""
+    best, score = "", 0
+    for f in world.fated_events:
+        if f["turn"] <= turn:
+            continue
+        against = {w for w in re.findall(
+            r"[a-z]{5,}", f"{f['title']} {f.get('desc', '')}".lower())}
+        hit = len(words & against)
+        if hit > score:
+            best, score = f["id"], hit
+    return best if score >= 1 else ""
+
+
+def _fate_fired(pt_id: str) -> set:
+    return {r["rule_ref"] for r in db.rows(
+        "SELECT DISTINCT rule_ref FROM timeline_events"
+        " WHERE playthrough_id=? AND kind='fate' AND rule_ref IS NOT NULL", (pt_id,))}
+
+
+def _fate_ready(pt_id, world, f, index: int, turn: int, here: str, fired: set) -> bool:
+    """Whether the world is ready for this, rather than whether a counter says so.
+
+    Fate used to fire on `f["turn"] == turn` and nothing else: seven events on
+    turns 7, 14, 21, whatever the player was doing. That is a metronome, and it
+    is why the most important things in the world could land in the middle of
+    an unrelated conversation, or be waited out by a player doing nothing.
+
+    What is actually fixed about a fated event is THAT it happens and in what
+    order. When is a question the world should answer by looking at itself:
+
+      * Order holds. Nothing jumps its predecessor, so the escalation the
+        builder wrote still escalates.
+      * It can arrive EARLY when the player has walked into it - standing where
+        it happens is the most direct way a story says "now".
+      * Its authored turn stays as a BACKSTOP. Left alone, the story still
+        moves on its own schedule and a world always reaches its ending; the
+        turn is a deadline now instead of a trigger.
+    """
+    if index and world.fated_events[index - 1]["id"] not in fired:
+        return False          # order is the part that is genuinely fixed
+    if turn >= f["turn"]:
+        return True           # the deadline: the story moves with or without you
+    # Early, because the player is standing in it. Never on the very first
+    # turns, or an opening scene at the wrong address detonates the spine.
+    where = f.get("location") or ""
+    return bool(where) and where == here and turn >= max(2, f["turn"] - 3)
+
+
+def _fate_pressure(pt_id: str, f: dict) -> int:
+    """How many separate turns the player spent working against this event."""
+    rows = db.rows(
+        "SELECT COUNT(DISTINCT turn) n FROM timeline_events"
+        " WHERE playthrough_id=? AND kind='fate_push' AND rule_ref=?",
+        (pt_id, f["id"]))
+    return int(rows[0]["n"]) if rows else 0
+
+
+def _expand_on_arrival(pt, world, loc_id: str, *, user_id: str):
+    """Build a frontier place when the player walks into it, and keep it.
+
+    The grown world is written back to this playthrough's own world_json, so
+    the expansion is permanent for this story and invisible to every other one
+    - two players who both walk to the Butterfly Mansion get their own, and
+    neither edits the world the other forged. A failure here must never cost
+    the player their move: they arrive regardless, at a place that is simply
+    still thin, and the next visit can try again."""
+    loc = world.loc_by_id.get(loc_id)
+    if not loc or not loc.get("frontier"):
+        return world
+    try:
+        from . import worldforge
+        grown = worldforge.expand_frontier(
+            json.loads(json.dumps(world.data)), loc_id,
+            setting=(world.get("inspired_by") or world.get("source_prompt")
+                     or world.get("name") or ""),
+            user_id=user_id)
+        fresh = worldkit.load(grown)
+        db.run("UPDATE playthroughs SET world_json=? WHERE id=?",
+               (json.dumps(fresh.data), pt["id"]))
+        world_registry.forget(world.id)
+        rt.invalidate_playthrough(pt["id"])
+        # The people who came with the place need their memories seeded, or
+        # they arrive with no interiority at all.
+        memory.seed(pt["id"], fresh, player=memory.SOLO)
+        return fresh
+    except Exception:
+        return world
+
+
+def begin_next_chapter(pt_id: str, *, user_id: str = "") -> dict:
+    """Travel on to the next chapter of the source, and build it.
+
+    Accepting the offer, never being pushed through it. The next chapter is a
+    real place on the same map - built the way any frontier is built, wired to
+    where the player is standing now - so the chapter they just finished stays
+    behind them and can be walked back to. That is the whole reason this is a
+    journey rather than a sequence of separate games: the people in chapter one
+    remember you, and you can go and find out what they think now.
+
+    A world whose source has run out advances into the aftermath instead, which
+    builds nothing: no next place is written, because nothing after the end of
+    the source is written anywhere."""
+    pt = _pt(pt_id)
+    if not pt:
+        raise KeyError("no such playthrough")
+    world = world_for(pt)
+    if not chapters.finished(pt, world, _fate_fired(pt_id)):
+        return {"moved": False, "note": "This chapter is not finished yet.",
+                "chapter": chapters.of(pt)}
+
+    pos = chapters.of(pt)
+    after = chapters.advance(pt_id)
+    if not pos.get("next"):
+        return {"moved": True, "aftermath": True, "chapter": after,
+                "note": "There is no more written story. What happens next is yours."}
+
+    from . import worldforge
+    title = pos["next"]
+    gate = f"chapter_{after['n']}_{worldforge._fold(title).replace(' ', '_')[:24]}"
+    data = json.loads(json.dumps(world.data))
+    here = pt["current_location"] or (data["locations"][0]["id"])
+    if not any(l["id"] == gate for l in data["locations"]):
+        data["locations"].append({
+            "id": gate, "name": title, "kind": "frontier",
+            "desc": (pos["book"][after["n"] - 1].get("blurb") or "")[:200]
+                    or f"{title}. You have not been here yet.",
+            "connects": [here], "frontier": True, "origin": "canon",
+        })
+        for l in data["locations"]:
+            if l["id"] == here and gate not in (l.get("connects") or []):
+                l.setdefault("connects", []).append(gate)
+    fresh = worldkit.load(data)
+    db.run("UPDATE playthroughs SET world_json=?, current_location=? WHERE id=?",
+           (json.dumps(fresh.data), gate, pt_id))
+    world_registry.forget(fresh.id)
+    rt.invalidate_playthrough(pt_id)
+
+    # Built on arrival, exactly like any other frontier.
+    pt = _pt(pt_id)
+    grown = _expand_on_arrival(pt, worldkit.load(fresh.data), gate,
+                               user_id=user_id or pt["user_id"])
+    atlas.discover(pt_id, gate, pt["current_turn"], reason="a new chapter")
+    return {"moved": True, "aftermath": False, "chapter": after,
+            "location": gate, "title": title,
+            "places": len(grown.locations), "people": len(grown.npcs)}
 
 
 def _feed(pt_id, turn, kind, text, actor=None, meta=None):
@@ -143,6 +314,10 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
         if dials:
             modes.set_modes(pt_id, dials)
 
+    # The source's running order travels with the story, so "which chapter am
+    # I in" is answerable without going back to the world every time.
+    chapters.set_book(pt_id, world.get("chapters") or [])
+
     # Whatever this mode needs staged before it is playable. Solo modes only:
     # a room stages itself when the host sets the table.
     if session_type and not session_id:
@@ -158,11 +333,28 @@ def _apply_fate(pt, world, turn, entries, *, player=memory.SOLO, here=""):
     # schedule anyway makes it a Story with the label filed off.
     if modetree.suppresses_fate(mode_of(pt)):
         return fired
-    for f in world.fated_events:
-        if f["turn"] != turn:
+    fired_ids = _fate_fired(pt["id"])
+    for i, f in enumerate(world.fated_events):
+        if f["id"] in fired_ids or not _fate_ready(
+                pt["id"], world, f, i, turn, here, fired_ids):
             continue
-        memory.add_event(pt["id"], turn, "fate", f["title"], f["desc"],
-                         rule_ref="fate", kind="fate", importance=5, location=f["location"])
+        # What the player did about this, before it got here.
+        braced = _fate_pressure(pt["id"], f)
+        if braced >= FATE_BRACE and f.get("kills"):
+            # The event still happens, on its turn, at its place. What changes
+            # is who it takes - which is the half that was never meant to be
+            # fixed. A player who worked against this specific event, more than
+            # once, in ways the world could act on, does not get to cancel it;
+            # they get the person out.
+            f = dict(f, kills=None, braced=True)
+            memory.add_event(
+                pt["id"], turn, "fate", f["title"],
+                f"{f['desc']} What was done beforehand held: the cost fell short of who it "
+                f"was reaching for.",
+                rule_ref=f["id"], kind="fate", importance=5, location=f["location"])
+        else:
+            memory.add_event(pt["id"], turn, "fate", f["title"], f["desc"],
+                             rule_ref=f["id"], kind="fate", importance=5, location=f["location"])
         npc_sim.observe_fate(pt["id"], turn, f)
         narrgraph.add(pt["id"], turn, "fate", f["title"], detail=f["desc"],
                       place_id=f.get("location", ""), weight=5)
@@ -219,6 +411,11 @@ def _apply_fate(pt, world, turn, entries, *, player=memory.SOLO, here=""):
                         meta={"fate_id": f["id"], "title": "", "immutable": True,
                              "as_news": True}))
                     break
+        # Tracked in-loop, not just from the database read above: when several
+        # events are overdue at once - a fast-forward, a long absence - they
+        # all land in this call, in order, rather than one per turn while the
+        # story waits for a counter it no longer uses.
+        fired_ids.add(f["id"])
         fired.append(f)
     return fired
 
@@ -514,6 +711,13 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         if new_loc != pt["current_location"]:
             if new_loc in world.connects(pt["current_location"]) and not atlas.blocked(pt_id, new_loc):
                 moved_to = new_loc
+                # Arriving at a place the world knew the name of and had not
+                # built is what builds it. A town is a town, not the edge of
+                # the universe: the canon geography the build did not use is
+                # on the map from the start, empty, and fills in when somebody
+                # actually goes there. Never on the way out, never speculative,
+                # and never more than once per place.
+                world = _expand_on_arrival(pt, world, new_loc, user_id=user_id)
             else:
                 new_loc = pt["current_location"]
         # last_seen_at moves with every turn, not just with opening the story:
@@ -542,6 +746,17 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         narrgraph.add(pt_id, turn, "action", action[:90], detail=verdict.get("consequence", ""),
                       place_id=new_loc, actor=actor_name or "you",
                       weight=verdict.get("importance", 2), fact_key=action_key)
+
+        # Working against a fated event is an ordinary action that happens to
+        # be aimed at the one thing the world has already decided. It is
+        # allowed, and it is remembered: enough separate turns of it and the
+        # event arrives having been braced for. See _fate_pressure.
+        pushed = _fate_targets(world, turn, action)
+        if pushed:
+            memory.add_event(pt_id, turn, actor_name or "you", action[:120],
+                             verdict.get("consequence", "")[:200],
+                             rule_ref=pushed, kind="fate_push", importance=4,
+                             location=new_loc)
 
         state = world_master.build_state(pt, world, player)
         npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
@@ -932,7 +1147,14 @@ def snapshot(pt_id, player=memory.SOLO):
         "skills": fastforward.skills(pt_id, player),
         "combat_id": (db.row("SELECT id FROM combats WHERE playthrough_id=? AND status!='over'"
                              " ORDER BY rowid DESC LIMIT 1", (pt_id,)) or {}).get("id"),
-        "ended": turn >= world.fated_events[-1]["turn"],
+        # A chapter is over when its fate spine has finished, not when a turn
+        # counter passes the last authored number - fate no longer runs on one.
+        # And "over" only means THE END for a world with no chapter after this;
+        # a canon world has more of its own story to travel to.
+        "ended": chapters.finished(pt, world, _fate_fired(pt_id))
+                 and not chapters.of(pt).get("next"),
+        "chapter": chapters.of(pt),
+        "chapter_done": chapters.finished(pt, world, _fate_fired(pt_id)),
     }
 
 

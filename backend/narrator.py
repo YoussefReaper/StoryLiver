@@ -209,8 +209,24 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
             f"below; where the source and this world's own history disagree, this world wins.\n"
         )
 
+    # A crossover's standing problem, carried every turn. Without it the fact
+    # that the princess of Hell is standing in a town of demon slayers is
+    # something the world notices once, in the opening paragraph, and then
+    # politely forgets.
+    friction = (world.get("friction") or "").strip()
+    friction_line = (
+        f"\nWHAT THIS WORLD MAKES OF THE OUTSIDER: {friction}\n"
+        "This does not fade because a few turns have passed. It is what people "
+        "here see first, every time, until something changes their mind.\n"
+    ) if friction else ""
+
+    # Past the last chapter of the source there is nothing written left to
+    # follow, and the narrator should stop implying there is.
+    from . import chapters as _chapters
     parts = [
         setting_line,
+        friction_line,
+        _chapters.aftermath_directive(_chapters.of(pt["id"])),
         f"PLACE: {loc['name']} - {loc['desc']}",
         f"TIME: day {state['day']}, {state['phase']}",
         # An empty present list used to render as a bare heading with nothing

@@ -184,6 +184,10 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
     startOnboarding();
   } else if (S.state?.ended) {
     showEnding({ reason: 'victory', run: { carried: S.state.run || {} } });
+  } else if (S.state?.chapter_done && S.state?.chapter?.next) {
+    // A canon world has more of its own story after this. The offer, not a
+    // shove: there is usually somebody back here they still want to talk to.
+    showChapterEnd();
   } else {
     // Neither gate had anything left to show — the exact case that used to
     // drop a returning player straight into a brand new world with no idea
@@ -410,14 +414,11 @@ function renderFate() {
     count.textContent = ahead ? `${ahead} still to come` : 'all of it, now';
     count.title = 'Fate is fixed. What it is, you find out when it lands.';
   }
-  $('#fateList').innerHTML = st.fate.map((f) => `
-    <li class="fate-item ${f.status}">
-      <span class="ft">T${f.turn}${f.status === 'next' ? ' · next' : ''}</span>
-      <span class="fx">${f.title
-    ? esc(f.title)
-    : `<em class="fate-sealed">${f.status === 'next'
-      ? 'Something lands here.' : 'Sealed.'}</em>`}</span>
-    </li>`).join('');
+  // The list itself is gone from the shell. The payload still carries fate
+  // because `ended` and the Chronicle are computed from it, but a player is
+  // never shown the schedule of their own story.
+  const list = $('#fateList');
+  if (list) list.innerHTML = '';
 }
 
 /* --------------------------------------------------------------- souls */
@@ -2767,6 +2768,7 @@ async function onGlobalClick(e) {
     const { world } = await api(`/forge/blank?name=${encodeURIComponent($('#scratchName').value.trim() || 'A new world')}`);
     return openEditor(world, null, null);
   }
+  if (t.closest('#chapterGo')) return goNextChapter();
   if (t.closest('#forgeSave')) return saveForge(false);
   if (t.closest('#forgePlay')) return saveForge(true);
   if (t.closest('#hostGo')) return createRoom();
@@ -4793,6 +4795,53 @@ function showBriefing() {
 /* ===========================================================================
    ENDING — a story that reaches its last fated event gets a close, not silence.
    ========================================================================= */
+
+/* The end of a chapter, which is not the end of anything.
+   A canon world is told in the source's own arcs, and finishing one used to
+   be indistinguishable from finishing the game: the fate spine ran out and
+   the story closed, in a setting that has ten more arcs after this one. This
+   is the offer instead - travel on, or stay. Staying is a real answer and is
+   listed first, because there is almost always someone here you have not
+   finished with, and the chapter you leave stays on the map behind you. */
+function showChapterEnd() {
+  const c = S.state?.chapter || {};
+  const shown = `${c.n || 1}${c.total ? ` of ${c.total}` : ''}`;
+  showModal(`${head(`${esc(c.title || 'This chapter')} ends`,
+    `Chapter ${esc(shown)} · what was written here has happened`)}
+    <div class="modal-body">
+      <p class="ch-note">The people here remember what you did. They will still
+        be here, and they will still remember, whenever you come back.</p>
+      <div class="ch-next">
+        <span class="eyebrow">Next in the story</span>
+        <b>${esc(c.next || '')}</b>
+      </div>
+      <div class="ch-actions">
+        <button class="btn btn-ghost" data-close>Stay a while</button>
+        <button class="btn btn-primary" id="chapterGo">
+          <span>Travel on</span>
+          <svg viewBox="0 0 16 16" class="ico"><path d="M2 8h11M9 4l4 4-4 4"/></svg>
+        </button>
+      </div>
+    </div>`);
+}
+
+async function goNextChapter() {
+  const btn = $('#chapterGo');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/playthroughs/${S.ptId}/chapter`, { method: 'POST' });
+    closeOverlays();
+    if (r.aftermath) {
+      toast('The source has run out. What happens now is yours.');
+    } else {
+      toast(`${r.title} — ${r.places} places, ${r.people} people.`);
+    }
+    await openPlaythrough(S.ptId);
+  } catch (e) {
+    toast(e.message, 'err');
+    if (btn) btn.disabled = false;
+  }
+}
 
 function showEnding(ending) {
   if (!ending) return;
