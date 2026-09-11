@@ -16,6 +16,12 @@ REQUIRED_NPC_ANCHORS = ("voice", "constraints", "goals", "taboos")
 MIN_RULES = 9
 MIN_FATED = 7
 
+# How many characters the opening scene must contain. Three is the smallest
+# number that can hold a conversation the player is not the centre of - two
+# people disagreeing while a third watches - which is what makes a room feel
+# inhabited rather than staffed.
+OPENING_CAST = 3
+
 
 class WorldError(ValueError):
     pass
@@ -281,7 +287,11 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         anchors = npc.get("anchors") or {}
         start = slug(npc.get("start_location") or "")
         if start not in valid_locs:
-            start = locations[i % len(locations)]["id"]
+            # The hub, not `locations[i % len]`. Round-robin took exactly the
+            # characters the builder gave no home and spread them as thinly as
+            # the map allowed, which is the opposite of what an unplaced person
+            # should do: they belong where everyone passes through.
+            start = locations[0]["id"]
         schedule_in = npc.get("schedule") or {}
         schedule = {}
         for phase in PHASES:
@@ -352,6 +362,37 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
     start_location = slug(raw.get("start_location") or "")
     if start_location not in valid_locs:
         start_location = locations[0]["id"]
+
+    # The opening scene must have people in it.
+    #
+    # A live Demon Slayer build put its seven characters on seven different
+    # famous landmarks - one each - so the player opened the game alone and
+    # every question about anybody was refused for two turns running: "he is
+    # nowhere in sight". A world where nobody is ever in the room is not a
+    # world, it is an empty museum, and it is the single biggest difference
+    # between this and a chat model running the same setting, where the whole
+    # cast is in the lobby talking over each other.
+    #
+    # Scattering is also partly this function's own doing: an NPC whose
+    # start_location the builder got wrong used to be round-robined across the
+    # map by `locations[i % len]`, which spread exactly the characters that had
+    # no home of their own as widely as possible.
+    here = [n for n in npcs if n["start_location"] == start_location]
+    if len(here) < OPENING_CAST:
+        # Pull from whoever is furthest down the list - the builder front-loads
+        # the people who matter, so the tail is the safest thing to move, and
+        # anyone with a schedule that already names the opening place stays.
+        for npc in reversed(npcs):
+            if len(here) >= OPENING_CAST:
+                break
+            if npc["start_location"] == start_location:
+                continue
+            npc["start_location"] = start_location
+            for phase in PHASES:
+                if npc["schedule"].get(phase) not in valid_locs:
+                    npc["schedule"][phase] = start_location
+            npc["schedule"][PHASES[0]] = start_location
+            here.append(npc)
 
     return {
         "id": world_id,

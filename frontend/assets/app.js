@@ -786,7 +786,7 @@ function entryHTML(e, meta) {
         <div class="refusal-head"><svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="6"/><path d="M4.2 11.8 11.8 4.2"/></svg>
           The world refuses</div>
         <div class="prose">${paras(e.text)}</div>
-        ${meta.reason && !e.text.includes(meta.reason) && !readsLikeMachine(meta.reason)
+        ${S.prefs.power && meta.reason
     ? `<div class="refusal-reason">${esc(meta.reason)}</div>` : ''}
       </div></article>`;
     case 'fate':
@@ -961,20 +961,6 @@ function applyDirection() {
    Portraits are sigils, not generated art: the world builder does not ship
    images and inventing faces for real characters would be worse than a
    monogram. The hatched ground is the design's own placeholder treatment. */
-/* A last gate on the engine describing itself to the player.
-   The World Master's `reason` is written by a model that has just been handed
-   a JSON state, and it sometimes answers in that register - a live turn
-   printed "Charlie is not present in the current state." underneath the
-   narrator's perfectly good in-world refusal. The prompt now forbids it, but a
-   prompt is a request; this is the wall. The reason is still carried in the
-   payload for power mode and for the transcript, it just never reaches the
-   reader looking like a field name. */
-const MACHINE_TELLS = /\b(current state|in scene|not present in|invalid|null|undefined|state:|field|param|npc_id|playthrough|turn \d+ state)\b/i;
-
-function readsLikeMachine(s) {
-  return MACHINE_TELLS.test(String(s || ''));
-}
-
 function speakerPlate(who) {
   if (!who || !who.name) return '';
   const npc = S.state?.npcs?.find((n) => n.id === who.npc) || {};
