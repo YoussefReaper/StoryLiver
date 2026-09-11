@@ -2522,6 +2522,15 @@ button { background: none; border: 0; cursor: pointer; }
 .soul-mood { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .soul-standing { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
 
+/* End of a chapter — an offer, not a door closing. */
+.ch-note { font-family: var(--display); font-size: 15.5px; line-height: 1.7;
+  color: var(--vellum-dim); margin: 0 0 18px; text-wrap: pretty; }
+.ch-next { border: 1px solid var(--line); border-left: 2px solid var(--ember);
+  border-radius: var(--r-sm); background: var(--panel); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 6px; }
+.ch-next b { font-family: var(--display); font-weight: 400; font-size: 21px; color: var(--vellum); }
+.ch-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; flex-wrap: wrap; }
+
 /* Engine internals, collapsed by default. The bars/anchors/memory stream
    still exist for anyone who wants them - they are no longer the first
    thing a player sees when they open a character. */

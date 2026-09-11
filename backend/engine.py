@@ -17,6 +17,7 @@ import re
 import uuid
 
 from . import (arcs, atlas, authority, awareness, betrayal, budget, callbacks, canon,
+               chapters,
                config,
                db, director,
                fastforward, identity, legacy, mana, memory, modes, modetree,
@@ -145,6 +146,64 @@ def _expand_on_arrival(pt, world, loc_id: str, *, user_id: str):
         return world
 
 
+def begin_next_chapter(pt_id: str, *, user_id: str = "") -> dict:
+    """Travel on to the next chapter of the source, and build it.
+
+    Accepting the offer, never being pushed through it. The next chapter is a
+    real place on the same map - built the way any frontier is built, wired to
+    where the player is standing now - so the chapter they just finished stays
+    behind them and can be walked back to. That is the whole reason this is a
+    journey rather than a sequence of separate games: the people in chapter one
+    remember you, and you can go and find out what they think now.
+
+    A world whose source has run out advances into the aftermath instead, which
+    builds nothing: no next place is written, because nothing after the end of
+    the source is written anywhere."""
+    pt = _pt(pt_id)
+    if not pt:
+        raise KeyError("no such playthrough")
+    world = world_for(pt)
+    if not chapters.finished(pt, world, _fate_fired(pt_id)):
+        return {"moved": False, "note": "This chapter is not finished yet.",
+                "chapter": chapters.of(pt)}
+
+    pos = chapters.of(pt)
+    after = chapters.advance(pt_id)
+    if not pos.get("next"):
+        return {"moved": True, "aftermath": True, "chapter": after,
+                "note": "There is no more written story. What happens next is yours."}
+
+    from . import worldforge
+    title = pos["next"]
+    gate = f"chapter_{after['n']}_{worldforge._fold(title).replace(' ', '_')[:24]}"
+    data = json.loads(json.dumps(world.data))
+    here = pt["current_location"] or (data["locations"][0]["id"])
+    if not any(l["id"] == gate for l in data["locations"]):
+        data["locations"].append({
+            "id": gate, "name": title, "kind": "frontier",
+            "desc": (pos["book"][after["n"] - 1].get("blurb") or "")[:200]
+                    or f"{title}. You have not been here yet.",
+            "connects": [here], "frontier": True, "origin": "canon",
+        })
+        for l in data["locations"]:
+            if l["id"] == here and gate not in (l.get("connects") or []):
+                l.setdefault("connects", []).append(gate)
+    fresh = worldkit.load(data)
+    db.run("UPDATE playthroughs SET world_json=?, current_location=? WHERE id=?",
+           (json.dumps(fresh.data), gate, pt_id))
+    world_registry.forget(fresh.id)
+    rt.invalidate_playthrough(pt_id)
+
+    # Built on arrival, exactly like any other frontier.
+    pt = _pt(pt_id)
+    grown = _expand_on_arrival(pt, worldkit.load(fresh.data), gate,
+                               user_id=user_id or pt["user_id"])
+    atlas.discover(pt_id, gate, pt["current_turn"], reason="a new chapter")
+    return {"moved": True, "aftermath": False, "chapter": after,
+            "location": gate, "title": title,
+            "places": len(grown.locations), "people": len(grown.npcs)}
+
+
 def _feed(pt_id, turn, kind, text, actor=None, meta=None):
     return db.run(
         "INSERT INTO narrative (playthrough_id,turn,kind,actor,text,meta,created_at) VALUES (?,?,?,?,?,?,?)",
@@ -254,6 +313,10 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
         dials = modetree.dials_for(resolved_mode)
         if dials:
             modes.set_modes(pt_id, dials)
+
+    # The source's running order travels with the story, so "which chapter am
+    # I in" is answerable without going back to the world every time.
+    chapters.set_book(pt_id, world.get("chapters") or [])
 
     # Whatever this mode needs staged before it is playable. Solo modes only:
     # a room stages itself when the host sets the table.
@@ -1084,7 +1147,14 @@ def snapshot(pt_id, player=memory.SOLO):
         "skills": fastforward.skills(pt_id, player),
         "combat_id": (db.row("SELECT id FROM combats WHERE playthrough_id=? AND status!='over'"
                              " ORDER BY rowid DESC LIMIT 1", (pt_id,)) or {}).get("id"),
-        "ended": turn >= world.fated_events[-1]["turn"],
+        # A chapter is over when its fate spine has finished, not when a turn
+        # counter passes the last authored number - fate no longer runs on one.
+        # And "over" only means THE END for a world with no chapter after this;
+        # a canon world has more of its own story to travel to.
+        "ended": chapters.finished(pt, world, _fate_fired(pt_id))
+                 and not chapters.of(pt).get("next"),
+        "chapter": chapters.of(pt),
+        "chapter_done": chapters.finished(pt, world, _fate_fired(pt_id)),
     }
 
 

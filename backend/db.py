@@ -861,6 +861,11 @@ MIGRATIONS = [
     ("playthroughs", "last_seen_at", "TEXT NOT NULL DEFAULT ''"),
     ("playthroughs", "session_id", "TEXT NOT NULL DEFAULT ''"),
     ("playthroughs", "world_json", "TEXT NOT NULL DEFAULT ''"),
+    # A canon world is told in the source's own chapters. `chapters` is the
+    # running order research found; `chapter` is where this story has reached.
+    # Past the last one is the aftermath, which is nobody's canon but theirs.
+    ("playthroughs", "chapters", "TEXT NOT NULL DEFAULT ''"),
+    ("playthroughs", "chapter", "INTEGER NOT NULL DEFAULT 1"),
     ("relationships", "love", "REAL NOT NULL DEFAULT 0"),
     ("relationships", "loyalty", "REAL NOT NULL DEFAULT 0"),
     ("relationships", "respect", "REAL NOT NULL DEFAULT 0"),

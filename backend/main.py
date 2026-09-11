@@ -931,6 +931,20 @@ def return_home(pt_id: str, body: ReturnHome, user_id: str = Query(default="")):
                                  truth=body.truth, session_id=pt["session_id"])
 
 
+@app.post("/api/playthroughs/{pt_id}/chapter")
+def next_chapter(pt_id: str, user_id: str = Query(min_length=4)):
+    """Accept the offer at the end of a chapter and travel on.
+
+    Only ever called because the player chose it: finishing a chapter offers
+    the journey and is equally happy to be ignored, because there is usually
+    somebody back there they still want to talk to."""
+    _own(pt_id, user_id)
+    try:
+        return engine.begin_next_chapter(pt_id, user_id=user_id)
+    except KeyError:
+        raise HTTPException(404, "no such playthrough")
+
+
 @app.post("/api/playthroughs/{pt_id}/reveal")
 def reveal(pt_id: str, user_id: str = Query(default="")):
     pt = _own(pt_id, user_id)

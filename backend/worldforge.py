@@ -1379,6 +1379,12 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # Attribution travels with the world: CC BY-SA asks for it, and a
     # player deserves to know which wiki their world was grounded on.
     raw["sources"] = research.attribution(found)
+    # The source's own running order, kept on the world so a playthrough can
+    # be told which chapter it is in without a second lookup. Empty for an
+    # original world, which has no canon to follow and never needed one.
+    if canon:
+        from . import chapters as _chapters
+        raw["chapters"] = _chapters.plan(found, fallback=str(raw.get("name") or ""))
     raw["researched"] = bool(found.get("found"))
     raw["personal_only"] = personal
     raw["inspired_by"] = found.get("canonical_name") or (setting if personal else "")

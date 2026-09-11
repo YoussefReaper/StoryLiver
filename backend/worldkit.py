@@ -417,6 +417,9 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         # Set once the opening scene has been given its cast, so a world that
         # grows later is never re-arranged around its own first turn.
         "opening_cast_set": True,
+        # The source's own chapters, in its own order. Empty for an original
+        # world: there is no canon running order to follow.
+        "chapters": [c for c in (raw.get("chapters") or []) if isinstance(c, dict)][:12],
         "start_location": start_location,
         "default_protagonist": str(raw.get("default_protagonist") or "a traveller nobody here has heard of"),
         "opening": str(raw.get("opening") or raw.get("premise") or ""),
