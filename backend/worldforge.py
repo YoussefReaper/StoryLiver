@@ -622,9 +622,24 @@ def _seat_imports(raw: dict, imports: list) -> dict:
                     n["origin"] = "canon"
                     n["from_source"] = (imp.get("from") or "").strip()
             continue
-        if not seats:
-            break
-        rec = npcs[seats.pop()]
+        if seats:
+            rec = npcs[seats.pop()]
+        else:
+            # No invented seat to give her. This is the COMMON case for a
+            # crossover into a well-researched setting: every slot is already a
+            # real character of the host world, so the seating loop found
+            # nothing to displace and silently dropped the one person the
+            # player actually asked for. She is added instead. A cast of
+            # eleven where one was requested by name beats a cast of ten
+            # where the request quietly did not happen.
+            rec = {"id": f"import_{_fold(name).replace(' ', '_')[:24] or len(npcs)}"}
+            npcs.append(rec)
+            raw["npcs"] = npcs
+        # Wherever she came from, she starts where the player does. A carried-in
+        # character who exists but is three locations away is the same
+        # disappointment as one who was never built: the player asked to have
+        # her WITH them.
+        rec["start_location"] = raw.get("start_location") or rec.get("start_location") or ""
         rec["name"] = name
         rec["origin"] = "canon"
         rec["from_source"] = (imp.get("from") or "").strip()

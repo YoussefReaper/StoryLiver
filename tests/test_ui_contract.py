@@ -274,15 +274,20 @@ def test_the_engine_never_explains_itself_to_the_player():
     # The World Master is a model handed a JSON state, and it sometimes answers
     # in that register. Its prompt now forbids it, but a prompt is a request,
     # so the client refuses to render a reason that still reads like one.
-    ok("readsLikeMachine" in JS,
-       "the client has a gate for reasons that read like state rather than speech")
-    ok("current state" in JS[JS.find("MACHINE_TELLS"):JS.find("MACHINE_TELLS") + 400],
-       "and the exact phrasing that shipped is one of the things it catches")
-
-    guard = JS[JS.find("case 'refusal'"):]
-    guard = guard[:guard.find("case '")] if guard.find("case '") > 0 else guard[:900]
-    ok("readsLikeMachine(meta.reason)" in guard,
-       "the refusal entry runs its reason through that gate before printing it")
+    # A second live turn printed a different flavour of the same thing -
+    # "Tanjiro Kamado is not at Ubuyashiki Mansion." - underneath prose that
+    # had already said "you glance around, expecting to see Tanjiro, but he's
+    # nowhere in sight". Not machine register that time, just the engine
+    # restating in a flat voice what the narrator had already said better. Both
+    # examples point the same way: the reason never earns its place in front of
+    # the reader. It is engine internals, so it lives where the other internals
+    # live, and the refusal panel speaks once, in the world's voice.
+    block = JS[JS.find("case 'refusal'"):]
+    block = block[:block.find("case 'fate'")] if "case 'fate'" in block else block[:1200]
+    ok("meta.reason" in block and "S.prefs.power" in block,
+       "the refusal panel shows the engine's own reason only in power mode")
+    ok(block.count("refusal-reason") == 1,
+       "and there is exactly one place it could ever be rendered")
 
 
 def _all():

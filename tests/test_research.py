@@ -308,6 +308,32 @@ def test_unused_canon_is_seated_not_merely_labelled():
        "the same holds for places")
 
 
+def test_an_empty_room_is_told_it_is_empty():
+    section("immersion — the narrator cannot invent people into an empty room")
+    # OBSERVED LIVE. The engine reported "0 here" and the passage had Nezuko
+    # walk in and Tanjiro speak a line. The prompt's fault: an empty present
+    # list rendered as the heading "CHARACTERS PRESENT (obey these exactly):"
+    # followed by the parenthetical "(nobody else is present)", and the model
+    # filled the vacuum. Two things then broke quietly - the witness layer had
+    # recorded nobody in the room, so nothing those two "saw" would ever be
+    # remembered, and split_speech refused to plate a speaker who was not
+    # there, which is why the line came back as flat prose instead of a plate.
+    import inspect
+    from backend import narrator
+
+    src = inspect.getsource(narrator.narrate)
+    ok("nobody else is present" not in src,
+       "the weak parenthetical the model ignored is gone")
+    ok("You are alone in this place" in src,
+       "an empty room is stated plainly")
+    ok("No character may appear, speak, arrive or be addressed" in src,
+       "and the thing that actually went wrong is forbidden by name")
+    ok("if present else" in src.replace("\n", " ").replace("  ", " ") or "if present" in src,
+       "the branch keys off who is actually present, not off whether the "
+       "anchor string happened to be non-empty — the placeholder made that "
+       "condition permanently true")
+
+
 def test_the_character_the_player_named_actually_turns_up():
     section("canon fidelity — a crossover import is guaranteed a seat")
     # REPORTED: "I started a Demon Slayer world with Charlie and Charlie wasn't
@@ -330,6 +356,25 @@ def test_the_character_the_player_named_actually_turns_up():
     ok(charlie["from_source"] == "Hazbin Hotel",
        "her own source travels with her, so her persona is looked up under Hazbin Hotel "
        "rather than under the world she was dropped into")
+
+    # THE CASE THAT ACTUALLY SHIPPED. A crossover into a well-researched
+    # setting fills every slot with a real character of the HOST world, so
+    # there is no invented seat left to displace - and the first version of
+    # this function gave up and silently dropped the one person the player had
+    # asked for by name. Twice, on the live build.
+    full = {"npcs": [{"id": f"n{i}", "name": n, "origin": "canon"} for i, n in enumerate(
+        ["Tanjiro Kamado", "Nezuko Kamado", "Zenitsu Agatsuma",
+         "Inosuke Hashibira", "Shinobu Kocho", "Muzan Kibutsuji"])],
+        "start_location": "market_square"}
+    out3 = worldforge._seat_imports(full, imports)
+    charlie = [n for n in out3["npcs"] if n["name"] == "Charlie Morningstar"]
+    ok(len(charlie) == 1,
+       "a cast with no invented seats left still gets the carried-in character — "
+       "she is added rather than dropped")
+    ok(charlie and charlie[0]["start_location"] == "market_square",
+       "and she starts where the player does, because 'with Charlie' means with her")
+    ok(" " not in charlie[0]["id"],
+       "her generated id is a usable slug")
 
     # Already built by the builder: kept, but re-filed as canon rather than local.
     raw2 = {"npcs": [{"id": "n1", "name": "Charlie Morningstar", "role": "an innkeeper",
@@ -688,6 +733,7 @@ def _all():
             test_unused_canon_is_seated_not_merely_labelled,
             test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
             test_the_character_the_player_named_actually_turns_up,
+            test_an_empty_room_is_told_it_is_empty,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
             test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,

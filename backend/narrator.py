@@ -160,7 +160,7 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
     anchors = "\n".join(memory.anchor_block(
         world, n, beat=moment,
         answered_goals=npc_sim.answered_goals(pt["id"], n, player))
-        for n in present) or "  (nobody else is present)"
+        for n in present)
     events = memory.retrieve_events(pt["id"], state["turn"], action + " " + (beat or ""), k=7)
     loc = world.loc_by_id[state["location"]]
     forbidden = _openings(pt["id"])
@@ -199,7 +199,18 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         setting_line,
         f"PLACE: {loc['name']} - {loc['desc']}",
         f"TIME: day {state['day']}, {state['phase']}",
-        f"\nCHARACTERS PRESENT (obey these exactly):\n{anchors}",
+        # An empty present list used to render as a bare heading with nothing
+        # under it, and the model filled the vacuum: a live turn with the
+        # engine reporting "0 here" had Nezuko and Tanjiro walk in and speak.
+        # That is not a flourish, it is a contradiction - the witness layer
+        # recorded nobody in the room, so nothing either of them saw was ever
+        # going to be remembered, and split_speech correctly refused to plate a
+        # speaker who was not there. Say the room is empty and why it matters.
+        (f"\nCHARACTERS PRESENT (obey these exactly):\n{anchors}" if present else
+         "\nCHARACTERS PRESENT: nobody. You are alone in this place.\n"
+         "No character may appear, speak, arrive or be addressed this turn. Write "
+         "the place, what the player does, and what the world does back - an empty "
+         "room is a scene, not a problem to solve by filling it with somebody."),
         f"\nWHAT THEY FEEL ABOUT THE PLAYER:\n{memory.relationship_block(pt['id'], world, present, player)}",
         f"\nESTABLISHED FACTS YOU MUST NOT CONTRADICT:\n{memory.compact_timeline(events)}",
         # The line above is a CONSTRAINT. This one is an INVITATION - the

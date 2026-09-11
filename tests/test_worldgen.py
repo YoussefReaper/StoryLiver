@@ -540,8 +540,49 @@ def test_the_forge_sends_what_the_endpoint_requires():
        "this app has ever raised")
 
 
+def test_the_opening_scene_has_people_in_it():
+    section("the opening scene is inhabited, not staffed")
+    # OBSERVED LIVE. A Demon Slayer build put its seven characters on seven
+    # different famous landmarks, one each, so the player opened the game with
+    # a single NPC present and two turns running were refused - "he is nowhere
+    # in sight", "she is not here". A world where nobody is ever in the room is
+    # the biggest single difference between this and a chat model running the
+    # same setting, where the whole cast is in the lobby talking over itself.
+    locs = [{"id": f"p{i}", "name": f"Place {i}", "connects": []} for i in range(7)]
+    raw = {
+        "name": "Scatterville", "start_location": "p0", "locations": locs,
+        # exactly the shape that shipped: one character per landmark
+        "npcs": [{"id": f"n{i}", "name": f"Person {i}", "start_location": f"p{i}"}
+                 for i in range(7)],
+        "rules": [{"id": f"R{i}", "text": "t"} for i in range(9)],
+        "fated_events": [{"id": f"F{i}", "turn": i + 1, "title": "t"} for i in range(7)],
+    }
+    w = worldkit.normalise(raw, strict=True)
+    here = [n for n in w["npcs"] if n["start_location"] == w["start_location"]]
+    ok(len(here) >= worldkit.OPENING_CAST,
+       f"the opening location holds a cast, not one person ({len(here)} present)")
+    ok(all(n["schedule"]["morning"] == w["start_location"] for n in here),
+       "and they are actually there on the opening phase, not scheduled elsewhere")
+
+    # The people the builder DID place deliberately keep their homes.
+    moved = [n["id"] for n in w["npcs"] if n["start_location"] == w["start_location"]]
+    ok("n0" in moved, "whoever the builder put at the opening place is still there")
+    ok(len(moved) < len(w["npcs"]),
+       "and the rest of the map is not emptied to fill it — this populates a scene, "
+       "it does not collapse the world into one room")
+
+    # An NPC the builder gave no valid home goes to the hub, not round-robin.
+    raw2 = dict(raw, npcs=[{"id": "a", "name": "A", "start_location": "nowhere"},
+                           {"id": "b", "name": "B", "start_location": "nope"}])
+    w2 = worldkit.normalise(raw2, strict=True)
+    ok(all(n["start_location"] == w2["locations"][0]["id"] for n in w2["npcs"]),
+       "an unplaced character goes where everyone passes through, rather than being "
+       "scattered across the map by the index that happened to hold them")
+
+
 def _all():
-    return (test_a_premise_is_parsed_not_searched,
+    return (test_the_opening_scene_has_people_in_it,
+            test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
             test_an_original_setting_is_still_original,
             test_a_crossover_is_private_even_when_research_misses,
