@@ -256,8 +256,16 @@ def test_session_zero():
     section("Session Zero — the player has a defined place before play")
     general = sessionzero.questions({"found": False, "setting": "a drowned city"})
     ids = [q["id"] for q in general["questions"]]
-    ok(ids == ["role", "power", "limit"],
-       f"an original world is still asked who/how strong/what limits ({ids})")
+    # An original world is asked who the player IS as well as what they can do.
+    # Name, origin, whether this place already knows them and who they already
+    # know are not canon questions - a world with no source still has a town
+    # with an opinion, and the builder used to invent all of it. `cast_mix` is
+    # the one that IS canon-only: how much invented cast to put around the real
+    # one is a question about nothing when every character is invented anyway.
+    ok(ids == ["name", "origin", "known", "ties", "role", "power", "limit"],
+       f"an original world is asked who they are as well as what they can do ({ids})")
+    ok("cast_mix" not in ids,
+       "but not how to balance a canon cast it does not have")
 
     canon = {"found": True, "canonical_name": "Jujutsu Kaisen",
              "arcs": [{"name": "Shibuya Incident", "note": "the city is sealed"}],

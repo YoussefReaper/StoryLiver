@@ -1102,10 +1102,18 @@ def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
     n_places = len([p for p in (d.get("places") or []) if (p.get("name") or "").strip()])
     budget = [
         "HOW TO USE THAT LIST - this is a hard rule, not a preference:",
-        f"1. Every one of those {n_chars} real characters and {n_places} real places must be "
-        "used before you invent a single new person or place. Spell them exactly as "
-        "written above.",
-        "2. Never rename, re-spell, translate or 'improve' a real name, and never invent "
+        f"1. PEOPLE: every one of those {n_chars} real characters must be used before you "
+        "invent a single new person. Spell them exactly as written above.",
+        f"2. PLACES: the {n_places} real places are the setting's MAP, and you are building "
+        "ONE location on it. Use a real place name ONLY for a location that genuinely IS "
+        "that place. Never hang a famous name on an ordinary room to get it used - a "
+        "tavern called Yoshiwara, a clinic called Mount Kumotori and a village square "
+        "called Eternal Paradise Faith are three lies in a row, and a reader who knows "
+        "the setting sees all of them at once. Real places you do not use are EXPECTED "
+        "and cost nothing: they stay on the map as somewhere the player can travel to "
+        "later. An ordinary street in this place should be named the way its own people "
+        "would name it.",
+        "3. Never rename, re-spell, translate or 'improve' a real name, and never invent "
         "a relative, student, rival or successor of a real character.",
     ]
     # The shortfall is the whole problem, so name it rather than leaving the
@@ -1114,7 +1122,7 @@ def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
     short_l = max(0, need_locs - n_places)
     if short_n or short_l:
         budget.append(
-            f"3. This pass asks for more than the roster holds, so you must invent about "
+            f"4. This pass asks for more than the roster holds, so you must invent about "
             f"{short_n} extra people and {short_l} extra places - and ONLY that many. "
             "Everyone you invent is an ORDINARY BACKGROUND RESIDENT of this setting: a "
             "stallholder, a courier, a gate guard, someone's aunt. Never a new hero, "
@@ -1123,20 +1131,20 @@ def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
         )
     else:
         budget.append(
-            "3. The roster covers everything this pass asks for. Do not invent anyone new."
+            "4. The roster covers everything this pass asks for. Do not invent anyone new."
         )
     budget.append(
-        "4. Do NOT copy any sentence from the research text - write your own descriptions "
+        "5. Do NOT copy any sentence from the research text - write your own descriptions "
         "of these real people and places."
     )
     budget.append(
-        "5. Keep the source's PERIOD and its technology. Whatever era, dress, lighting, "
+        "6. Keep the source's PERIOD and its technology. Whatever era, dress, lighting, "
         "weapons and transport the source uses, this world uses. A detail from the wrong "
         "century - neon over a Taisho street, a phone in a sword age - is as wrong as a "
         "made-up name, and a reader notices it faster."
     )
     budget.append(
-        "6. The real places above are the setting's GEOGRAPHY, not this location's "
+        "7. The real places above are the setting's GEOGRAPHY, not this location's "
         "contents. Build somewhere a person can actually walk around in one evening: "
         "streets, rooms, thresholds, the buildings that belong to each other. Famous "
         "landmarks from across the whole source do not all sit inside one town, and "
