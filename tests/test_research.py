@@ -291,12 +291,86 @@ def test_unused_canon_is_seated_not_merely_labelled():
        "the seated characters are tagged canon, because now they really are")
 
     seated = next(n for n in out["npcs"] if n["name"] == "Giyu Tomioka")
-    ok("anchors" not in seated and "seed_memories" not in seated,
-       "a real character does not inherit the invented person's goals and memories")
+    # Seating no longer writes the persona itself. It used to, from a
+    # hand-written if-chain covering sixteen characters by name, which meant
+    # everybody else in fiction got "VOICE: plain, direct, unhurried" and
+    # "CONSTRAINTS: is an ordinary mortal person". _apply_canon_personas now
+    # fills this in from what the model knows, for any character in any
+    # setting - so what seating must guarantee is the identity and a true
+    # role, and that no invented persona is left behind wearing a real name.
+    ok(seated["anchors"]["name"] == "Giyu Tomioka",
+       "the seat carries the real character's identity")
     ok("Water Hashira" in seated["role"],
-       "they arrive with what research actually knows about them")
+       "and what research actually knows about them, as their role")
+    ok(not seated.get("seed_memories"),
+       "the previous occupant's memories do not travel with the seat")
     ok(out["locations"][0]["name"] == "Butterfly Mansion",
        "the same holds for places")
+
+
+def test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal():
+    section("canon fidelity — the persona the narrator is told to obey")
+    # THE REPORTED BUG, reproduced at the layer that caused it. Research
+    # flattens a character to one roster line; the builder invents a persona
+    # from that line; memory.anchor_block then hands the invention to the
+    # narrator under "CHARACTERS PRESENT (obey these exactly)". So a build
+    # produced - and the narrator correctly obeyed:
+    #
+    #     Nezuko Kamado - a quiet village girl
+    #       VOICE: Soft-spoken and kind.
+    #       CONSTRAINTS: Is an ordinary mortal person.
+    #
+    # for a character who is mute, is a demon, and is carried in a box. The
+    # anti-drift machinery was pinning the wrong person.
+    from backend import memory, worldkit
+
+    raw = {
+        "npcs": [
+            {"id": "n1", "name": "Nezuko Kamado", "role": "a quiet village girl",
+             "origin": "canon",
+             "anchors": {"voice": "Soft-spoken and kind.",
+                         "constraints": ["Is an ordinary mortal person."]}},
+            {"id": "n2", "name": "A Stall Keeper", "role": "sells rope",
+             "origin": "original"},
+        ],
+    }
+    card = {"characters": [{
+        "name": "Nezuko Kamado", "role": "Tanjiro's sister, turned demon",
+        "voice": "Does not speak. Muffled sounds through a bamboo muzzle.",
+        "constraints": ["Is a demon, not a human.", "Cannot speak at all."],
+        "goals": ["Protect her brother."], "taboos": ["Never harms a human."],
+        "memories": ["I remember the smell of the snow that morning."]}]}
+
+    import backend.worldforge as wf
+    real, wf._resilient = wf._resilient, lambda *a, **k: card
+    try:
+        out = wf._apply_canon_personas(raw, "Demon Slayer", user_id="u_test")
+    finally:
+        wf._resilient = real
+
+    nez = out["npcs"][0]["anchors"]
+    ok("ordinary mortal" not in " ".join(nez["constraints"]).lower(),
+       "the invented 'ordinary mortal person' is gone from a character who is a demon")
+    ok(any("demon" in c.lower() for c in nez["constraints"]),
+       "and what she actually is replaces it")
+    ok("not speak" in nez["voice"].lower(),
+       "a mute character is no longer described to the narrator as soft-spoken")
+    ok(out["npcs"][0]["seed_memories"],
+       "she arrives carrying something of her own")
+
+    ok(out["npcs"][1]["role"] == "sells rope" and not out["npcs"][1].get("anchors"),
+       "an invented background resident is left alone — this only speaks for real people")
+
+    # Offline, and for a character the model does not know, nothing is claimed.
+    raw2 = {"npcs": [{"id": "n1", "name": "Someone Obscure", "origin": "canon",
+                      "role": "a clerk", "anchors": {"voice": "Quiet."}}]}
+    real, wf._resilient = wf._resilient, lambda *a, **k: {"characters": []}
+    try:
+        out2 = wf._apply_canon_personas(raw2, "Demon Slayer", user_id="u_test")
+    finally:
+        wf._resilient = real
+    ok(out2["npcs"][0]["anchors"]["voice"] == "Quiet.",
+       "a character the model does not know keeps what the builder wrote, rather than being overwritten with a guess")
 
     # It must not fire when there is nothing to seat, or nothing to seat into.
     untouched = {"npcs": [{"id": "n1", "name": "Someone", "origin": "original"}]}
@@ -558,6 +632,7 @@ def _all():
             test_canon_supply_reaches_the_prompt,
             test_canon_is_dealt_across_districts_not_raced_for,
             test_unused_canon_is_seated_not_merely_labelled,
+            test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
             test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,

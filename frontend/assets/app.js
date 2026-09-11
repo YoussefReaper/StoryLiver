@@ -767,6 +767,14 @@ function entryHTML(e, meta) {
       return `<div class="entry entry-you"><div class="you-line">
         <b>${esc(mine ? 'You' : (meta.name || 'A player'))}</b>${esc(e.text)}</div></div>`;
     }
+    case 'speech': {
+      // A character's spoken line is its own entry, so it gets the plate: who
+      // said it, what they hold in this world, how they stand toward you right
+      // now, and the line itself in the reading serif.
+      const sp = meta.speaker || {};
+      return `<article class="entry entry-speech">${
+        speakerPlate({ npc: sp.npc, name: sp.name, action: e.text, said: true })}</article>`;
+    }
     case 'safety':
       return `<article class="entry entry-safety"><div class="safety-slab">${esc(e.text)}</div></article>`;
     case 'refusal':
@@ -927,7 +935,11 @@ function speakerPlate(who) {
   const mood = (npc.disposition || '').trim();
   const role = (npc.role || '').trim();
   const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
-  return `<aside class="plate" data-soul="${esc(who.npc || '')}">
+  // A spoken line is set as speech; an act they took is set as narration.
+  const line = who.said
+    ? `<q class="plate-line plate-said">${esc(who.action || '')}</q>`
+    : `<span class="plate-line">${esc(who.action || '')}</span>`;
+  return `<aside class="plate${who.said ? ' plate-speaking' : ''}" data-soul="${esc(who.npc || '')}">
     <span class="plate-face" aria-hidden="true">${esc(initials)}</span>
     <span class="plate-body">
       <span class="plate-who">
@@ -935,7 +947,7 @@ function speakerPlate(who) {
         ${role ? `<span class="plate-role mono">${esc(role)}</span>` : ''}
         ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>` : ''}
       </span>
-      <span class="plate-line">${esc(who.action || '')}</span>
+      ${line}
     </span>
   </aside>`;
 }

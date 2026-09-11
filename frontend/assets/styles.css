@@ -792,6 +792,13 @@ button { background: none; border: 0; cursor: pointer; }
   font-family: var(--display); font-size: 16px; line-height: 1.5;
   color: var(--vellum); text-wrap: pretty;
 }
+/* A spoken line is the reason the plate exists, so it carries the weight. */
+.entry-speech { max-width: 68ch; margin: 0 auto 30px; }
+.entry-speech .plate { margin-top: 0; }
+.plate-speaking { border-left-width: 2px; border-left-color: var(--ember-deep); }
+.plate-said { font-size: 17px; line-height: 1.55; quotes: "\201C" "\201D" "\2018" "\2019"; }
+.plate-said::before { content: open-quote; }
+.plate-said::after { content: close-quote; }
 
 /* While you were away — the world's own report, in the feed's world-shift
    register (violet rule) because that is exactly what it is: the world moving
