@@ -331,6 +331,25 @@ def test_the_character_the_player_named_actually_turns_up():
        "her own source travels with her, so her persona is looked up under Hazbin Hotel "
        "rather than under the world she was dropped into")
 
+    # THE CASE THAT ACTUALLY SHIPPED. A crossover into a well-researched
+    # setting fills every slot with a real character of the HOST world, so
+    # there is no invented seat left to displace - and the first version of
+    # this function gave up and silently dropped the one person the player had
+    # asked for by name. Twice, on the live build.
+    full = {"npcs": [{"id": f"n{i}", "name": n, "origin": "canon"} for i, n in enumerate(
+        ["Tanjiro Kamado", "Nezuko Kamado", "Zenitsu Agatsuma",
+         "Inosuke Hashibira", "Shinobu Kocho", "Muzan Kibutsuji"])],
+        "start_location": "market_square"}
+    out3 = worldforge._seat_imports(full, imports)
+    charlie = [n for n in out3["npcs"] if n["name"] == "Charlie Morningstar"]
+    ok(len(charlie) == 1,
+       "a cast with no invented seats left still gets the carried-in character — "
+       "she is added rather than dropped")
+    ok(charlie and charlie[0]["start_location"] == "market_square",
+       "and she starts where the player does, because 'with Charlie' means with her")
+    ok(" " not in charlie[0]["id"],
+       "her generated id is a usable slug")
+
     # Already built by the builder: kept, but re-filed as canon rather than local.
     raw2 = {"npcs": [{"id": "n1", "name": "Charlie Morningstar", "role": "an innkeeper",
                       "origin": "original"}]}
