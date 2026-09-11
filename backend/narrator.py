@@ -6,6 +6,8 @@ Anti-repetition (Pain #4) is enforced two ways: a hard ban list of the
 therapy-speak and purple-prose tics players complain about, and a rolling list
 of the openings already used in this playthrough that must not recur.
 """
+import re
+
 from . import arcs, callbacks, db, llm, memory, modes, npc_sim
 
 BANNED = (
@@ -44,6 +46,14 @@ HARD RULES
 - Only state facts given to you. Never invent an item, an ally, a name, an event, a NEW place or a NEW character not in the state you were handed - keep an unnamed figure unnamed ("a woman by the door") rather than christening them.
 - Never narrate the player's feelings or decisions for them. Show the world; let them react.
 - Never ask "what do you do?" and never offer a menu of options.
+- WHEN A PRESENT CHARACTER SAYS THE LINE THE MOMENT TURNS ON, give it its own
+  line, written exactly as:
+      @Their Exact Name: the line they say
+  Use their name exactly as it appears under CHARACTERS PRESENT. Put nothing
+  else on that line - no quote marks, no "she says", no stage direction. At
+  most two such lines per passage, and only for a line that carries weight;
+  ordinary back-and-forth stays inside the prose as normal dialogue. If nobody
+  says anything that lands, use none at all.
 - Never use any of these dead phrases or anything like them: {BANNED}.
 - No therapy-speak, no validation language, no motivational summary. Nobody in this world is a life coach.
 - Do not open with the same construction you used before (see FORBIDDEN OPENINGS).
@@ -51,6 +61,64 @@ HARD RULES
 - A character's WANTS lists only what they are STILL after. If something they would obviously be curious about is missing from it, that means the player already told them - do not have the character ask it again, even in different words.
 
 Write only the prose. No headings, no quotes around the whole thing, no meta."""
+
+
+_SPEECH_LINE = re.compile(r"^\s*@\s*([^:@\n]{1,60}?)\s*:\s*(.+?)\s*$")
+
+
+def _fold(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def split_speech(text: str, present: list | None = None) -> list:
+    """Split narration into ordered blocks, lifting marked speech out of it.
+
+    The design's feed grammar treats a character's spoken line as its OWN
+    entry - a speaker plate with a portrait, a name and how they stand toward
+    you - rather than as a quote buried in a paragraph. That needs to know WHO
+    spoke, which prose alone never says.
+
+    So the narrator marks the line that lands as `@Name: line`, and this pulls
+    it out. Two properties matter more than the feature does:
+
+      * A marker NEVER reaches the player. An unmatched name, a malformed
+        marker, a model that ignored the instruction - every one of those
+        degrades to ordinary prose with the marker text stripped, because a
+        stray "@Yeva Marrow:" printed in a passage is far worse than no plate.
+      * A name is only honoured if it matches somebody actually PRESENT. A
+        model that invents a speaker gets their line folded back into prose
+        rather than a plate that credits a character who is not in the room.
+
+    Returns [{"kind": "narration"|"speech", "text": ..., "name": ...}] in the
+    order they were written. Never returns an empty list for non-empty input.
+    """
+    known = {_fold(n): n for n in (present or []) if n}
+    blocks, buf = [], []
+
+    def flush():
+        body = "\n".join(buf).strip()
+        buf.clear()
+        if body:
+            blocks.append({"kind": "narration", "text": body})
+
+    for raw in (text or "").splitlines():
+        m = _SPEECH_LINE.match(raw)
+        if not m:
+            buf.append(raw)
+            continue
+        name, said = m.group(1).strip(), m.group(2).strip()
+        real = known.get(_fold(name))
+        if real and said:
+            flush()
+            blocks.append({"kind": "speech", "name": real, "text": said})
+        else:
+            # Unknown speaker or empty line: keep the words, lose the marker.
+            buf.append(f"{name}: {said}" if said else name)
+    flush()
+
+    if not blocks and (text or "").strip():
+        return [{"kind": "narration", "text": text.strip()}]
+    return blocks
 
 
 def _openings(pt_id, n=8):
@@ -107,7 +175,28 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
                and (not f.get("location") or f["location"] == state["location"])]
     fate_line = f"\nHAPPENING RIGHT NOW, UNSTOPPABLE: {fate_now[0]['desc']}" if fate_now else ""
 
+    # THE SETTING. Its absence was the single largest quality gap against a
+    # plain chat model running the same franchise: that model knows it is
+    # running Hazbin Hotel and reaches for Alastor's 1930s radio diction, the
+    # green of a deal, the Pride Ring. This narrator was told "PLACE: the
+    # chapel steps" and a list of strangers, and had no reason to reach for
+    # any of it. The world dict cannot carry a franchise's texture - only the
+    # model's own knowledge of the source can, and it was never invited to use
+    # it. Established facts below still outrank it, so this adds colour and
+    # register without letting canon overwrite what has actually happened.
+    source = (world.get("inspired_by") or world.get("source_prompt") or "").strip()
+    setting_line = ""
+    if source and world.get("mode") == "canon":
+        setting_line = (
+            f"THE SOURCE: this world continues {source}. You know this setting. Use what you "
+            f"know of it - how these people actually speak, what they call things, the honorifics, "
+            f"the techniques, the factions, the small details a fan would notice. Characters sound "
+            f"like themselves or the world is not this world. Never contradict ESTABLISHED FACTS "
+            f"below; where the source and this world's own history disagree, this world wins.\n"
+        )
+
     parts = [
+        setting_line,
         f"PLACE: {loc['name']} - {loc['desc']}",
         f"TIME: day {state['day']}, {state['phase']}",
         f"\nCHARACTERS PRESENT (obey these exactly):\n{anchors}",

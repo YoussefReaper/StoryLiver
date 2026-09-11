@@ -612,9 +612,23 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
             text = (f"{verdict.get('consequence') or action.strip()} "
                     f"{worldstate.line(pt_id, world, new_loc).capitalize()}.")
 
-        entries.append(_render(pt_id, turn, "narration", text, actor="narrator", meta={
-            "premium": use_premium, "mode": mode, "player": player,
-            "actor_name": actor_name,
+        # The design's feed grammar gives a character's spoken line its own
+        # entry - a speaker plate - rather than burying it in a paragraph.
+        # narrator.split_speech lifts the lines the narrator marked, and only
+        # for characters actually present: an invented speaker degrades back to
+        # ordinary prose rather than getting a plate that credits somebody who
+        # is not in the room. With nothing marked this is one narration entry,
+        # byte-identical to the behaviour before it existed.
+        # split_speech returns each speaker's name exactly as it appears in the
+        # world, so an exact lookup is enough to get back to the id the plate
+        # needs for its portrait and standing.
+        by_name = {world.npc_name(i): i for i in (state.get("present") or [])
+                   if i in world.by_id}
+        blocks = narrator.split_speech(text, list(by_name))
+
+        base_meta = {"premium": use_premium, "mode": mode, "player": player,
+                     "actor_name": actor_name}
+        turn_meta = {
             "relationship_changes": applied,
             "relationship_events": ticked["relationship"],
             "npc_initiated": ({"npc": npc_action["npc"], "name": npc_action["name"],
@@ -629,7 +643,19 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
             "reputation": ticked["reputation"],
             "hunts_ordered": ticked["hunts"],
             "llm_calls": len(budget.used()),
-        }))
+        }
+        # The turn's tags and deltas hang off the LAST block, so they read as
+        # the turn's outcome rather than interrupting it halfway through.
+        for i, b in enumerate(blocks):
+            meta = {**base_meta, **(turn_meta if i == len(blocks) - 1 else {})}
+            if b["kind"] == "speech":
+                npc_id = by_name.get(b["name"], "")
+                meta["speaker"] = {"npc": npc_id, "name": b["name"]}
+                entries.append(_render(pt_id, turn, "speech", b["text"],
+                                       actor=npc_id or "narrator", meta=meta))
+            else:
+                entries.append(_render(pt_id, turn, "narration", b["text"],
+                                       actor="narrator", meta=meta))
 
         if npc_action:
             memory.add_event(pt_id, turn, npc_action["name"], npc_action["action"],

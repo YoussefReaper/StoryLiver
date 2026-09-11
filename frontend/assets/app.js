@@ -444,12 +444,16 @@ function renderSouls() {
         <span class="soul-name">${esc(n.name)}</span>
         <span class="soul-where">${n.alive ? esc(n.location_name) : 'gone'}</span>
       </div>
-      <div class="soul-role">${esc(n.disposition || n.role)}${n.will_cover ? ' · would cover for you' : ''}</div>
-      <div class="bars">
+      <div class="soul-role">${esc(n.role || '')}</div>
+      <div class="soul-mood">
+        <span class="mood-chip mood-${esc((n.disposition || 'stranger').split(' ')[0])}">${esc(n.disposition || 'stranger')}</span>
+        ${standingOf(n) ? `<span class="soul-standing">${esc(standingOf(n))}</span>` : ''}
+      </div>
+      ${power ? `<div class="bars">
         ${bar('Affinity', 'affinity', n.affinity)}${bar('Trust', 'trust', n.trust)}
         ${bar('Fear', 'fear', n.fear)}${bar('Duty', 'obligation', n.obligation)}
-        ${power ? bar('Loyalty', 'loyalty', n.loyalty) + bar('Love', 'love', n.love) + bar('Respect', 'respect', n.respect) : ''}
-      </div>
+        ${bar('Loyalty', 'loyalty', n.loyalty)}${bar('Love', 'love', n.love)}${bar('Respect', 'respect', n.respect)}
+      </div>` : ''}
       ${n.latest_reflection ? `<div class="soul-think">${esc(n.latest_reflection)}</div>` : ''}
     </button>`).join('');
 }
@@ -767,6 +771,14 @@ function entryHTML(e, meta) {
       return `<div class="entry entry-you"><div class="you-line">
         <b>${esc(mine ? 'You' : (meta.name || 'A player'))}</b>${esc(e.text)}</div></div>`;
     }
+    case 'speech': {
+      // A character's spoken line is its own entry, so it gets the plate: who
+      // said it, what they hold in this world, how they stand toward you right
+      // now, and the line itself in the reading serif.
+      const sp = meta.speaker || {};
+      return `<article class="entry entry-speech">${
+        speakerPlate({ npc: sp.npc, name: sp.name, action: e.text, said: true })}</article>`;
+    }
     case 'safety':
       return `<article class="entry entry-safety"><div class="safety-slab">${esc(e.text)}</div></article>`;
     case 'refusal':
@@ -774,7 +786,8 @@ function entryHTML(e, meta) {
         <div class="refusal-head"><svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="6"/><path d="M4.2 11.8 11.8 4.2"/></svg>
           The world refuses</div>
         <div class="prose">${paras(e.text)}</div>
-        ${meta.reason && !e.text.includes(meta.reason) ? `<div class="refusal-reason">${esc(meta.reason)}</div>` : ''}
+        ${meta.reason && !e.text.includes(meta.reason) && !readsLikeMachine(meta.reason)
+    ? `<div class="refusal-reason">${esc(meta.reason)}</div>` : ''}
       </div></article>`;
     case 'fate':
       return `<article class="entry entry-fate"><div class="fate-slab">
@@ -865,6 +878,33 @@ const REL_BEHAVIOUR = {
 
 // One clause, from whichever axis actually moved most. Two people can shift on
 // the same axis and read differently because the phrasing is about them.
+/* Where someone STANDS, said as behaviour rather than as four numbers.
+   REL_BEHAVIOUR above is delta language ("warmer toward you") and only works
+   at the moment something moves. This is the resting state: what the number
+   would make them DO if you walked in right now. Ordered by what would matter
+   most in the room — fear first, because a frightened person's behaviour
+   overrides whatever else they feel about you. */
+const STANDING = [
+  ['fear', 55, 'keeps well clear of you'],
+  ['fear', 30, 'watches your hands'],
+  ['obligation', 40, 'owes you, and knows it'],
+  ['trust', -35, 'would not take your word'],
+  ['trust', 45, 'would take your word for it'],
+  ['affinity', -35, 'would rather you moved on'],
+  ['affinity', 35, 'is glad when you turn up'],
+  ['respect', 45, 'treats you as someone who counts'],
+];
+
+function standingOf(n) {
+  if (n.will_cover) return 'would cover for you';
+  for (const [axis, at, said] of STANDING) {
+    const v = n[axis];
+    if (typeof v !== 'number') continue;
+    if (at >= 0 ? v >= at : v <= at) return said;
+  }
+  return '';
+}
+
 function behaviourOf(deltas, minimum = 0.5) {
   const moved = Object.entries(deltas || {})
     .filter(([k, v]) => REL_BEHAVIOUR[k] && Math.abs(v) >= minimum)
@@ -921,13 +961,31 @@ function applyDirection() {
    Portraits are sigils, not generated art: the world builder does not ship
    images and inventing faces for real characters would be worse than a
    monogram. The hatched ground is the design's own placeholder treatment. */
+/* A last gate on the engine describing itself to the player.
+   The World Master's `reason` is written by a model that has just been handed
+   a JSON state, and it sometimes answers in that register - a live turn
+   printed "Charlie is not present in the current state." underneath the
+   narrator's perfectly good in-world refusal. The prompt now forbids it, but a
+   prompt is a request; this is the wall. The reason is still carried in the
+   payload for power mode and for the transcript, it just never reaches the
+   reader looking like a field name. */
+const MACHINE_TELLS = /\b(current state|in scene|not present in|invalid|null|undefined|state:|field|param|npc_id|playthrough|turn \d+ state)\b/i;
+
+function readsLikeMachine(s) {
+  return MACHINE_TELLS.test(String(s || ''));
+}
+
 function speakerPlate(who) {
   if (!who || !who.name) return '';
   const npc = S.state?.npcs?.find((n) => n.id === who.npc) || {};
   const mood = (npc.disposition || '').trim();
   const role = (npc.role || '').trim();
   const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
-  return `<aside class="plate" data-soul="${esc(who.npc || '')}">
+  // A spoken line is set as speech; an act they took is set as narration.
+  const line = who.said
+    ? `<q class="plate-line plate-said">${esc(who.action || '')}</q>`
+    : `<span class="plate-line">${esc(who.action || '')}</span>`;
+  return `<aside class="plate${who.said ? ' plate-speaking' : ''}" data-soul="${esc(who.npc || '')}">
     <span class="plate-face" aria-hidden="true">${esc(initials)}</span>
     <span class="plate-body">
       <span class="plate-who">
@@ -935,7 +993,7 @@ function speakerPlate(who) {
         ${role ? `<span class="plate-role mono">${esc(role)}</span>` : ''}
         ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>` : ''}
       </span>
-      <span class="plate-line">${esc(who.action || '')}</span>
+      ${line}
     </span>
   </aside>`;
 }

@@ -792,6 +792,13 @@ button { background: none; border: 0; cursor: pointer; }
   font-family: var(--display); font-size: 16px; line-height: 1.5;
   color: var(--vellum); text-wrap: pretty;
 }
+/* A spoken line is the reason the plate exists, so it carries the weight. */
+.entry-speech { max-width: 68ch; margin: 0 auto 30px; }
+.entry-speech .plate { margin-top: 0; }
+.plate-speaking { border-left-width: 2px; border-left-color: var(--ember-deep); }
+.plate-said { font-size: 17px; line-height: 1.55; quotes: "\201C" "\201D" "\2018" "\2019"; }
+.plate-said::before { content: open-quote; }
+.plate-said::after { content: close-quote; }
 
 /* While you were away — the world's own report, in the feed's world-shift
    register (violet rule) because that is exactly what it is: the world moving
@@ -2507,6 +2514,13 @@ button { background: none; border: 0; cursor: pointer; }
 .mood-warm, .mood-close, .mood-devoted, .mood-sworn { color: var(--ok); border-color: var(--ok); }
 .mood-hostile, .mood-burned, .mood-terrified { color: var(--crimson); border-color: var(--crimson); }
 .mood-wary { color: var(--ember); border-color: var(--ember-deep); }
+.mood-cold, .mood-stranger { color: var(--muted); border-color: var(--line); }
+
+/* The Living rail: a mood chip and what they would DO, not four bars and a
+   number. "State shows as behaviour" — raw scalars stay, but only in power
+   mode, which is what that mode is for. */
+.soul-mood { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.soul-standing { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
 
 /* Engine internals, collapsed by default. The bars/anchors/memory stream
    still exist for anyone who wants them - they are no longer the first

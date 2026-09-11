@@ -99,7 +99,7 @@ Return ONLY JSON:
 {
   "name": "the world or the region, not the franchise",
   "tagline": "one line, under 60 characters",
-  "premise": "120-180 words, second person, addressed to the player arriving",
+  "premise": "120-180 words, second person, addressed to the player arriving. End on the world, not on the player: never ask what they will do, never offer a choice between options, never end with a question. The last line is something happening, not a menu.",
   "arrival": "one sentence: how the player got here",
   "default_protagonist": "who the player is by default",
   "districts": [{"id":"snake_case","name":"The Name","kind":"town|quarter|stronghold|wilds|sacred|industry",
@@ -167,7 +167,7 @@ Return ONLY JSON:
 {
   "name": "the place, not the franchise",
   "tagline": "one line, under 60 characters",
-  "premise": "120-180 words, second person, addressed to the player arriving",
+  "premise": "120-180 words, second person, addressed to the player arriving. End on the world, not on the player: never ask what they will do, never offer a choice between options, never end with a question. The last line is something happening, not a menu.",
   "arrival": "one sentence: how the player got here",
   "default_protagonist": "who the player is by default",
   "locations": [{"id":"snake_case","name":"The Name","kind":"tavern|civic|work|sacred|open|threshold","desc":"25-40 words, sensory, naming what a passerby would only notice by stepping further in - the closest thing this place has to a sub-room, folded in as texture rather than spun into its own id","connects":["other_id"]}],
@@ -536,23 +536,31 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
     So this is the guarantee the prompt cannot give: any researched name that
     did not make it in displaces an invented one. The seat's structure is
     kept (its id, where it stands, who it is near - all of which other records
-    point at) and only the IDENTITY is rewritten, because the seat is a
-    position in the local situation and the real character is now the one
-    standing in it. The invented person's motives go with them: a stallholder's
-    goals and memories are not Tanjiro's, and inheriting them would be a
-    stranger wearing his name, which is the same bug in a better costume."""
+    point at) and the IDENTITY + ANCHORS are rewritten from canon data, so the
+    real character brings their actual voice, constraints, taboos, and goals."""
+    from . import canon_seed
     canon_chars = [c for c in (found.get("characters") or []) if (c.get("name") or "").strip()]
     canon_places = [p for p in (found.get("places") or []) if (p.get("name") or "").strip()]
     if not (canon_chars or canon_places):
         return raw
+
+    # Build a lookup for canon_seed data (fallback for constraints/voice/goals)
+    setting = raw.get("source_prompt", "") or raw.get("name", "")
+    canonical = found.get("canonical_name", "")
+    seed_entry = canon_seed.match(setting, canonical)
+    seed_by_name = {}
+    if seed_entry:
+        for n, note in seed_entry.get("cast", []):
+            seed_by_name[_fold(n)] = {"note": note, "name": n}
+        for era in seed_entry.get("eras", {}).values():
+            for n, note in era.get("cast", []):
+                seed_by_name[_fold(n)] = {"note": note, "name": n}
 
     def seat(records, roster, *, is_npc):
         present = {_fold(r.get("name", "")) for r in records}
         unused = [x for x in roster if _fold(x["name"]) not in present]
         if not unused:
             return
-        # The tail is the filler: a model front-loads whoever it thinks
-        # matters, so the last invented seats are the most generic ones.
         seats = [i for i, r in enumerate(records) if r.get("origin") == "original"]
         for idx, real in zip(reversed(seats), unused):
             rec = records[idx]
@@ -562,14 +570,168 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
             if is_npc:
                 if note:
                     rec["role"] = note[:120]
-                # Written for whoever used to sit here, not for this person.
-                rec.pop("anchors", None)
+                # BUILD proper anchors from research + canon_seed
+                folded = _fold(real["name"])
+                seed_data = seed_by_name.get(folded, {})
+                seed_note = seed_data.get("note", "")
+                # The seat's old persona belonged to whoever used to sit here.
+                # _apply_canon_personas fills the real one in straight after,
+                # from what the model knows rather than from a roster line;
+                # the seed note is kept as the role so there is something true
+                # here even if that pass is offline or does not know them.
+                rec["anchors"] = {"name": real["name"],
+                                  "role": (note or seed_note or "")[:120]}
                 rec.pop("seed_memories", None)
             elif note:
                 rec["desc"] = note[:200]
 
     seat(raw.get("npcs") or [], canon_chars, is_npc=True)
     seat(raw.get("locations") or [], canon_places, is_npc=False)
+    return raw
+
+
+def _seat_imports(raw: dict, imports: list) -> dict:
+    """Guarantee a carried-in character actually exists in the world.
+
+    A crossover was only ever a paragraph of instruction in the build brief,
+    while the HOST's cast was structurally enforced - pinned by
+    pin_protagonists, then seated by _seat_unused_canon if the builder skipped
+    anyone. So the one character the player explicitly named was the only one
+    with no guarantee at all, and "a Demon Slayer world with Charlie" reliably
+    produced a faithful Demon Slayer world with no Charlie in it.
+
+    Imports are now seated the same way the host's own cast is. They keep
+    their OWN source on the record, because Charlie's persona has to be looked
+    up under Hazbin Hotel rather than under the world she has been dropped
+    into - asking Demon Slayer about Charlie Morningstar is how a crossover
+    character quietly becomes a local."""
+    wanted = [i for i in (imports or []) if (i.get("character") or "").strip()]
+    if not wanted:
+        return raw
+    npcs = raw.get("npcs") or []
+    present = {_fold(n.get("name", "")) for n in npcs}
+    seats = [i for i, n in enumerate(npcs) if n.get("origin") == "original"]
+
+    for imp in wanted:
+        name = imp["character"].strip()
+        if _fold(name) in present:
+            # The builder did include them - just make sure they are not
+            # filed as somebody this world invented.
+            for n in npcs:
+                if _fold(n.get("name", "")) == _fold(name):
+                    n["origin"] = "canon"
+                    n["from_source"] = (imp.get("from") or "").strip()
+            continue
+        if not seats:
+            break
+        rec = npcs[seats.pop()]
+        rec["name"] = name
+        rec["origin"] = "canon"
+        rec["from_source"] = (imp.get("from") or "").strip()
+        rec["anchors"] = {"name": name, "role": rec.get("role", "")}
+        rec.pop("seed_memories", None)
+        present.add(_fold(name))
+    return raw
+
+
+CANON_PERSONA_SYSTEM = """You are a canon consultant. You are given real characters from a
+published work, by name. For each, write the card a narrator needs in order to
+voice them correctly.
+
+Write what is TRUE OF THEM IN THE SOURCE, not a plot summary:
+  role        - what they are in this world, in a few words.
+  voice       - how they ACTUALLY talk: register, rhythm, verbal tics, what they
+                call people, honorifics, catchphrases, whether they are loud or
+                clipped or formal. Specific enough that a line written to it
+                would be recognised by someone who knows the source.
+  constraints - hard facts a narrator must never contradict. What they ARE, not
+                merely who: species, condition, rank, what they always wear or
+                carry, what they can and cannot do. If the character does not
+                speak, say so plainly. If they are not human, say so plainly.
+  goals       - what they are actually after.
+  taboos      - what they would never do, however hard a scene pushes.
+  memories    - two or three things they carry, written in their own first person.
+
+Be concrete and specific to the individual. "Speaks plainly", "is an ordinary
+person" and "wants to survive" are failures - they are what this exists to
+replace. If you genuinely do not know a character, omit them entirely rather
+than inventing a generic card.
+
+JSON only:
+{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[]}]}
+"""
+
+
+def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
+    """Give every canon character the persona the MODEL already knows.
+
+    This is the fix for the largest quality gap against a plain chat model
+    running the same franchise. The pipeline used to work like this: research
+    reduced a character to one roster line ("Nezuko Kamado: Tanjiro's sister,
+    turned demon"), the world builder invented a persona from that line, and
+    memory.anchor_block then handed the invention to the narrator under the
+    heading "CHARACTERS PRESENT (obey these exactly)". The narrator obeyed. So
+    a build routinely produced, and the narrator was required to honour:
+
+        Nezuko Kamado - a quiet village girl
+          VOICE: Soft-spoken and kind.
+          CONSTRAINTS: Is an ordinary mortal person.
+
+    - for a character who is mute, is a demon, and is carried in a box. The
+    anti-drift machinery was working perfectly; it was pinning the wrong
+    person. Every layer was faithfully protecting a thin invention while the
+    model's own correct knowledge of the character sat unused one call away.
+
+    So: ask for it. One call per build, covering every character tagged canon -
+    both the ones the builder produced itself and the ones seating put back.
+    A model that does not know a character omits it and that character keeps
+    whatever the builder wrote, which is exactly the old behaviour. Offline,
+    the stub returns nothing and nothing changes."""
+    canon = [n for n in (raw.get("npcs") or [])
+             if n.get("origin") == "canon" and (n.get("name") or "").strip()]
+    if not canon or not (setting or "").strip():
+        return raw
+
+    # A carried-in character is asked about under THEIR OWN source. Asking
+    # Demon Slayer who Charlie Morningstar is gets you a plausible Demon Slayer
+    # character called Charlie, which is precisely how a crossover character
+    # stops being herself.
+    groups: dict = {}
+    for n in canon[:24]:
+        groups.setdefault((n.get("from_source") or "").strip() or setting, []).append(n["name"])
+    roster = "\n\n".join(
+        f"SOURCE: {src}\nCHARACTERS:\n" + "\n".join(f"- {n}" for n in names)
+        for src, names in groups.items())
+    ask = (f"{roster}\n\nWrite each card, using the source each character is listed "
+           f"under. JSON only.")
+    out = _resilient("narrator", CANON_PERSONA_SYSTEM, ask, user_id=user_id,
+                     max_tokens=4000, temperature=0.4,
+                     stub=lambda: {"characters": []})
+
+    def _clean(vals, cap):
+        return [str(v).strip()[:cap] for v in (vals or []) if str(v).strip()]
+
+    by = {_fold(c.get("name", "")): c for c in (out.get("characters") or [])
+          if isinstance(c, dict)}
+    for npc in canon:
+        card = by.get(_fold(npc["name"]))
+        if not card:
+            continue
+        anchors = dict(npc.get("anchors") or {})
+        if str(card.get("voice") or "").strip():
+            anchors["voice"] = str(card["voice"]).strip()[:220]
+        for key in ("constraints", "goals", "taboos"):
+            vals = _clean(card.get(key), 180)[:4]
+            if vals:
+                anchors[key] = vals
+        anchors["name"] = npc["name"]
+        if str(card.get("role") or "").strip():
+            npc["role"] = str(card["role"]).strip()[:120]
+        anchors["role"] = npc.get("role") or anchors.get("role") or "villager"
+        npc["anchors"] = anchors
+        mem = _clean(card.get("memories"), 240)[:4]
+        if mem:
+            npc["seed_memories"] = mem
     return raw
 
 
@@ -1002,6 +1164,19 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         # Tagging alone left the real cast half-missing and correctly
         # labelled. Seat whoever research found but the builder skipped.
         raw = _seat_unused_canon(raw, found)
+
+    # The character the player actually named gets the same guarantee the
+    # host's own cast has always had.
+    raw = _seat_imports(raw, parsed.get("imports") or [])
+
+    # Then give every canon character - the ones the builder wrote as well as
+    # the ones seating put back - the persona the model actually knows. Until
+    # this ran, a build could hand the narrator "Nezuko Kamado / VOICE:
+    # soft-spoken and kind / CONSTRAINTS: is an ordinary mortal person" under
+    # the heading "obey these exactly", and the narrator would obey.
+    if canon:
+        raw = _apply_canon_personas(
+            raw, found.get("canonical_name") or setting, user_id=user_id)
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)
