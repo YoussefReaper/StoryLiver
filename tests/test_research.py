@@ -308,6 +308,60 @@ def test_unused_canon_is_seated_not_merely_labelled():
        "the same holds for places")
 
 
+def test_the_character_the_player_named_actually_turns_up():
+    section("canon fidelity — a crossover import is guaranteed a seat")
+    # REPORTED: "I started a Demon Slayer world with Charlie and Charlie wasn't
+    # even there." The host's cast was structurally enforced - pinned, then
+    # seated if the builder skipped anyone - while the carried-in character was
+    # a paragraph of encouragement in the build brief and nothing more. The one
+    # character the player explicitly asked for had the weakest guarantee in
+    # the pipeline.
+    imports = [{"character": "Charlie Morningstar", "from": "Hazbin Hotel"}]
+
+    raw = {"npcs": [{"id": f"n{i}", "name": f"Invented {i}", "role": "villager",
+                     "origin": "original"} for i in range(4)]}
+    out = worldforge._seat_imports(raw, imports)
+    names = [n["name"] for n in out["npcs"]]
+    ok("Charlie Morningstar" in names,
+       "the character the player named is in the world even when the builder skipped her")
+    charlie = next(n for n in out["npcs"] if n["name"] == "Charlie Morningstar")
+    ok(charlie["origin"] == "canon",
+       "and is not filed as somebody this world invented")
+    ok(charlie["from_source"] == "Hazbin Hotel",
+       "her own source travels with her, so her persona is looked up under Hazbin Hotel "
+       "rather than under the world she was dropped into")
+
+    # Already built by the builder: kept, but re-filed as canon rather than local.
+    raw2 = {"npcs": [{"id": "n1", "name": "Charlie Morningstar", "role": "an innkeeper",
+                      "origin": "original"}]}
+    out2 = worldforge._seat_imports(raw2, imports)
+    ok(len(out2["npcs"]) == 1 and out2["npcs"][0]["origin"] == "canon",
+       "a character the builder did include is not seated twice, just re-filed")
+
+    # And the persona call groups by source rather than asking one franchise
+    # about another franchise's character.
+    asked = {}
+
+    def spy(role, system, user, **kw):
+        asked["user"] = user
+        return {"characters": []}
+
+    real, worldforge._resilient = worldforge._resilient, spy
+    try:
+        worldforge._apply_canon_personas(
+            {"npcs": [{"id": "n1", "name": "Tanjiro Kamado", "origin": "canon"},
+                      {"id": "n2", "name": "Charlie Morningstar", "origin": "canon",
+                       "from_source": "Hazbin Hotel"}]},
+            "Demon Slayer", user_id="u_test")
+    finally:
+        worldforge._resilient = real
+    prompt = asked["user"]
+    ok("SOURCE: Hazbin Hotel" in prompt and "SOURCE: Demon Slayer" in prompt,
+       "each character is asked about under their own source")
+    ok(prompt.index("Hazbin Hotel") < prompt.index("Charlie Morningstar"),
+       "Charlie is listed under Hazbin Hotel, not under the host world")
+
+
 def test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal():
     section("canon fidelity — the persona the narrator is told to obey")
     # THE REPORTED BUG, reproduced at the layer that caused it. Research
@@ -633,6 +687,7 @@ def _all():
             test_canon_is_dealt_across_districts_not_raced_for,
             test_unused_canon_is_seated_not_merely_labelled,
             test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
+            test_the_character_the_player_named_actually_turns_up,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
             test_canon_seed_fallback, test_era_selection_swaps_the_whole_cast,

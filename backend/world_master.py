@@ -36,7 +36,7 @@ Reject ONLY when the action contradicts a rule, contradicts an established fact 
 Return ONLY a JSON object:
 {
   "valid": true|false,
-  "reason": "one sentence, addressed to the player, explaining why it cannot happen (empty when valid)",
+  "reason": "one sentence, addressed to the player, in the WORLD'S voice - what they would see or be told, never how the system knows it. Say 'She is not here' or 'The door is barred', never 'X is not present in the current state', 'not in scene', 'invalid target' or anything else that names state, turns, entities or fields. Empty when valid.",
   "rule_ref": "rule id you are citing, or null",
   "consequence": "one factual sentence of what actually results - no prose, no adjectives",
   "importance": 1-5,

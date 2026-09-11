@@ -263,8 +263,31 @@ def test_a_built_world_is_not_given_a_database_id_it_does_not_have():
        "and the legacy path it diverged from still reads the same way")
 
 
+def test_the_engine_never_explains_itself_to_the_player():
+    section("voice — a refusal speaks in the world's voice, never the system's")
+    # OBSERVED LIVE. Asked to turn to a character who was not in the scene, the
+    # feed printed a good in-world refusal and then, underneath it, the World
+    # Master's own reason field:
+    #
+    #     "Charlie is not present in the current state."
+    #
+    # The World Master is a model handed a JSON state, and it sometimes answers
+    # in that register. Its prompt now forbids it, but a prompt is a request,
+    # so the client refuses to render a reason that still reads like one.
+    ok("readsLikeMachine" in JS,
+       "the client has a gate for reasons that read like state rather than speech")
+    ok("current state" in JS[JS.find("MACHINE_TELLS"):JS.find("MACHINE_TELLS") + 400],
+       "and the exact phrasing that shipped is one of the things it catches")
+
+    guard = JS[JS.find("case 'refusal'"):]
+    guard = guard[:guard.find("case '")] if guard.find("case '") > 0 else guard[:900]
+    ok("readsLikeMachine(meta.reason)" in guard,
+       "the refusal entry runs its reason through that gate before printing it")
+
+
 def _all():
-    return (test_a_built_world_is_not_given_a_database_id_it_does_not_have,
+    return (test_the_engine_never_explains_itself_to_the_player,
+            test_a_built_world_is_not_given_a_database_id_it_does_not_have,
             test_hidden_actually_hides, test_scroll_containers_can_shrink,
             test_mobile_overrides_come_after_base_rules,
             test_responsive_panels_stay_reachable, test_assets_are_cache_busted,

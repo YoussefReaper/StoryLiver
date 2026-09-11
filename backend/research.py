@@ -1129,6 +1129,21 @@ def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
         "4. Do NOT copy any sentence from the research text - write your own descriptions "
         "of these real people and places."
     )
+    budget.append(
+        "5. Keep the source's PERIOD and its technology. Whatever era, dress, lighting, "
+        "weapons and transport the source uses, this world uses. A detail from the wrong "
+        "century - neon over a Taisho street, a phone in a sword age - is as wrong as a "
+        "made-up name, and a reader notices it faster."
+    )
+    budget.append(
+        "6. The real places above are the setting's GEOGRAPHY, not this location's "
+        "contents. Build somewhere a person can actually walk around in one evening: "
+        "streets, rooms, thresholds, the buildings that belong to each other. Famous "
+        "landmarks from across the whole source do not all sit inside one town, and "
+        "listing them as if they did reads as a tour of the franchise rather than a "
+        "place to live in. Use the ones that genuinely belong here; the rest are "
+        "elsewhere, and can be travelled to."
+    )
     lines.append("\n".join(budget))
     return "\n\n".join(lines)
 
