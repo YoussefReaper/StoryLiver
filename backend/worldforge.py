@@ -666,6 +666,12 @@ Write what is TRUE OF THEM IN THE SOURCE, not a plot summary:
   goals       - what they are actually after.
   taboos      - what they would never do, however hard a scene pushes.
   memories    - two or three things they carry, written in their own first person.
+  public      - true if a stranger could plausibly run into them in an ordinary
+                public place at the start of a story. FALSE for anyone who hides
+                what they are, rules from a distance, is imprisoned, sealed,
+                bedridden, in another country, or would never be standing in a
+                village square where anybody could walk up and talk to them.
+                The setting's hidden antagonist is almost always false.
 
 Be concrete and specific to the individual. "Speaks plainly", "is an ordinary
 person" and "wants to survive" are failures - they are what this exists to
@@ -673,7 +679,7 @@ replace. If you genuinely do not know a character, omit them entirely rather
 than inventing a generic card.
 
 JSON only:
-{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[]}]}
+{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"public":true}]}
 """
 
 
@@ -975,6 +981,15 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         mem = _clean(card.get("memories"), 240)[:4]
         if mem:
             npc["seed_memories"] = mem
+        # Who should NOT be standing in the opening square. A live build put
+        # Muzan Kibutsuji - a character whose entire existence is concealment -
+        # in a public town square on turn one, because the rule that guarantees
+        # a populated first scene fills from the end of the cast list and the
+        # arch-villain happened to be last. It is not a thing the fill can
+        # reason about, so the persona pass, which knows who these people are,
+        # answers it instead.
+        if card.get("public") is False:
+            npc["hidden_start"] = True
     return raw
 
 

@@ -713,6 +713,27 @@ def test_the_opening_scene_has_people_in_it():
     ok(all(n["schedule"]["morning"] == w["start_location"] for n in here),
        "and they are actually there on the opening phase, not scheduled elsewhere")
 
+    # OBSERVED LIVE: a Demon Slayer build opened with Muzan Kibutsuji standing
+    # in the town square on turn one - a character whose entire existence is
+    # concealment - purely because this fill takes from the end of the cast
+    # list and the arch-villain happened to be last. Populating a first scene
+    # must never cost the setting its biggest secret.
+    hidden = {"name": "Scatterville", "start_location": "p0", "locations": locs,
+              "npcs": [{"id": "n0", "name": "A Baker", "start_location": "p0"}]
+                      + [{"id": f"h{i}", "name": f"Local {i}", "start_location": f"p{i+1}"}
+                         for i in range(3)]
+                      + [{"id": "villain", "name": "The Hidden One",
+                          "start_location": "p5", "hidden_start": True}],
+              "rules": raw["rules"], "fated_events": raw["fated_events"]}
+    hw = worldkit.normalise(hidden, strict=True)
+    opening = [n["name"] for n in hw["npcs"]
+               if n["start_location"] == hw["start_location"]]
+    ok(len(opening) >= worldkit.OPENING_CAST,
+       "the opening scene is still filled")
+    ok("The Hidden One" not in opening,
+       "but never with somebody a stranger could not walk up to — the setting's "
+       "hidden antagonist does not loiter in the square to pad turn one")
+
     # The people the builder DID place deliberately keep their homes.
     moved = [n["id"] for n in w["npcs"] if n["start_location"] == w["start_location"]]
     ok("n0" in moved, "whoever the builder put at the opening place is still there")

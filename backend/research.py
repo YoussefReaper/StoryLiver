@@ -530,6 +530,16 @@ def find_wiki(setting: str, wiki_title: str, budget: _Budget) -> str | None:
 CATEGORY_SETS = {
     "characters": ("Category:Characters", "Category:Male Characters",
                    "Category:Female Characters"),
+    # SECOND, not last. This decides the world's CHAPTERS - the running order a
+    # canon story is told in - and it used to sit at the bottom of this dict,
+    # behind places, factions and powers, with the loop below breaking out the
+    # moment the request budget ran low. It reliably never got fetched: a live
+    # Demon Slayer build came back with no arcs at all and fell back to a
+    # single chapter named after the town, which is the whole chapter feature
+    # silently absent. Arcs are also the cheapest bucket here - no per-entity
+    # describe() pass - so moving them up costs almost nothing.
+    "arcs": ("Category:Arcs", "Category:Story Arcs", "Category:Sagas",
+             "Category:Seasons", "Category:Events"),
     "places": ("Category:Locations", "Category:Places", "Category:Locations by type"),
     "factions": ("Category:Organizations", "Category:Factions", "Category:Groups"),
     # THE POWER SYSTEM is what actually limits a canon world. Power-scaling
@@ -539,10 +549,6 @@ CATEGORY_SETS = {
     # protagonist whose power is undefined relative to the cast.
     "powers": ("Category:Abilities", "Category:Powers", "Category:Techniques",
                "Category:Magic", "Category:Combat Styles", "Category:Cursed Techniques"),
-    # THE TIMELINE decides WHEN you are, which decides who is alive, what has
-    # happened, and what the player is allowed to already know.
-    "arcs": ("Category:Arcs", "Category:Story Arcs", "Category:Sagas",
-             "Category:Seasons", "Category:Events"),
 }
 
 # How many of each bucket to keep. Characters carry the world; a power list of

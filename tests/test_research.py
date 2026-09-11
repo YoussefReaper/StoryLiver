@@ -348,6 +348,33 @@ def test_the_narrator_stays_inside_the_story():
        "is a request and this one has already been ignored once")
 
 
+def test_the_chapter_list_is_not_starved_by_the_request_budget():
+    section("chapters — arcs are fetched before the budget runs out")
+    # OBSERVED LIVE. A Demon Slayer build came back with no arcs at all, so
+    # chapters fell back to a single chapter named after the town - the whole
+    # chapter feature silently absent on the setting it was built for.
+    #
+    # Not a lookup failure: `arcs` was simply LAST in CATEGORY_SETS, behind
+    # characters, places, factions and powers, and the fetch loop breaks out as
+    # soon as the per-dossier request budget runs low. It reliably never got
+    # there. Raising the character and place keep-counts earlier made it worse,
+    # because ranking more names costs more requests.
+    order = list(research.CATEGORY_SETS)
+    ok(order[0] == "characters",
+       "the cast is still fetched first — it is what a world is made of")
+    ok(order.index("arcs") == 1,
+       f"and the arc list is second, not last, because the world's whole chapter "
+       f"structure depends on it ({order})")
+    ok(order.index("arcs") < order.index("factions")
+       and order.index("arcs") < order.index("powers"),
+       "ahead of the buckets a world can do without")
+
+    # It is also the cheapest bucket: no per-entity describe() pass, which only
+    # characters get. Moving it up costs almost nothing.
+    ok("arcs" in research.CATEGORY_SETS and research.CATEGORY_SETS["arcs"],
+       "and it still looks in the categories a wiki actually files arcs under")
+
+
 def test_an_empty_room_is_told_it_is_empty():
     section("immersion — the narrator cannot invent people into an empty room")
     # OBSERVED LIVE. The engine reported "0 here" and the passage had Nezuko
@@ -774,6 +801,7 @@ def _all():
             test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
             test_the_character_the_player_named_actually_turns_up,
             test_an_empty_room_is_told_it_is_empty,
+            test_the_chapter_list_is_not_starved_by_the_request_budget,
             test_the_narrator_stays_inside_the_story,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,
