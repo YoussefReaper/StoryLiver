@@ -129,7 +129,16 @@ def check(ctx):
     # actually matters - is untouched by them and still passes at 4 players.
     # Measured 1753 immediately after the change; set with real headroom rather
     # than a handful of tokens above one seeded run.
-    solo_ceiling = 1900
+    # Raised a third time, same reasoning, re-measured the same way. SYSTEM
+    # grew again after a played turn produced three register failures that no
+    # existing rule caught - the narrator writing the player's own dialogue,
+    # dropping second person in its closing line, and stepping outside the
+    # story to say what it all meant. The rules that forbid those are fixed
+    # per-call costs paid once per narration whatever the table size, so the
+    # ratio check above - the guarantee that actually matters, and the reason
+    # this test exists - is untouched and still passes at 4 players. Measured
+    # 2023 immediately after the change.
+    solo_ceiling = 2150
     ok(b <= solo_ceiling,
        f"a 4-player broadcast prompt is {b:.0f} tok, under the {solo_ceiling} single-player ceiling")
 
