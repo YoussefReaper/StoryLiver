@@ -392,6 +392,22 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
     # wrong: a character built FOR the Butterfly Mansion, on the turn the
     # player walked into it, was immediately dragged back to the town square
     # to pad an opening scene that had been populated hours ago.
+    # Somebody who cannot be walked up to does not START where the player is
+    # standing. Skipping them in the fill below was not enough: a live build
+    # put Muzan Kibutsuji in the Market Square because the BUILDER placed him
+    # there, and nothing moved him. Concealment is the character; a world that
+    # opens with him at arm's length has given away its own ending in the first
+    # sentence.
+    elsewhere = [l["id"] for l in locations if l["id"] != start_location]
+    if elsewhere:
+        for i, npc in enumerate(npcs):
+            if npc.get("hidden_start") and npc["start_location"] == start_location:
+                moved = elsewhere[i % len(elsewhere)]
+                npc["start_location"] = moved
+                for phase in PHASES:
+                    if npc["schedule"].get(phase) == start_location:
+                        npc["schedule"][phase] = moved
+
     here = [n for n in npcs if n["start_location"] == start_location]
     if len(here) < OPENING_CAST and not raw.get("opening_cast_set"):
         # Pull from whoever is furthest down the list - the builder front-loads

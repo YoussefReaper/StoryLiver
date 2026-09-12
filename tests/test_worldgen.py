@@ -507,6 +507,21 @@ def test_the_player_is_somebody_before_turn_one():
     ok("Invent at most one or two ordinary residents" in b,
        "and the player decides how much of the town is invented around the real cast")
 
+    # OBSERVED LIVE: the world was built around "Yuki Sarashina, a courier" and
+    # then narrated to "the traveller". Session Zero's name reached the build
+    # brief and stopped there, while create_playthrough fell back to the
+    # world's default_protagonist. Being called by your own name is most of
+    # what separates playing a character from steering a camera.
+    db.init()
+    built = worldforge.bootstrap("a drowned cathedral city", user_id="wg",
+                                 answers={"name": "Yuki Sarashina, a courier"})
+    ok(built.get("default_protagonist", "").startswith("Yuki Sarashina"),
+       "the name the player gave themselves becomes who they are in the world")
+    pt_id = engine.create_playthrough("wg", "emberfall")
+    ok(engine._pt(pt_id)["protagonist"],
+       "and a playthrough started without one still falls back to the world's, "
+       "rather than to nothing")
+
     # A stranger is the opposite instruction, not the absence of one.
     stranger = sessionzero.brief({"known": "stranger"}, d)
     ok("No character starts with a relationship to them" in stranger,
@@ -733,6 +748,26 @@ def test_the_opening_scene_has_people_in_it():
     ok("The Hidden One" not in opening,
        "but never with somebody a stranger could not walk up to — the setting's "
        "hidden antagonist does not loiter in the square to pad turn one")
+
+    # And skipping them in the fill is not enough. A live build put Muzan in
+    # the Market Square because the BUILDER placed him there, and nothing moved
+    # him: the fill only controls who it drags IN. Concealment is the whole
+    # character, and a world that opens with him at arm's length has given away
+    # its own ending in the first sentence.
+    placed = {"name": "Scatterville", "start_location": "p0", "locations": locs,
+              "npcs": [{"id": f"v{i}", "name": f"Villager {i}", "start_location": "p0"}
+                       for i in range(3)]
+                      + [{"id": "villain", "name": "The Hidden One",
+                          "start_location": "p0", "hidden_start": True}],
+              "rules": raw["rules"], "fated_events": raw["fated_events"]}
+    pw = worldkit.normalise(placed, strict=True)
+    villain = next(n for n in pw["npcs"] if n["name"] == "The Hidden One")
+    ok(villain["start_location"] != pw["start_location"],
+       "a hidden character the builder put in the opening square is moved out of it")
+    ok(villain["schedule"]["morning"] != pw["start_location"],
+       "and is not scheduled straight back in on the first phase")
+    ok(len([n for n in pw["npcs"] if n["start_location"] == pw["start_location"]]) >= 3,
+       "while the opening scene still has its cast")
 
     # The people the builder DID place deliberately keep their homes.
     moved = [n["id"] for n in w["npcs"] if n["start_location"] == w["start_location"]]
