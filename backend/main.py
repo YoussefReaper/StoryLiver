@@ -2180,6 +2180,10 @@ def forge_research(setting: str = Query(min_length=2, max_length=120),
         "ungrounded": [name for name, ent in (d.get("entities") or {}).items()
                        if not ent.get("found")],
         "canonical_name": d["canonical_name"], "wiki": d["wiki"],
+        # Why no wiki, when there is none. An empty string told us nothing for
+        # weeks while two fixes went in against causes that were not happening.
+        "wiki_note": d.get("wiki_note", ""),
+        "arcs": [a["name"] for a in (d.get("arcs") or [])[:12]],
         "summary": d["summary"][:600],
         "characters": [c["name"] for c in d["characters"][:14]],
         "places": [p["name"] for p in d["places"][:10]],

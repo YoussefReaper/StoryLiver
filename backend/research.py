@@ -508,22 +508,41 @@ def _wiki_is_about(sitename: str, setting: str, canonical: str, slug: str = "") 
     return False
 
 
-def find_wiki(setting: str, wiki_title: str, budget: _Budget) -> str | None:
+def find_wiki(setting: str, wiki_title: str, budget: _Budget,
+              *, trace: list | None = None) -> str | None:
     """Probe candidate subdomains, and only accept one that is demonstrably
-    about this setting."""
-    for slug in _slug_candidates(setting, wiki_title):
+    about this setting.
+
+    `trace` collects WHY each candidate was rejected. Without it this function
+    returns None for six different reasons - unreachable, blocked, 403, wrong
+    sitename, budget gone, no candidates - and reports all of them as an empty
+    string. A production dossier came back `wiki: ""` for weeks; the wiki was
+    answering in under 300ms the whole time, and two separate fixes went in
+    against causes that were never happening because there was nothing to read.
+    A failure that cannot say why is a failure that gets guessed at."""
+    cands = _slug_candidates(setting, wiki_title)
+    if trace is not None and not cands:
+        trace.append("no subdomain candidates for that name")
+    for slug in cands:
         if budget.left <= 5:
+            if trace is not None:
+                trace.append(f"budget exhausted before trying {slug}")
             break
         host = f"{slug}.fandom.com"
         try:
             # Probes are cheap and expected to fail, so no retry budget.
             data = _api(host, {"action": "query", "meta": "siteinfo",
                                "siprop": "general"}, budget, quick=True)
-        except ResearchError:
+        except ResearchError as e:
+            if trace is not None:
+                trace.append(f"{host}: {e}")
             continue
         sitename = ((data.get("query") or {}).get("general") or {}).get("sitename", "")
         if sitename and _wiki_is_about(sitename, setting, wiki_title, slug):
             return host
+        if trace is not None:
+            trace.append(f"{host}: answered as {sitename!r}, which is not this setting"
+                         if sitename else f"{host}: no sitename in reply")
     return None
 
 
@@ -972,7 +991,13 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
         # starves it.
         curated = characters_from_wikipedia(setting, out["canonical_name"], budget)
 
-        host = find_wiki(setting, out["canonical_name"], budget) if depth == "full" else None
+        wiki_trace: list = []
+        host = (find_wiki(setting, out["canonical_name"], budget, trace=wiki_trace)
+                if depth == "full" else None)
+        # Recorded on the dossier whether or not it worked, because "no wiki"
+        # with no reason attached is what made this undiagnosable.
+        if not host:
+            out["wiki_note"] = "; ".join(wiki_trace)[:400] or "no fandom wiki probed"
         if host:
             out["wiki"] = host
             out["sources"].append({"title": f"{out['canonical_name']} Wiki",
