@@ -215,9 +215,19 @@ def fate_block(world, turn: int) -> str:
 def _stub(action, state):
     r = llm.rng(state["turn"], action)
     focus = state["present"][:2]
+    # The player writes in the first person and the consequence is narrated in
+    # the second, so gluing them together produced "You I take Charlie's hand
+    # and look around" - handed to the narrator under "WHAT ACTUALLY RESULTS
+    # (narrate this, do not change it)". Only reachable when the World Master
+    # call fails, which is exactly when nobody is reading the prompt closely.
+    did = re.sub(r"^\s*(?:i|i'll|i'm|i've|i'd)\b[\s,]*", "", action.strip(),
+                 flags=re.I)
+    did = did.strip().rstrip(".")
+    if not did:
+        did = action.strip().rstrip(".")
     return {
         "valid": True, "reason": "", "rule_ref": None,
-        "consequence": f"You {action.strip().rstrip('.')[:110]}. It lands the way such things land here.",
+        "consequence": f"You {did[:110]}. It lands the way such things land here.",
         "importance": r.choice([2, 3, 3, 4]),
         "relationship_deltas": ([{"npc": focus[0], "affinity": r.choice([-4, 0, 3, 5]),
                                   "trust": r.choice([-3, 0, 2, 4]), "fear": 0, "obligation": 0,

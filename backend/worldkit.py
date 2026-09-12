@@ -315,6 +315,12 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             # a distance. Whitelisted here or it would be dropped, and the
             # opening-cast fill would put them back in the square.
             "hidden_start": bool(npc.get("hidden_start")),
+            # Somebody the player arrived WITH - "me and my girlfriend Charlie".
+            # Whitelisted or it is dropped here, which is what happened: the
+            # premise parser worked out she was a companion, worldforge set the
+            # flag, normalise threw it away, and nothing downstream could ever
+            # act on it. She was left behind in chapter one.
+            "companion": bool(npc.get("companion")),
             # The five original fields, plus the persona card when the world
             # carries one. memory.anchor_block switches to the full identity
             # block the moment any card field is present, so a world authored

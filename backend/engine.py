@@ -199,6 +199,10 @@ def begin_next_chapter(pt_id: str, *, user_id: str = "") -> dict:
     grown = _expand_on_arrival(pt, worldkit.load(fresh.data), gate,
                                user_id=user_id or pt["user_id"])
     atlas.discover(pt_id, gate, pt["current_turn"], reason="a new chapter")
+    # Travelling on to the next chapter is the longest journey in the game, and
+    # the one a companion must obviously make too. Played live, Charlie stayed
+    # in the ward the story opened in while the player went on alone.
+    memory.move_companions(pt_id, grown, gate, pt["current_turn"])
     return {"moved": True, "aftermath": False, "chapter": after,
             "location": gate, "title": title,
             "places": len(grown.locations), "people": len(grown.npcs)}
@@ -727,6 +731,9 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                 # actually goes there. Never on the way out, never speculative,
                 # and never more than once per place.
                 world = _expand_on_arrival(pt, world, new_loc, user_id=user_id)
+                # Whoever came with the player comes with them. Without this a
+                # companion is left standing in the ward the story started in.
+                memory.move_companions(pt_id, world, new_loc, turn)
             else:
                 new_loc = pt["current_location"]
         # last_seen_at moves with every turn, not just with opening the story:

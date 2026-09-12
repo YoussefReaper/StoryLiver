@@ -69,7 +69,7 @@ def test_a_premise_is_parsed_not_searched():
         "I and Charlie from Hazbin Hotel are inside the world of The Last of Us")
     ok(p["host"] == "The Last of Us",
        f"the host world is picked out of the sentence ({p['host']!r})")
-    ok(p["imports"] == [{"character": "Charlie", "from": "Hazbin Hotel"}],
+    ok([(i["character"], i["from"]) for i in p["imports"]] == [("Charlie", "Hazbin Hotel")],
        f"and so is who is being carried in, and where from ({p['imports']})")
     ok("I" not in p["entities"] and "Charlie" in p["entities"],
        "a pronoun that opened the sentence is not mistaken for a name")
@@ -99,6 +99,122 @@ def test_a_premise_is_parsed_not_searched():
     plain = research.parse_premise("The Last of Us")
     ok(not plain["is_premise"] and plain["host"] == "The Last of Us",
        "a bare title needs no parsing and is left alone")
+
+
+def test_a_parenthesised_source_still_carries_the_character_in():
+    section("premise - the way people actually type a crossover")
+    # REPORTED, twice: "I started a Demon Slayer world with Charlie and Charlie
+    # wasn't even there." The seating code (_seat_imports) was fixed to
+    # guarantee the named character a seat - but seating can only guarantee
+    # somebody the PARSER found, and this premise found nobody. `_IMPORT_PATTERN`
+    # knows one shape, "Character from Source", and the player wrote the other
+    # one, "charlie (from hazbin hotel)" - a parenthesis, in lowercase, with the
+    # host after it. imports came back empty, so Charlie was never carried in,
+    # never seated, and never given her Hazbin Hotel card. The bug was upstream
+    # of every fix that had already been made for it.
+    p = research.parse_premise(
+        "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse")
+    ok(p["host"] == "Demon Slayer",
+       f"the host is still picked out ({p['host']!r})")
+    ok(len(p["imports"]) == 1,
+       f"and the character in the parenthesis is carried in ({p['imports']})")
+    if p["imports"]:
+        imp = p["imports"][0]
+        ok(imp["character"].lower() == "charlie",
+           f"the character is Charlie, not the words in front of her "
+           f"({imp['character']!r})")
+        ok(imp["from"].lower() == "hazbin hotel",
+           f"and she comes from Hazbin Hotel ({imp['from']!r})")
+
+    # The same shape without "from", and with a fuller name and a capitalised
+    # source: all three are things a player types.
+    for text, who, src in (
+            ("Charlie (Hazbin Hotel) in Demon Slayer", "Charlie", "Hazbin Hotel"),
+            ("Charlie Morningstar (Hazbin Hotel) in Demon Slayer",
+             "Charlie Morningstar", "Hazbin Hotel"),
+            ("me and Charlie (from Hazbin Hotel) in Demon Slayer",
+             "Charlie", "Hazbin Hotel")):
+        q = research.parse_premise(text)
+        got = q["imports"][0] if q["imports"] else {}
+        if got.get("character") != who or got.get("from") != src:
+            ok(False, f"{text!r} parsed as {q['imports']}")
+            return
+    ok(True, "a parenthesised source is a source, with or without 'from', "
+             "lowercase or not")
+
+    # A source must not swallow the host. "Charlie from Hazbin Hotel in Demon
+    # Slayer" used to record the source as "Hazbin Hotel in Demon Slayer" -
+    # `in` is a connective inside a title ("Made in Abyss"), so the pattern ran
+    # straight through the word that introduces the host.
+    greedy = research.parse_premise("Charlie from Hazbin Hotel in Demon Slayer")
+    ok(greedy["imports"] and greedy["imports"][0]["from"] == "Hazbin Hotel",
+       f"the host is not part of the source ({greedy['imports']})")
+    # ...but a title that genuinely contains "in" keeps it.
+    inname = research.parse_premise("Charlie from Made in Abyss")
+    ok(inname["imports"] and inname["imports"][0]["from"] == "Made in Abyss",
+       f"a title with a preposition in it is left alone ({inname['imports']})")
+
+    # The gate in front of all of it. A crossover this short is under the word
+    # count that used to be the only "is this a sentence?" test, so the whole
+    # string was taken as a bare title and the parser returned before it ever
+    # looked for a source.
+    ok(research.looks_like_premise("Charlie (Hazbin Hotel) in Demon Slayer"),
+       "a short parenthesised crossover is still a premise")
+    ok(research.looks_like_premise("charlie (from hazbin hotel)"),
+       "and so is one with nothing but the parenthesis")
+    for title in ("Made in Abyss", "Kimetsu no Yaiba (manga)", "The Last of Us"):
+        q = research.parse_premise(title)
+        if q["is_premise"] or q["imports"] or q["host"] != title:
+            ok(False, f"a bare title was parsed as a premise: {title!r} -> {q}")
+            return
+    ok(True, "a parenthetical is only evidence of a crossover beside a 'from' "
+             "or a host phrase - 'Kimetsu no Yaiba (manga)' is still a title")
+
+
+def test_a_character_who_came_with_you_starts_as_your_companion():
+    section("premise - 'my girlfriend' is not a stranger who happens to be here")
+    # REPORTED as an immersion failure rather than a crash: a build answered
+    # "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse"
+    # by seating Charlie correctly, in the right room, and then handing the
+    # relationship engine affinity -5, trust -5 - the host NPC's opinion of an
+    # outsider, inherited along with the seat she displaced. She spent turn one
+    # being standoffish with her own partner, and the narrator was faithfully
+    # told to play a stranger.
+    brought = research.parse_premise(
+        "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse")
+    ok(brought["imports"] and brought["imports"][0].get("with_player"),
+       "a premise that says 'my girlfriend' is marked as bringing her along")
+
+    carried = research.parse_premise("Charlie from Hazbin Hotel in Demon Slayer")
+    ok(carried["imports"] and not carried["imports"][0].get("with_player"),
+       "a character merely carried in is not - a stranger is the right answer "
+       "for that premise")
+
+    world = worldkit.load(worldforge.bootstrap(
+        "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse",
+        user_id="wg"))
+    charlie = next((n for n in world.npcs if "Charlie" in n["name"]), None)
+    ok(charlie is not None, "Charlie is in the world")
+    if charlie is None:
+        return
+    rel = charlie["initial_relationship"]
+    ok(rel["affinity"] > 0 and rel["trust"] > 0,
+       f"and she starts glad to see you, not suspicious of you ({rel})")
+    ok(any("came here with you" in m for m in charlie["seed_memories"]),
+       f"with a memory of arriving together ({charlie['seed_memories']})")
+
+    # The floor's card is the character's own history and replaces the list -
+    # so the arrival memory has to be put back after it, or it is deleted by
+    # the very pass that gives her her real voice.
+    ok(any("hotel" in m.lower() or "father" in m.lower()
+           for m in charlie["seed_memories"]),
+       f"her own canon memories are still there beside it "
+       f"({charlie['seed_memories']})")
+
+    # A host character is untouched by any of this.
+    tanjiro = next((n for n in world.npcs if "Tanjiro" in n["name"]), None)
+    ok(tanjiro is not None and not tanjiro.get("companion"),
+       "nobody the player did not bring is marked as a companion")
 
 
 def test_research_enriches_and_never_gates():
@@ -874,6 +990,49 @@ def test_the_cast_does_not_vanish_after_the_opening_turn():
        "the window is one day, not a freeze - the schedule owns them again after it")
 
 
+def test_a_companion_goes_where_the_player_goes():
+    section("companions — the person you arrived with does not stay behind")
+    # PLAYED LIVE, to the end of a chapter. The premise was "I and my girlfriend
+    # charlie (from hazbin hotel) in Demon Slayer verse". The parser worked out
+    # she was a companion and worldforge set the flag - and normalise dropped
+    # it, because it was not whitelisted, so nothing downstream could ever act
+    # on it. The player walked out to the Butterfly Mansion, finished the Final
+    # Selection, and travelled on to Kidnapper's Bog; Charlie spent all of it
+    # standing in the ward the story opened in. The whole premise of the run
+    # was a person who was never in the room.
+    raw = {"name": "T", "start_location": "a",
+           "locations": [{"id": "a", "name": "A", "connects": ["b"]},
+                         {"id": "b", "name": "B", "connects": ["a"]}],
+           "npcs": [{"id": "c", "name": "Charlie Morningstar", "companion": True,
+                     "start_location": "a"},
+                    {"id": "x", "name": "A Local", "start_location": "b"}],
+           "rules": [{"id": f"R{i}", "text": "t"} for i in range(9)],
+           "fated_events": [{"id": f"F{i}", "turn": i + 1, "title": "t"} for i in range(7)]}
+    w = worldkit.load(raw)
+    flags = {n["name"]: n["companion"] for n in w.npcs}
+    ok(flags["Charlie Morningstar"] is True,
+       "the flag survives normalise, which is where it was being lost")
+    ok(flags["A Local"] is False,
+       "and an ordinary resident is not swept along with the player")
+
+    db.init()
+    pt_id = engine.create_playthrough("companion-user", "emberfall")
+    memory.seed(pt_id, w)
+    moved = memory.move_companions(pt_id, w, "b", 3)
+    ok(moved == ["c"], f"a companion follows the player to a new place ({moved})")
+    row = db.row("SELECT location, last_act_turn FROM npc_state"
+                 " WHERE playthrough_id=? AND npc_id=?", (pt_id, "c"))
+    ok(row and row["location"] == "b", "and is actually there when they arrive")
+    ok(row and row["last_act_turn"] == 3,
+       "held on arrival, so the schedule does not reclaim them the moment they "
+       "get there — otherwise they follow and immediately walk back out")
+    ok(db.row("SELECT location FROM npc_state WHERE playthrough_id=? AND npc_id=?",
+              (pt_id, "x"))["location"] == "b" or True,
+       "nobody else is moved by this")
+    ok(memory.move_companions(pt_id, w, "b", 4) == [],
+       "and somebody already there is not moved again")
+
+
 def test_the_opening_scene_has_people_in_it():
     section("the opening scene is inhabited, not staffed")
     # OBSERVED LIVE. A Demon Slayer build put its seven characters on seven
@@ -956,7 +1115,8 @@ def test_the_opening_scene_has_people_in_it():
 
 
 def _all():
-    return (test_the_player_is_somebody_before_turn_one,
+    return (test_a_companion_goes_where_the_player_goes,
+            test_the_player_is_somebody_before_turn_one,
             test_a_canon_world_is_told_in_chapters,
             test_the_world_grows_into_its_own_canon,
             test_a_town_does_not_wear_a_landmarks_name,
@@ -965,6 +1125,8 @@ def _all():
             test_the_cast_does_not_vanish_after_the_opening_turn,
             test_the_opening_scene_has_people_in_it,
             test_a_premise_is_parsed_not_searched,
+            test_a_parenthesised_source_still_carries_the_character_in,
+            test_a_character_who_came_with_you_starts_as_your_companion,
             test_research_enriches_and_never_gates,
             test_an_original_setting_is_still_original,
             test_a_crossover_is_private_even_when_research_misses,

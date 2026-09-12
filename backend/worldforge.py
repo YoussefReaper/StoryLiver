@@ -614,6 +614,14 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
     return raw
 
 
+# What a character who came WITH the player remembers about arriving. Module
+# level because two passes touch seed_memories - seating writes it, and the
+# persona pass rewrites the list from the model's card - and the companion's
+# own memory has to survive the second one.
+COMPANION_MEMORY = ("I came here with you. Whatever this place turns out to be, "
+                    "we are in it together.")
+
+
 def _seat_imports(raw: dict, imports: list) -> dict:
     """Guarantee a carried-in character actually exists in the world.
 
@@ -653,6 +661,29 @@ def _seat_imports(raw: dict, imports: list) -> dict:
                 return n
         return None
 
+    def seat_relationship(rec: dict, imp: dict):
+        """A carried-in character who came WITH the player already knows them.
+
+        Seating was only ever about existing: a seat, a name, a source, a room
+        to stand in. The relationship was left to whatever the builder had put
+        there - and for a displaced seat that is the host NPC's own opinion of
+        an outsider, so a build answered "I and my girlfriend Charlie" by
+        handing the relationship engine affinity -5, trust -5. The princess of
+        Hell spent turn one being standoffish with her own partner, and no
+        amount of good prose downstream can make that read as a relationship.
+
+        Only for an import the premise actually describes as coming with the
+        player: "Charlie from Hazbin Hotel" is a character carried in, and a
+        stranger is the right answer for her."""
+        if not imp.get("with_player"):
+            return
+        rec["initial_relationship"] = {"affinity": 45.0, "trust": 45.0,
+                                       "fear": 0.0, "obligation": 15.0}
+        rec["companion"] = True
+        seeds = [s for s in (rec.get("seed_memories") or [])]
+        seeds.insert(0, COMPANION_MEMORY)
+        rec["seed_memories"] = seeds[:6]
+
     for imp in wanted:
         name = imp["character"].strip()
         existing = already_here(name)
@@ -665,6 +696,7 @@ def _seat_imports(raw: dict, imports: list) -> dict:
             existing["from_source"] = (imp.get("from") or "").strip()
             existing["start_location"] = (raw.get("start_location")
                                           or existing.get("start_location") or "")
+            seat_relationship(existing, imp)
             continue
         if seats:
             rec = npcs[seats.pop()]
@@ -689,6 +721,7 @@ def _seat_imports(raw: dict, imports: list) -> dict:
         rec["from_source"] = (imp.get("from") or "").strip()
         rec["anchors"] = {"name": name, "role": rec.get("role", "")}
         rec.pop("seed_memories", None)
+        seat_relationship(rec, imp)
     return raw
 
 
@@ -1057,6 +1090,37 @@ def _crossover_friction(raw: dict, imports: list, host: str, *, user_id: str) ->
 
     if notes:
         raw["friction"] = " | ".join(notes)[:600]
+    else:
+        # The reactions above are a model call, and a model call fails: a rate
+        # limit, a timeout, a key that stopped working. When it did, `notes`
+        # stayed empty, `friction` stayed unset, and the narrator - which
+        # carries friction into EVERY turn's prompt as "WHAT THIS WORLD MAKES
+        # OF THE OUTSIDER" - was simply never told there was an outsider. The
+        # crossover became a normal story with an extra person in it, which is
+        # the whole premise gone, silently, at build time.
+        #
+        # The floor below invents nothing: it states what the character IS
+        # (their own card, already looked up) and that this world has no frame
+        # for it. Working out the reaction is the narrator's job and it is good
+        # at that; being told there is a reaction to have is this file's job.
+        floor = []
+        for imp in wanted:
+            rec = by_name.get(_fold(imp["character"]))
+            if not rec:
+                continue
+            anchors = rec.get("anchors") or {}
+            nature = [x for x in ([rec.get("role")] + list(anchors.get("constraints") or []))
+                      if str(x or "").strip()]
+            if not nature:
+                continue
+            floor.append(
+                f"{rec['name']} is {str(nature[0]).strip().rstrip('.').lower()}. "
+                + (f"{str(nature[1]).strip().rstrip('.')}. " if len(nature) > 1 else "")
+                + f"{host} has no frame for that. It is not hidden and it does not "
+                  f"stop being true, and everyone here reads it through the only "
+                  f"thing they know - and none of them will agree.")
+        if floor:
+            raw["friction"] = " | ".join(floor)[:600]
     return raw
 
 
@@ -1136,6 +1200,16 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         mem = _clean(card.get("memories"), 240)[:4]
         if mem:
             npc["seed_memories"] = mem
+        # The one memory that is about THIS run rather than about the
+        # character. The card above is the character's own history and
+        # replacing the list with it is right - but a companion's memory of
+        # arriving with the player is not part of their canon, so it has to be
+        # put back after the rewrite or the persona pass silently deletes the
+        # only thing tying her to the person she came with.
+        if npc.get("companion"):
+            seeds = [s for s in (npc.get("seed_memories") or [])]
+            seeds.insert(0, COMPANION_MEMORY)
+            npc["seed_memories"] = seeds[:6]
         # Who should NOT be standing in the opening square. A live build put
         # Muzan Kibutsuji - a character whose entire existence is concealment -
         # in a public town square on turn one, because the rule that guarantees

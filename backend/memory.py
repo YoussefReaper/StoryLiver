@@ -423,6 +423,36 @@ def hold_in_scene(pt_id, npc_ids, turn):
         rt.cache_drop(f"sl:pt:{pt_id}:npcstate")
 
 
+def move_companions(pt_id, world, location, turn):
+    """A companion goes where the player goes.
+
+    "I and my girlfriend charlie" is a statement about who is travelling, and
+    she was being left behind: the player walked out to the Butterfly Mansion
+    and on into the next chapter, and Charlie stayed in the ward they started
+    in, because position is schedule-driven and her schedule was written for a
+    town she was no longer in. The whole premise of the run was a person who
+    was not in the room for any of it.
+
+    Held on arrival the same way a conversation is held, so the schedule does
+    not reclaim them the moment they get there."""
+    moved = []
+    for npc in world.npcs:
+        if not npc.get("companion"):
+            continue
+        st = db.row("SELECT location, alive FROM npc_state WHERE playthrough_id=? AND npc_id=?",
+                    (pt_id, npc["id"]))
+        if not st or not st["alive"] or st["location"] == location:
+            continue
+        db.run("UPDATE npc_state SET location=?, last_act_turn=? "
+               "WHERE playthrough_id=? AND npc_id=?",
+               (location, turn, pt_id, npc["id"]))
+        moved.append(npc["id"])
+    if moved:
+        rt.cache_drop(f"sl:pt:{pt_id}:npcstate")
+        rt.invalidate_playthrough(pt_id)
+    return moved
+
+
 def npcs_at(pt_id, world, location, turn):
     """Who is here. Schedule drives position unless the sim moved someone.
 

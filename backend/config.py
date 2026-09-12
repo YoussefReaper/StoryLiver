@@ -22,7 +22,15 @@ ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "").strip() or None
 
 # "auto" -> real calls when a key exists, deterministic offline stub when it doesn't.
 # "mock" forces the stub (used by the test suites so CI costs nothing).
+# "spool" reads every completion from a directory of recorded answers, so a
+# playthrough can be played and replayed with no key and no spend - see llm.py.
 LLM_MODE = os.getenv("STORYLIVER_LLM_MODE", "auto").lower()
+SPOOL_DIR = os.getenv("STORYLIVER_SPOOL_DIR", "").strip()
+# Roles that stay on the free offline stub even in spool mode. NPC minds and
+# the Director are the world moving on its own - real work, but not the prose
+# a player reads, so authoring a transcript does not need them answered too.
+SPOOL_STUB_ROLES = {r.strip() for r in
+                    os.getenv("STORYLIVER_SPOOL_STUB_ROLES", "").split(",") if r.strip()}
 REQUEST_TIMEOUT = float(os.getenv("STORYLIVER_LLM_TIMEOUT", "60"))
 MAX_RETRIES = int(os.getenv("STORYLIVER_LLM_RETRIES", "2"))
 
@@ -56,11 +64,17 @@ def is_claude_model(model: str) -> bool:
 
 
 def live_llm() -> bool:
-    if LLM_MODE == "mock":
+    if LLM_MODE in ("mock", "spool"):
         return False
     if LLM_MODE == "live":
         return True
     return bool(ANTHROPIC_API_KEY or OPENAI_API_KEY)
+
+
+def spool_dir():
+    """Where a spooled run keeps its recorded answers (llm.py)."""
+    from pathlib import Path
+    return Path(SPOOL_DIR) if SPOOL_DIR else DATA_DIR / "spool"
 
 
 def key_for(model: str) -> str:
