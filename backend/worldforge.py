@@ -696,7 +696,7 @@ JSON only:
 """
 
 
-def canon_chapters(setting: str, *, user_id: str) -> list:
+def canon_chapters(setting: str, *, user_id: str, known: list | None = None) -> list:
     """The source's running order, from the model, when research cannot supply it.
 
     Arcs decide a canon world's CHAPTERS, and research gets them from a Fandom
@@ -712,10 +712,23 @@ def canon_chapters(setting: str, *, user_id: str) -> list:
     version of it from a source that was not answering."""
     if not (setting or "").strip():
         return []
-    out = _resilient("narrator", CHAPTERS_SYSTEM,
-                     f"WORK: {setting}\n\nIts arcs, in order. JSON only.",
+    # When research DID find the arc names - a wiki files them as categories
+    # like "Mugen Train Arc" - they are authoritative and correctly spelled,
+    # but they come back alphabetically, which is not a running order. Hand
+    # them over and ask for the sequence rather than asking twice for the same
+    # knowledge and hoping the two agree.
+    names = [str(a.get("name") or a).strip() for a in (known or [])
+             if str(a.get("name") if isinstance(a, dict) else a or "").strip()]
+    ask = f"WORK: {setting}\n\n"
+    if names:
+        ask += ("These are its arcs, listed alphabetically by a wiki. Put THESE in the "
+                "order the work tells them, keeping the names exactly as given, and add "
+                "any the list is missing:\n"
+                + "\n".join(f"- {n}" for n in names[:20]) + "\n\n")
+    ask += "Its arcs, in order. JSON only."
+    out = _resilient("narrator", CHAPTERS_SYSTEM, ask,
                      user_id=user_id, max_tokens=1400, temperature=0.2,
-                     stub=lambda: {"arcs": []})
+                     stub=lambda: {"arcs": list(known or [])})
     arcs = []
     for a in (out.get("arcs") or []):
         if not isinstance(a, dict):
@@ -1446,9 +1459,12 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         # Research first; it is free and authoritative when a wiki answers.
         # When it does not - which in production is always, see canon_chapters -
         # ask the model rather than shipping a one-chapter world.
-        book = found.get("arcs") or []
+        # Research supplies the NAMES (authoritative, correctly spelled); the
+        # model supplies the ORDER, which a wiki's alphabetical category list
+        # cannot. With neither, the model supplies both.
+        book = canon_chapters(source, user_id=user_id, known=found.get("arcs") or [])
         if not book:
-            book = canon_chapters(source, user_id=user_id)
+            book = found.get("arcs") or []
         raw["chapters"] = _chapters.plan({"arcs": book},
                                          fallback=str(raw.get("name") or ""))
     raw["researched"] = bool(found.get("found"))

@@ -527,6 +527,61 @@ def find_wiki(setting: str, wiki_title: str, budget: _Budget) -> str | None:
     return None
 
 
+# What each bucket's categories actually LOOK LIKE, rather than what we hoped
+# they were called. Every wiki files things its own way, and guessing fixed
+# names failed silently: the Demon Slayer wiki has no "Category:Arcs" at all -
+# it has 783 categories including "Mugen Train Arc", "Final Selection Arc" and
+# "Mount Natagumo Arc", each an arc in its own right. Asking the wiki what
+# categories it HAS and matching them is the difference between reading a wiki
+# and hoping it is shaped like the last one.
+CATEGORY_PATTERNS = {
+    "characters": re.compile(r"^(characters|(male|female|human|demon) characters)$", re.I),
+    "arcs": re.compile(r"(^|\s)arcs?$|^(story arcs|sagas)$", re.I),
+    "places": re.compile(r"^(locations|places|buildings|countries|villages|cities)$", re.I),
+    "factions": re.compile(r"(organi[sz]ations|groups|corps|families|clans)$", re.I),
+    "powers": re.compile(r"(abilities|powers|techniques|breathing styles|"
+                         r"combat styles|cursed techniques|magic)$", re.I),
+}
+
+
+def all_categories(host: str, budget: _Budget, *, pages: int = 2) -> list:
+    """Every category this wiki actually has, cheaply.
+
+    One `allcategories` call returns up to 500, which covers most wikis in one
+    or two requests - far fewer than probing a handful of guessed category
+    names one at a time and getting nothing back."""
+    out, cont = [], None
+    for _ in range(max(1, pages)):
+        if budget.left <= 3:
+            break
+        params = {"action": "query", "list": "allcategories",
+                  "aclimit": "500", "acmin": "2"}
+        if cont:
+            params["accontinue"] = cont
+        try:
+            data = _api(host, params, budget)
+        except ResearchError:
+            break
+        out.extend(c.get("category") if isinstance(c, dict) else str(c)
+                   for c in ((data.get("query") or {}).get("allcategories") or []))
+        cont = ((data.get("continue") or {}).get("accontinue"))
+        if not cont:
+            break
+    return [c for c in out if c]
+
+
+def categories_for(bucket: str, available: list) -> list:
+    """The categories on THIS wiki that belong to this bucket."""
+    pat = CATEGORY_PATTERNS.get(bucket)
+    if not pat:
+        return []
+    hits = [c for c in available if pat.search(c)]
+    # An arc category IS an arc - "Mugen Train Arc" names the thing itself -
+    # so there can be dozens and they are all wanted. The other buckets are
+    # containers, and a handful is plenty.
+    return hits if bucket == "arcs" else hits[:4]
+
+
 CATEGORY_SETS = {
     "characters": ("Category:Characters", "Category:Male Characters",
                    "Category:Female Characters"),
@@ -923,9 +978,25 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
             out["sources"].append({"title": f"{out['canonical_name']} Wiki",
                                    "url": f"https://{host}",
                                    "source": "Fandom", "license": "CC BY-SA 3.0"})
-            for bucket, cats in CATEGORY_SETS.items():
+            # Ask the wiki what it HAS before asking it for anything. Guessing
+            # fixed category names is how every Fandom bucket came back empty:
+            # this wiki has 783 categories and not one of them is "Arcs".
+            available = all_categories(host, budget)
+            for bucket, guesses in CATEGORY_SETS.items():
+                found_cats = categories_for(bucket, available) if available else []
+
+                # An arc category IS the arc. "Mugen Train Arc" does not need
+                # its members fetched to tell you the Mugen Train arc exists,
+                # and fetching them would return every character who appeared
+                # in it instead.
+                if bucket == "arcs" and found_cats:
+                    out[bucket] = [{"name": re.sub(r"\s*Arcs?$", "", c).strip() or c,
+                                    "note": ""} for c in found_cats[:12]]
+                    continue
+
                 names = []
-                for cat in cats:
+                for cat in (found_cats or list(guesses)):
+                    cat = cat if cat.lower().startswith("category:") else f"Category:{cat}"
                     names.extend(category_members(host, cat, budget,
                                                   limit=200 if bucket == "characters" else 120))
                     if len(names) >= 30 or budget.left <= 4:
