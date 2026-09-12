@@ -318,10 +318,8 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         parts.append(
             f"WHAT ACTUALLY RESULTS (narrate this, do not change it): "
             f"{verdict['consequence']}\n"
-            f"This is raw material, never text. Do not restate or summarise it - play it "
-            f"out. If it says somebody answers, tells, explains or agrees, the passage "
-            f"must contain the words they actually say, not a sentence reporting that "
-            f"they said something.")
+            f"Raw material, never text: play it out, do not restate it. If somebody "
+            f"answers or explains, the passage contains what they SAY.")
     # The world moved on its own this turn. Given as fact, like every other
     # consequence: the narrator reports it and never decides it.
     if verdict.get("legacy_line"):

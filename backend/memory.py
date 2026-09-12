@@ -401,6 +401,25 @@ def kill_npc(pt_id, npc_id):
     rt.cache_drop(f"sl:pt:{pt_id}:npcstate", f"sl:pt:{pt_id}:snapshot")
 
 
+def hold_in_scene(pt_id, npc_ids, turn):
+    """Keep somebody in the room for a beat because they are mid-conversation.
+
+    Position is schedule-driven, and the schedule does not care that the player
+    just asked a question: npcs_at drifts everyone back unless the SIM moved
+    them, so a character the PLAYER engaged was never pinned. Played live, this
+    reads as the world walking out on you - ask Giyu what the notice accuses you
+    of, get a straight answer, ask the obvious follow-up, and the reply is that
+    there is "no quiet blue haori in the crowd to answer". Twice in four turns.
+
+    Marking them as having acted this turn buys exactly one more turn before the
+    schedule reclaims them, which is a conversation rather than a residency."""
+    for npc_id in {i for i in (npc_ids or []) if i}:
+        db.run("UPDATE npc_state SET last_act_turn=? WHERE playthrough_id=? AND npc_id=?",
+               (turn, pt_id, npc_id))
+    if npc_ids:
+        rt.cache_drop(f"sl:pt:{pt_id}:npcstate")
+
+
 def npcs_at(pt_id, world, location, turn):
     """Who is here. Schedule drives position unless the sim moved someone."""
     here = []

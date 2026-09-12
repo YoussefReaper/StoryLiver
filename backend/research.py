@@ -1275,15 +1275,16 @@ def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
         "HOW TO USE THAT LIST - this is a hard rule, not a preference:",
         f"1. PEOPLE: every one of those {n_chars} real characters must be used before you "
         "invent a single new person. Spell them exactly as written above.",
-        f"2. PLACES: the {n_places} real places are the setting's MAP, and you are building "
-        "ONE location on it. Use a real place name ONLY for a location that genuinely IS "
-        "that place. Never hang a famous name on an ordinary room to get it used - a "
-        "tavern called Yoshiwara, a clinic called Mount Kumotori and a village square "
-        "called Eternal Paradise Faith are three lies in a row, and a reader who knows "
-        "the setting sees all of them at once. Real places you do not use are EXPECTED "
-        "and cost nothing: they stay on the map as somewhere the player can travel to "
-        "later. An ordinary street in this place should be named the way its own people "
-        "would name it.",
+        f"2. PLACES: the {n_places} real places are the setting's WHOLE MAP, and you are "
+        "building ONE settlement on it. Build only what a person can walk between in an "
+        "evening: the streets, rooms and thresholds of this one place. A landmark that "
+        "is a journey away in the source does NOT belong inside it - a town containing "
+        "the Mugen Train, the Butterfly Mansion and the Ubuyashiki Estate at once is a "
+        "map of the whole series folded into one square. Those stay where they are; the "
+        "player travels to them later, and leaving them out costs nothing. Never hang a "
+        "famous name on an ordinary room to get it used either - a tavern called "
+        "Yoshiwara and a clinic called Mount Kumotori are lies a reader spots instantly. "
+        "Name the streets here the way the people who live here would.",
         "3. Never rename, re-spell, translate or 'improve' a real name, and never invent "
         "a relative, student, rival or successor of a real character.",
     ]

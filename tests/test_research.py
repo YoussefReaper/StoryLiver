@@ -521,6 +521,45 @@ def test_the_chapter_list_is_not_starved_by_the_request_budget():
        "and it still looks in the categories a wiki actually files arcs under")
 
 
+def test_the_small_details_a_fan_would_notice():
+    section("canon — the conditional details, and their condition")
+    from backend import persona
+    # Charlie's horns are not a standing feature: they are hidden in her hair
+    # and come out when she turns lethal. A card that says "has horns" is worse
+    # than saying nothing, because it puts them on show in every scene - and
+    # getting exactly this wrong is what makes a fan stop believing the world.
+    ok("mannerisms" in worldforge.CANON_PERSONA_SYSTEM,
+       "the persona card asks for the small details at all")
+    spec = worldforge.CANON_PERSONA_SYSTEM
+    ok("only come out when" in spec and "horns" in spec,
+       "with the horns example spelled out, condition and all")
+    ok('"Charlie has horns" is wrong' in spec,
+       "and the wrong version named as wrong, not merely left unmentioned")
+    ok("normally hidden, absent or sheathed" in spec,
+       "at least one must be physical and conditional, not only behavioural")
+
+    card = {"characters": [{"name": "Charlie", "voice": "bright",
+                            "mannerisms": ["Her horns stay hidden in her hair until she "
+                                           "turns lethal", "She clasps her hands when "
+                                           "explaining"]}]}
+    real, worldforge._resilient = worldforge._resilient, lambda *a, **k: card
+    try:
+        out = worldforge._apply_canon_personas(
+            {"npcs": [{"id": "c", "name": "Charlie", "origin": "canon"}]},
+            "Hazbin Hotel", user_id="u_test")
+    finally:
+        worldforge._resilient = real
+    tells = out["npcs"][0]["anchors"]["mannerisms"]
+    ok(any("horns" in t for t in tells), "and they reach the character's card")
+
+    block = persona.identity_block({**out["npcs"][0]["anchors"], "name": "Charlie",
+                                    "role": "princess"})
+    ok("horns" in block, "and the narrator's identity block")
+    ok("only when their condition is met" in block,
+       "labelled as conditional, so a tell is not printed as a standing "
+       "description in every scene — which is the failure, not the fix")
+
+
 def test_a_spoken_line_becomes_a_plate_the_way_people_are_named():
     section("plates — three reasons the signature element never fired in play")
     from backend import narrator
@@ -1002,6 +1041,7 @@ def _all():
             test_the_character_the_player_named_actually_turns_up,
             test_an_empty_room_is_told_it_is_empty,
             test_a_spoken_line_becomes_a_plate_the_way_people_are_named,
+            test_the_small_details_a_fan_would_notice,
             test_the_chapter_list_is_not_starved_by_the_request_budget,
             test_chapters_survive_a_wiki_that_never_answers,
             test_a_wiki_is_asked_what_categories_it_has,

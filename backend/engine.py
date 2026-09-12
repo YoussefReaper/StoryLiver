@@ -848,6 +848,16 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         by_name = {world.npc_name(i): i for i in present_now if i in world.by_id}
         blocks = narrator.split_speech(text, list(by_name))
 
+        # Anybody mid-conversation stays for a beat. Whoever the player aimed
+        # this turn at, and whoever answered, is held against the schedule -
+        # otherwise the world walks out on you between your question and your
+        # follow-up, which it did twice in four turns of live play.
+        memory.hold_in_scene(
+            pt_id,
+            set(ticked.get("targets") or []) | {by_name.get(b.get("name", ""))
+                                                for b in blocks if b["kind"] == "speech"},
+            turn)
+
         base_meta = {"premium": use_premium, "mode": mode, "player": player,
                      "actor_name": actor_name}
         turn_meta = {

@@ -138,7 +138,19 @@ def check(ctx):
     # ratio check above - the guarantee that actually matters, and the reason
     # this test exists - is untouched and still passes at 4 players. Measured
     # 2023 immediately after the change.
-    solo_ceiling = 2150
+    # Raised a fourth time, and this one is NOT a fixed per-call cost, so it is
+    # worth being exact about. Characters the player is mid-conversation with
+    # are now held in the scene against their schedule, because the world was
+    # literally walking out between a question and its follow-up. More people
+    # in the room means more anchor blocks in the prompt: that is the feature
+    # working, not bloat, and it scales with scene size rather than with player
+    # count - so the ratio check above, which is the guarantee this test exists
+    # for, is still untouched and still passes at four players.
+    #
+    # Measured across runs at 2126, 2206 and 2248 for the same scene, because
+    # which NPCs a seeded run surfaces varies. Set well clear of that spread:
+    # a ceiling inside the noise is a flaky test, not a guardrail.
+    solo_ceiling = 2500
     ok(b <= solo_ceiling,
        f"a 4-player broadcast prompt is {b:.0f} tok, under the {solo_ceiling} single-player ceiling")
 

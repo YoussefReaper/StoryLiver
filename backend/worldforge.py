@@ -685,6 +685,20 @@ Write what is TRUE OF THEM IN THE SOURCE, not a plot summary:
   goals       - what they are actually after.
   taboos      - what they would never do, however hard a scene pushes.
   memories    - two or three things they carry, written in their own first person.
+  mannerisms  - THE SMALL THINGS A FAN WOULD NOTICE, and WHEN they happen. Not
+                a description of them: the specific physical and behavioural
+                details that only show under a condition, and the condition.
+                "Charlie's horns are hidden in her hair and only come out when
+                she turns lethal" is right; "Charlie has horns" is wrong and is
+                worse than nothing, because it puts them on show in every
+                scene. START with a PHYSICAL one: something about their body
+                or appearance that is normally hidden, absent or sheathed and
+                appears only under a named condition - horns, eyes, claws,
+                markings, a change of form, a scar that darkens. Say what
+                triggers it AND what is true the rest of the time. Then
+                behaviour: hands, what they always carry and how, what changes
+                when they are frightened or lying or off guard. Three or four,
+                each specific enough that a fan would notice it being wrong.
   public      - true if a stranger could plausibly run into them in an ordinary
                 public place at the start of a story. FALSE for anyone who hides
                 what they are, rules from a distance, is imprisoned, sealed,
@@ -698,7 +712,7 @@ replace. If you genuinely do not know a character, omit them entirely rather
 than inventing a generic card.
 
 JSON only:
-{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"public":true}]}
+{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"mannerisms":[],"public":true}]}
 """
 
 
@@ -1048,6 +1062,13 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
             vals = _clean(card.get(key), 180)[:4]
             if vals:
                 anchors[key] = vals
+        # The small conditional details - horns that only show when she turns
+        # lethal, a mask that never comes off, the hand that goes to a hilt.
+        # persona.identity_block already carries mannerisms to the narrator, so
+        # this reaches the prose without any new plumbing.
+        tells = _clean(card.get("mannerisms"), 200)[:4]
+        if tells:
+            anchors["mannerisms"] = tells
         anchors["name"] = npc["name"]
         if str(card.get("role") or "").strip():
             npc["role"] = str(card["role"]).strip()[:120]
