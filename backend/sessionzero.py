@@ -341,8 +341,11 @@ def brief(answers: dict, dossier: dict) -> str:
         lines.append(f"- WHAT CARRIED OVER: {band}")
 
     if a.get("name"):
-        lines.append(f"- WHO THEY ARE: {a['name'][:160]}. This is the protagonist. Use this "
-                     f"name; do not invent another one for them.")
+        lines.append(f"- WHO THEY ARE: {a['name'][:160]}. This is the PLAYER, not a "
+                     f"character you write. Use this name for them; do not invent another "
+                     f"one, and do NOT put them in the cast - a live build listed the "
+                     f"player as an NPC standing in the opening square, so the player "
+                     f"could walk up to themselves.")
     if a.get("origin"):
         lines.append(f"- WHERE THEY CAME FROM: {a['origin'][:160]}. Somebody here should "
                      f"have an opinion about that place.")

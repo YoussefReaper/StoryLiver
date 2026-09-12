@@ -609,18 +609,38 @@ def _seat_imports(raw: dict, imports: list) -> dict:
     if not wanted:
         return raw
     npcs = raw.get("npcs") or []
-    present = {_fold(n.get("name", "")) for n in npcs}
     seats = [i for i, n in enumerate(npcs) if n.get("origin") == "original"]
+
+    def already_here(name: str):
+        """The builder's name for them, if it built them at all.
+
+        Exact folded matching produced TWO Charlies in a live build: the
+        premise names "Charlie", the builder writes "Charlie Morningstar", and
+        the two do not compare equal - so seating added a second one and the
+        world had both, in different rooms. A carried-in character is matched
+        on the name being contained either way round, because a full name and
+        the name somebody is called are the same person."""
+        want = _fold(name)
+        for n in npcs:
+            got = _fold(n.get("name", ""))
+            if not got:
+                continue
+            if got == want or got.startswith(want + " ") or want.startswith(got + " "):
+                return n
+        return None
 
     for imp in wanted:
         name = imp["character"].strip()
-        if _fold(name) in present:
-            # The builder did include them - just make sure they are not
-            # filed as somebody this world invented.
-            for n in npcs:
-                if _fold(n.get("name", "")) == _fold(name):
-                    n["origin"] = "canon"
-                    n["from_source"] = (imp.get("from") or "").strip()
+        existing = already_here(name)
+        if existing is not None:
+            # The builder did include them. Keep ITS name - "Charlie
+            # Morningstar" beats "Charlie" - and just make sure they are not
+            # filed as somebody this world invented, and are standing with the
+            # player rather than across town.
+            existing["origin"] = "canon"
+            existing["from_source"] = (imp.get("from") or "").strip()
+            existing["start_location"] = (raw.get("start_location")
+                                          or existing.get("start_location") or "")
             continue
         if seats:
             rec = npcs[seats.pop()]
@@ -645,7 +665,6 @@ def _seat_imports(raw: dict, imports: list) -> dict:
         rec["from_source"] = (imp.get("from") or "").strip()
         rec["anchors"] = {"name": name, "role": rec.get("role", "")}
         rec.pop("seed_memories", None)
-        present.add(_fold(name))
     return raw
 
 
@@ -719,13 +738,13 @@ def canon_chapters(setting: str, *, user_id: str, known: list | None = None) -> 
     # knowledge and hoping the two agree.
     names = [str(a.get("name") or a).strip() for a in (known or [])
              if str(a.get("name") if isinstance(a, dict) else a or "").strip()]
-    ask = f"WORK: {setting}\n\n"
+    # Research now orders arcs from the arc articles' own chapter numbers,
+    # which is exact. Asking a model to re-sort an already-correct sequence can
+    # only make it worse, so when research supplied one it is used as-is and
+    # this call never happens.
     if names:
-        ask += ("These are its arcs, listed alphabetically by a wiki. Put THESE in the "
-                "order the work tells them, keeping the names exactly as given, and add "
-                "any the list is missing:\n"
-                + "\n".join(f"- {n}" for n in names[:20]) + "\n\n")
-    ask += "Its arcs, in order. JSON only."
+        return [{"name": n, "note": ""} for n in names[:12]]
+    ask = f"WORK: {setting}\n\nIts arcs, in order. JSON only."
     out = _resilient("narrator", CHAPTERS_SYSTEM, ask,
                      user_id=user_id, max_tokens=1400, temperature=0.2,
                      stub=lambda: {"arcs": list(known or [])})
@@ -1458,6 +1477,18 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     who = str((answers or {}).get("name") or "").strip()
     if who:
         raw["default_protagonist"] = who[:120]
+        # And they are not also a character in it. A live build put "Yuki
+        # Sarashina" in the cast, standing in the opening square, so the player
+        # could have walked up to themselves. The prompt now forbids it; this
+        # is the wall, because a prompt is a request. Matched on the NAME part
+        # only - "Yuki Sarashina, a courier who reads more than she admits" is
+        # a name and a description, and the cast entry will carry just the name.
+        bare = _fold(re.split(r"[,(—-]", who)[0])
+        if bare:
+            kept = [n for n in (raw.get("npcs") or [])
+                    if _fold(n.get("name", "")) != bare]
+            if len(kept) != len(raw.get("npcs") or []):
+                raw["npcs"] = kept
 
     raw["sources"] = research.attribution(found)
     # The source's own running order, kept on the world so a playthrough can

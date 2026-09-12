@@ -563,6 +563,71 @@ CATEGORY_PATTERNS = {
 }
 
 
+_ARC_CHAPTERS = re.compile(r"\|\s*chapters?\s*=[^\n]*?(\d+)", re.I)
+_ARC_EPISODES = re.compile(r"\|\s*episodes?\s*=[^\n]*?(\d+)", re.I)
+_ARC_ORDINAL = re.compile(
+    r"\bis the\s+(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"eleventh|twelfth|thirteenth|fourteenth|fifteenth)\b", re.I)
+_ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+             "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth",
+             "fourteenth", "fifteenth"]
+
+
+def order_arcs(host: str, names: list, budget: _Budget) -> list:
+    """Put arc names into the order the SOURCE tells them, not alphabetical.
+
+    A wiki lists categories alphabetically, so "Mugen Train" came back third
+    and "Mount Natagumo" seventh when canon runs Natagumo first. Asking a model
+    to sort them is approximate, and approximate is wrong: a reader who knows
+    the series sees a wrong running order instantly.
+
+    The arc articles carry the answer exactly. Their infoboxes have
+
+        |chapters = [[Chapter 54|54]] - [[Chapter 66|66]]
+
+    so the first chapter number sorts them perfectly, and the prose says "is
+    the seventh story arc" as a second witness. One batched request for every
+    arc page, and the order is the source's own."""
+    titles = [n if n.lower().endswith(" arc") else f"{n} Arc" for n in names if n]
+    if not titles or budget.left <= 2:
+        return list(names)
+    try:
+        data = _api(host, {"action": "query", "prop": "revisions",
+                           "rvprop": "content", "rvslots": "main",
+                           "titles": "|".join(titles[:24])}, budget)
+    except ResearchError:
+        return list(names)
+
+    rank: dict = {}
+    for page in ((data.get("query") or {}).get("pages") or []):
+        title = str(page.get("title") or "")
+        try:
+            text = page["revisions"][0]["slots"]["main"]["content"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        m = _ARC_CHAPTERS.search(text) or _ARC_EPISODES.search(text)
+        if m:
+            rank[title] = int(m.group(1))
+            continue
+        o = _ARC_ORDINAL.search(text)
+        if o:
+            # Ordinals are a separate, coarser scale: keep them after anything
+            # with a real chapter number rather than interleaving the two.
+            rank[title] = 100000 + _ORDINALS.index(o.group(1).lower())
+
+    if not rank:
+        return list(names)
+
+    def key(i_name):
+        i, name = i_name
+        title = name if name.lower().endswith(" arc") else f"{name} Arc"
+        # Anything the wiki could not place keeps its original position, after
+        # everything it could - never silently reordered on a guess.
+        return (rank.get(title, 10 ** 9), i)
+
+    return [n for _, n in sorted(enumerate(names), key=key)]
+
+
 def all_categories(host: str, budget: _Budget, *, pages: int = 2) -> list:
     """Every category this wiki actually has, cheaply.
 
@@ -1015,8 +1080,12 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
                 # and fetching them would return every character who appeared
                 # in it instead.
                 if bucket == "arcs" and found_cats:
-                    out[bucket] = [{"name": re.sub(r"\s*Arcs?$", "", c).strip() or c,
-                                    "note": ""} for c in found_cats[:12]]
+                    arc_names = [re.sub(r"\s*Arcs?$", "", c).strip() or c
+                                 for c in found_cats[:16]]
+                    # Alphabetical is not a running order. The arc articles say
+                    # which chapter each one starts at; that is the real one.
+                    arc_names = order_arcs(host, arc_names, budget)
+                    out[bucket] = [{"name": n, "note": ""} for n in arc_names[:12]]
                     continue
 
                 names = []

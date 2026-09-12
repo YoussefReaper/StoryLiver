@@ -31,6 +31,19 @@ BECOME each character under CHARACTERS PRESENT rather than describing them;
 deliver an offered canon line verbatim if it fits this moment. Same room as
 last turn unless told otherwise - nobody teleports between paragraphs.
 
+THE LINE THAT LANDS
+If anybody speaks, the most important thing said goes on its OWN line, exactly:
+    @Name: what they say
+Name as written under CHARACTERS PRESENT. Nothing else on that line - no quotes,
+no "she says", no action. Example:
+
+    He does not move out of the doorway, and the rain keeps coming off the eaves.
+    @Yeva Marrow: Don't go up there tonight.
+    Behind her the candles gutter, one after another.
+
+One per passage, two at most; all other dialogue stays in the prose. This is not
+optional: a passage where somebody speaks and no line is marked is wrong.
+
 THE ENSEMBLE REACTS, NOT JUST ONE PERSON
 - If two or more characters are present, at least TWO of them must react to
   what JUST happened, and react DIFFERENTLY - one suspicious where another is
@@ -62,20 +75,6 @@ HARD RULES
   happened.
 - Stay inside the story. No "the characters", no naming a scene or a story, no
   stepping back to say what any of it means.
-- IF ANYBODY SPEAKS IN THIS PASSAGE, the most important thing said gets its own
-  line, on its own, written exactly as:
-      @Their Exact Name: the line they say
-  Name exactly as it appears under CHARACTERS PRESENT. Nothing else on that
-  line - no quote marks, no "she says", no stage direction, no action. Like this:
-
-      He does not move out of the doorway, and the rain keeps coming off the
-      eaves behind him.
-      @Yeva Marrow: Don't go up there tonight.
-      Behind her, the candles gutter one after another.
-
-  One per passage, two at the most. Everything else anybody says stays inside
-  the prose as ordinary dialogue. Only a passage where nobody speaks at all has
-  none.
 - Never use any of these dead phrases or anything like them: {BANNED}.
 - No therapy-speak, no validation language, no motivational summary. Nobody in this world is a life coach.
 - Do not open with the same construction you used before (see FORBIDDEN OPENINGS).
@@ -85,7 +84,13 @@ HARD RULES
 Write only the prose. No headings, no quotes around the whole thing, no meta."""
 
 
-_SPEECH_LINE = re.compile(r"^\s*@\s*([^:@\n]{1,60}?)\s*:\s*(.+?)\s*$")
+# The `@` is optional. Given the rule, the model reliably puts the line on its
+# own and writes "Giyu Tomioka: The courier notice is missing." - the shape
+# exactly right, the sigil dropped - and requiring the sigil threw every one of
+# those away. The real gate was never the punctuation: it is that the name
+# before the colon belongs to somebody actually in the room, which a line of
+# ordinary prose will not accidentally satisfy.
+_SPEECH_LINE = re.compile(r"^\s*@?\s*([^:@\n]{1,60}?)\s*:\s*(.+?)\s*$")
 
 
 def _fold(s: str) -> str:
@@ -114,7 +119,30 @@ def split_speech(text: str, present: list | None = None) -> list:
     Returns [{"kind": "narration"|"speech", "text": ..., "name": ...}] in the
     order they were written. Never returns an empty list for non-empty input.
     """
-    known = {_fold(n): n for n in (present or []) if n}
+    # Matched the way people actually name each other. Exact-only matching is
+    # why plates almost never fired in live play: the cast is "Inosuke
+    # Hashibira" and "Zenitsu Agatsuma", the narrator writes "@Inosuke:" and
+    # "@Zenitsu:" because that is what everyone in the story calls them, and
+    # every one of those lines was silently folded back into prose. Six
+    # speaking moments across two turns produced zero plates.
+    known = {}
+    for n in (present or []):
+        if not n:
+            continue
+        known[_fold(n)] = n
+        # First name, and surname, when they are not already taken by somebody
+        # else present - an ambiguous short name ("Kamado", with both Tanjiro
+        # and Nezuko in the room) is left unmatched rather than credited to the
+        # wrong character. Split on the ORIGINAL name: _fold removes spaces.
+        for word in str(n).split():
+            part = _fold(word)
+            if len(part) < 3:
+                continue
+            if part in known and known[part] != n:
+                known[part] = ""      # ambiguous: belongs to nobody
+            else:
+                known.setdefault(part, n)
+    known = {k: v for k, v in known.items() if v}
     blocks, buf = [], []
 
     def flush():
@@ -278,7 +306,22 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         if actor_name:
             parts.append(f'Address the passage to {actor_name} as "you". Name the other players only where they act.')
     if verdict.get("consequence"):
-        parts.append(f"WHAT ACTUALLY RESULTS (narrate this, do not change it): {verdict['consequence']}")
+        # "Dramatise, do not report" is load-bearing. Asked "I ask Zenitsu who
+        # has been asking about me", a live turn answered:
+        #
+        #     "Zenitsu turns toward you and answers, telling you who has been
+        #      asking about you in the quarter."
+        #
+        # - the consequence line rephrased, with the actual answer missing. The
+        # single most important thing in the turn became a summary of itself.
+        # If somebody answers a question, the passage contains what they SAID.
+        parts.append(
+            f"WHAT ACTUALLY RESULTS (narrate this, do not change it): "
+            f"{verdict['consequence']}\n"
+            f"This is raw material, never text. Do not restate or summarise it - play it "
+            f"out. If it says somebody answers, tells, explains or agrees, the passage "
+            f"must contain the words they actually say, not a sentence reporting that "
+            f"they said something.")
     # The world moved on its own this turn. Given as fact, like every other
     # consequence: the narrator reports it and never decides it.
     if verdict.get("legacy_line"):
