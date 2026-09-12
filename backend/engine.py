@@ -709,7 +709,16 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         new_loc = verdict.get("new_location") or pt["current_location"]
         moved_to = None
         if new_loc != pt["current_location"]:
-            if new_loc in world.connects(pt["current_location"]) and not atlas.blocked(pt_id, new_loc):
+            # A frontier place is the setting's geography you have not built
+            # yet - the road out of town - and you can take it from anywhere in
+            # the town, not only from the one square the build started you in.
+            # Without the road-out clause, "I take the road out to the
+            # Swordsmith Village" was refused whenever the player had wandered
+            # off the hub, and the narration described them leaving anyway.
+            target = world.loc_by_id.get(new_loc)
+            road_out = bool(target and target.get("frontier"))
+            if (new_loc in world.connects(pt["current_location"]) or road_out) \
+                    and not atlas.blocked(pt_id, new_loc):
                 moved_to = new_loc
                 # Arriving at a place the world knew the name of and had not
                 # built is what builds it. A town is a town, not the edge of

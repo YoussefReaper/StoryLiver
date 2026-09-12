@@ -262,6 +262,30 @@ def _fold(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
 
 
+_NAME_STOP = {"the", "of", "a", "an", "and", "at", "in", "on", "to", "by"}
+
+
+def _name_fits_id(loc_id: str, name: str) -> bool:
+    """Does this location's own id belong to the name it is wearing?
+
+    The test for whether a location is ENTITLED to a canon landmark's name. A
+    location whose id is "butterfly_mansion" and whose name is "Butterfly
+    Mansion" IS that place, and a story may legitimately be set there. A
+    location whose id is "storm_drain_alley" and whose name is "Mugen Train" is
+    a town street wearing a landmark's name, which is the failure this exists
+    to catch - the map reads right and the geography underneath is nonsense."""
+    idt = {w for w in re.findall(r"[a-z0-9]+", _fold(loc_id)) if w not in _NAME_STOP}
+    nt = {w for w in re.findall(r"[a-z0-9]+", _fold(name)) if w not in _NAME_STOP}
+    return bool(idt and nt and idt & nt)
+
+
+def _humanise(slug_text: str) -> str:
+    """A location's own id, given back as a readable name, for when the name it
+    arrived with belonged to somewhere else."""
+    words = [w for w in re.split(r"[^a-z0-9]+", (slug_text or "").lower()) if w]
+    return " ".join(w.capitalize() for w in words) or "Somewhere"
+
+
 def _strip_ip_name(name: str, setting: str) -> str:
     """A generated name that is just the franchise gets replaced. Applies to the
     model path as well as the stub - instructions get ignored sometimes."""
@@ -795,31 +819,30 @@ def _record_beyond(raw: dict, found: dict, *, keep: int = 6) -> dict:
         return raw
     # The builder is told to build ONE settlement and leave the setting's
     # landmarks on the map around it. It obeys most of the time and sometimes
-    # does the opposite - a live build came back with Mugen Train, Mount
-    # Natagumo, Mount Sagiri, Mount Kumotori and Infinity Castle AS the town's
-    # locations, which is the whole series folded into one square, and which
-    # also silently emptied the frontier because every canon place was then
-    # "already used". A prompt is a request; this is the wall.
+    # does the opposite in a subtler way than the old failure: it keeps its own
+    # town ids and hangs a canon landmark's NAME on them - a live build came
+    # back with
+    #     storm_drain_alley -> "Mugen Train"
+    #     north_wall_walk   -> "Swordsmith Village"
+    #     river_steps       -> "Ubuyashiki Estate"
+    # The map then LOOKS right (every landmark is on it) while reading as
+    # nonsense - a storm drain called the Mugen Train, a village whose streets
+    # are the Ubuyashiki Estate - and the frontier below could never be trusted,
+    # because the same names it keyed on were on the town's own streets. A
+    # prompt is a request; this is the wall.
     #
-    # One canon landmark may legitimately be where the story is set, so the
-    # first is left alone and the rest are moved out to the frontier, which is
-    # exactly where they belong: reachable, named, and built when visited.
+    # A location keeps a landmark's name only when its own id belongs to that
+    # landmark (id "butterfly_mansion" named "Butterfly Mansion" is the real
+    # place, and a story may legitimately be set there). Everything else gets
+    # its own name back from its id, and the landmark it was wearing goes out to
+    # the frontier below, which is where a landmark you can walk to belongs.
     canon_names = {_fold(p["name"]) for p in places}
-    landmarks = [l for l in locs if _fold(l.get("name", "")) in canon_names]
-    start_id = raw.get("start_location")
-    for l in landmarks[1:]:
-        if l.get("id") == start_id:
-            continue          # never move the ground the player is standing on
-        l["frontier"] = True
-        l["kind"] = "frontier"
-        l["origin"] = "canon"
-        # Reachable from where the player is, not merely present on the map.
-        if start_id and start_id not in (l.get("connects") or []):
-            l.setdefault("connects", []).append(start_id)
-    if len(landmarks) > 1:
-        locs = [l for l in locs if not l.get("frontier")] + \
-               [l for l in locs if l.get("frontier")]
-        raw["locations"] = locs
+    for l in locs:
+        if _fold(l.get("name", "")) not in canon_names:
+            continue
+        if _name_fits_id(l.get("id", ""), l.get("name", "")):
+            continue
+        l["name"] = _humanise(l.get("id") or l.get("name", ""))
 
     used = {_fold(l.get("name", "")) for l in locs}
     # Wired to where the player actually STANDS, not to locations[0]. They are
@@ -1402,6 +1425,23 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         if era_places:
             found = {**found, "places": era_places}
 
+    # A setting the curated roster knows by name keeps its real cast whether or
+    # not the lookup ran. Research is an ENHANCEMENT, and when it is off (a wiki
+    # timeout, a blocked egress, offline) it used to come back with an empty
+    # cast - and an empty cast is exactly what the builder fills with invented
+    # people (Kaname, Aiko: never in Demon Slayer). Merged HERE, before the
+    # grounding brief is written, so the builder is TOLD the real cast and the
+    # seating pass below can put back anyone it still skipped.
+    if mode != "original":
+        seeded = canon_seed.fallback_cast(
+            setting, found.get("canonical_name") or "", era=era)
+        if seeded and len(found.get("characters") or []) < 4:
+            have = {_fold(c.get("name", "")) for c in (found.get("characters") or [])}
+            merged_cast = list(found.get("characters") or []) + [
+                c for c in seeded if _fold(c["name"]) not in have]
+            found = {**found, "characters": canon_seed.pin_protagonists(
+                setting, found.get("canonical_name") or "", merged_cast, era=era)}
+
     # The scale is needed BEFORE the grounding brief is written: how many
     # people this build is about to ask for is exactly what decides whether
     # the roster covers it or the model is being handed a shortfall.
@@ -1423,7 +1463,16 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # and the keyword list remain the only signals for it - which is the
     # behaviour that was there before and is still the right one.
     named_properties = bool(parsed.get("imports") or parsed.get("host_is_proper"))
-    canon = bool(found.get("found")) or (mode != "original" and named_properties)
+    # A setting the curated roster knows by name is canon whether or not the
+    # lookup ran. Research is an ENHANCEMENT, and when it is off (offline, a
+    # blocked egress, a wiki timeout) every named franchise used to fall through
+    # to "original" - which skipped the entire canon path for a setting we can
+    # name from memory: no source line, no frontier, no canon personas, no
+    # chapters. That is the "Tanjiro does not know his own world" failure
+    # arrived at from the network side rather than the prompt side.
+    seeded_canon = mode != "original" and bool(
+        canon_seed.match(setting, found.get("canonical_name") or ""))
+    canon = bool(found.get("found")) or seeded_canon or (mode != "original" and named_properties)
     # PRIVATE BY DEFAULT is not a judgement about the player - they own this
     # world, play it, and export it. It only means a world that continues
     # someone else's setting is not PUBLICLY LISTED on a shared service, which
@@ -1617,14 +1666,20 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         # mentioned. Costs nothing until somebody walks there.
         # The frontier is built from researched places, and research is a
         # network call that sometimes comes back thin - the same build produced
-        # eighteen places on one run and none on the next. When it does, the
-        # seeded roster still knows where this setting's real places are, and a
-        # world whose map ends at the town wall is a worse failure than a
-        # slightly shorter frontier.
-        beyond = found if (found.get("places") or []) else {
-            "places": canon_seed.fallback_places(
-                setting, found.get("canonical_name") or "", era=era)}
-        raw = _record_beyond(raw, beyond)
+        # eighteen places on one run and none on the next. The seeded roster
+        # knows where this setting's real places are regardless, so it is
+        # MERGED IN rather than only used as a last resort: a thin research pass
+        # used to leave the landmark check (and the frontier) keyed on a handful
+        # of names while the town's own streets wore the rest.
+        seeded = canon_seed.fallback_places(
+            setting, found.get("canonical_name") or "", era=era)
+        merged = list(found.get("places") or [])
+        have = {_fold(p.get("name", "")) for p in merged}
+        for p in seeded:
+            if _fold(p["name"]) not in have:
+                merged.append(p)
+                have.add(_fold(p["name"]))
+        raw = _record_beyond(raw, {**found, "places": merged})
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)

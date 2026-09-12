@@ -18,7 +18,8 @@ from typing import Any, Optional
 from . import arcs, llm, memory, persona
 
 MOVE_VERB = re.compile(
-    r"\b(go|walk|head|move|travel|leave for|return|climb|cross|make my way|set off|step|enter)\b")
+    r"\b(go|walk|head|move|travel|leave for|leave|return|climb|cross|make my way|"
+    r"set off|set out|step|enter|ride|journey|venture|depart|take the road)\b")
 
 ADDRESS_VERB = re.compile(
     r"\b(ask|tell|say to|speak to|talk to|show|give|hand|grab|hit|strike|kiss|follow|warn|threaten|"
@@ -69,17 +70,31 @@ def resolve_movement(world, action: str, state: dict) -> Optional[str]:
     text = action.lower()
     if not MOVE_VERB.search(text):
         return None
-    best: tuple[int, str] | None = None
-    for lid in world.connects(state["location"]):
-        loc = world.loc_by_id[lid]
+
+    def score(lid):
+        loc = world.loc_by_id.get(lid)
+        if not loc:
+            return 0
         words = [w for w in re.findall(r"[a-z]+", loc["name"].lower())
                  if w not in ("the", "of", "a", "an")]
         hit = [w for w in words if w in text]
         if hit or lid.replace("_", " ") in text:
-            score = max((len(w) for w in hit), default=1)
-            if best is None or score > best[0]:
-                best = (score, lid)
-    return best[1] if best else None
+            return max((len(w) for w in hit), default=1)
+        return 0
+
+    # Neighbours AND the frontier - the setting's geography you have not built
+    # yet, which a road leaves town to reach from anywhere in it - scored
+    # TOGETHER, so a specific destination ("the Butterfly Mansion") beats a
+    # generic word it happens to share with a nearer place ("the Reach Road").
+    # Scored separately, "I take the road out to the Butterfly Mansion" from
+    # the village green resolved to the Reach Road and the player never left.
+    frontier = [l["id"] for l in world.locations if l.get("frontier")]
+    best, best_score = None, 0
+    for lid in world.connects(state["location"]) + frontier:
+        s = score(lid)
+        if s > best_score:
+            best, best_score = lid, s
+    return best
 
 
 def _named_npcs(world, text: str) -> list[dict]:

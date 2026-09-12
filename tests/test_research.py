@@ -1023,10 +1023,24 @@ def test_two_modes():
     ok(w2["mode"] in ("original", "canon"),
        "an unknown mode falls back to a valid one rather than erroring")
 
-    # In mock mode nothing resolves, so auto correctly lands on original.
+    # In mock mode nothing resolves over the network - but a setting the
+    # curated roster knows by name is canon from the TABLE, not from the
+    # lookup. Research is an enhancement; losing it must not silently demote a
+    # named franchise to "original" and drop its whole canon path (source line,
+    # frontier, canon personas, chapters) for a setting we can name from memory.
     w3 = worldforge.bootstrap("Naruto", user_id="mode-auto", mode="auto")
-    ok(w3["mode"] == "original",
-       "AUTO with nothing found is original — an original world is the other "
+    ok(w3["mode"] == "canon",
+       "AUTO with a named franchise is canon even when the lookup finds nothing - "
+       "the seed table knows it, and research is an enhancement, never the gate")
+    ok(w3.get("researched") is False and not w3.get("sources"),
+       "and it is still honestly marked unresearched, with no sources claimed")
+
+    # A setting nothing knows still stays original - the seed is not a crutch
+    # for every possible name, only the handful it actually has on record.
+    w4 = worldforge.bootstrap("a wholly original setting nobody wrote",
+                              user_id="mode-auto2", mode="auto")
+    ok(w4["mode"] == "original",
+       "while a setting nothing knows stays original — an original world is a "
        "mode, not a failed canon one")
 
 

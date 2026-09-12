@@ -711,6 +711,138 @@ def test_the_world_grows_into_its_own_canon():
        "the frontier nobody visited is untouched, and cost nothing")
 
 
+def test_a_town_does_not_wear_a_landmarks_name():
+    section("the map reads as a place, not a franchise tour")
+    # OBSERVED LIVE. The builder kept its own town ids and hung a canon
+    # landmark's NAME on them:
+    #     storm_drain_alley -> "Mugen Train"
+    #     north_wall_walk   -> "Swordsmith Village"
+    # The map LOOKED right - every landmark was on it - while reading as
+    # nonsense, and the frontier below could not be trusted, because the same
+    # names it keyed on were on the town's own streets.
+    base = {"name": "Kagura", "id": "kagura", "start_location": "market_square",
+            "locations": [
+                {"id": "market_square", "name": "The Market Square",
+                 "connects": ["storm_drain_alley", "north_wall_walk", "butterfly_mansion"]},
+                {"id": "storm_drain_alley", "name": "Mugen Train",
+                 "connects": ["market_square"]},
+                {"id": "north_wall_walk", "name": "Swordsmith Village",
+                 "connects": ["market_square"]},
+                {"id": "butterfly_mansion", "name": "Butterfly Mansion",
+                 "connects": ["market_square"]}],
+            "npcs": [{"id": "n1", "name": "A"}, {"id": "n2", "name": "B"}],
+            "rules": [{"id": f"R{i}", "text": "t"} for i in range(9)],
+            "fated_events": [{"id": f"F{i}", "turn": i + 1, "title": "t"} for i in range(7)]}
+    found = {"places": [{"name": "Mugen Train", "note": "the train"},
+                        {"name": "Swordsmith Village", "note": "hidden"},
+                        {"name": "Butterfly Mansion", "note": "estate"}]}
+    w = worldkit.load(worldforge._record_beyond(dict(base), found))
+    by_id = {l["id"]: l for l in w.locations}
+
+    ok(by_id["storm_drain_alley"]["name"] != "Mugen Train",
+       "a town street stops wearing the Mugen Train's name")
+    ok(by_id["north_wall_walk"]["name"] != "Swordsmith Village",
+       "and a wall walk stops being the Swordsmith Village")
+    ok(not by_id["storm_drain_alley"]["frontier"]
+       and not by_id["north_wall_walk"]["frontier"],
+       "they stay the town's own places, not landmarks")
+    ok(by_id["butterfly_mansion"]["name"] == "Butterfly Mansion"
+       and not by_id["butterfly_mansion"]["frontier"],
+       "but a location whose own id IS the landmark keeps it - a story may be set there")
+
+    names = {l["name"] for l in w.locations if l["frontier"]}
+    ok({"Mugen Train", "Swordsmith Village"} <= names,
+       "and the landmarks it was wearing are on the frontier, where you can walk to them")
+
+    # Travel resolves from a street that is NOT the hub - the road out.
+    from backend import world_master
+    dest = world_master.resolve_movement(
+        w, "I take the road out to the Swordsmith Village",
+        {"location": "storm_drain_alley"})
+    ok(dest and w.loc_by_id[dest]["name"] == "Swordsmith Village",
+       "and 'take the road out to X' resolves from a street that is not the hub")
+
+
+def test_a_named_franchise_stays_canon_when_research_is_thin():
+    section("canon survives a lookup that comes back empty")
+    # Research is an ENHANCEMENT and a network call. When it is off or thin
+    # (offline, a blocked egress, a wiki timeout) the build used to fall through
+    # to "original", which skipped the ENTIRE canon path - no source line, no
+    # frontier, no canon personas, no chapters - for a setting we can name from
+    # memory. That is "Tanjiro does not know his own world", arrived at from the
+    # network side rather than the prompt side.
+    real = research.enabled
+    research.enabled = lambda: False          # the offline / blocked case
+    try:
+        w = worldkit.load(worldforge.bootstrap("Demon Slayer", user_id="wg-canon"))
+    finally:
+        research.enabled = real
+
+    ok(w.get("mode") == "canon",
+       "a named franchise is canon even when the lookup finds nothing")
+    ok(w.get("researched") is False and w.get("sources") == [],
+       "and it is still honestly marked unresearched, with no sources claimed")
+    ok(any(l["frontier"] for l in w.locations),
+       "its geography is on the map as frontier, so the world does not end at one square")
+    names = {n["name"] for n in w.npcs}
+    ok("Tanjiro Kamado" in names,
+       "and the lead is seated rather than left to an invented cast")
+    ok(any(l["frontier"] for l in w.locations if l["name"] == "Butterfly Mansion"),
+       "with the real places, not invented ones")
+
+
+def test_a_chapter_ends_in_play_and_the_next_is_walked_to():
+    section("the journey - a chapter ends in play, and the next is walked to")
+    # The path that was only ever unit-tested and never walked: fire a world's
+    # whole fate spine by PLAYING, confirm the chapter is over, and travel to
+    # the next chapter of the source - which builds a real place on the same map
+    # and stands the player in it.
+    from backend import chapters
+    db.init()
+    uid = "journey-user"
+    pt_id = engine.create_playthrough(uid, "emberfall", "a traveller")
+    chapters.set_book(pt_id, [{"n": 1, "title": "The Valley"},
+                              {"n": 2, "title": "Mount Natagumo"}])
+    world = engine.world_for(engine._pt(pt_id))
+    last = max(f["turn"] for f in world.fated_events)
+    for i in range(last + 4):
+        engine.take_turn(pt_id, f"I keep moving and watch the road ({i}).",
+                         player=memory.SOLO)
+
+    pt = engine._pt(pt_id)
+    ok(chapters.finished(pt, engine.world_for(pt), engine._fate_fired(pt_id)),
+       "playing through the spine ends the chapter - a narrative signal, in play")
+
+    before = len(engine.world_for(pt).locations)
+    moved = engine.begin_next_chapter(pt_id, user_id=uid)
+    ok(moved.get("moved") and not moved.get("aftermath"),
+       "and the next chapter of the source is travelled to, not skipped")
+    ok(len(engine.world_for(engine._pt(pt_id)).locations) > before,
+       "which is a real place added to the same map, not a separate game")
+    ok(engine._pt(pt_id)["current_location"] == moved.get("location"),
+       "and the player is standing in it")
+
+    # A frontier is walkable from a street that is NOT the hub - the road out -
+    # through the REAL turn pipeline, not just the resolver. This is the exact
+    # move that "moved nobody" in live play while the narration described them
+    # leaving.
+    pt2 = engine.create_playthrough(uid, "emberfall", "a traveller")
+    w2 = engine.world_for(engine._pt(pt2))
+    data = json.loads(json.dumps(w2.data))
+    start = data["start_location"]
+    off = next(l["id"] for l in data["locations"] if l["id"] != start)
+    data["locations"].append({"id": "beyond_butterfly_mansion", "name": "Butterfly Mansion",
+                              "kind": "frontier", "desc": "a wisteria courtyard",
+                              "connects": [start], "frontier": True, "origin": "canon"})
+    db.run("UPDATE playthroughs SET world_json=?, current_location=? WHERE id=?",
+           (json.dumps(data), off, pt2))
+    engine.world_registry.forget(w2.id)
+    engine.take_turn(pt2, "I take the road out to the Butterfly Mansion",
+                     player=memory.SOLO)
+    ok(engine._pt(pt2)["current_location"] == "beyond_butterfly_mansion",
+       "and the road out is walkable from a street that is not the hub")
+
+
 def test_the_opening_scene_has_people_in_it():
     section("the opening scene is inhabited, not staffed")
     # OBSERVED LIVE. A Demon Slayer build put its seven characters on seven
@@ -796,6 +928,9 @@ def _all():
     return (test_the_player_is_somebody_before_turn_one,
             test_a_canon_world_is_told_in_chapters,
             test_the_world_grows_into_its_own_canon,
+            test_a_town_does_not_wear_a_landmarks_name,
+            test_a_named_franchise_stays_canon_when_research_is_thin,
+            test_a_chapter_ends_in_play_and_the_next_is_walked_to,
             test_the_opening_scene_has_people_in_it,
             test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,
