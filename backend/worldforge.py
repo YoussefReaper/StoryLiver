@@ -1449,6 +1449,16 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         raw["seed"] = int(seed)
     # Attribution travels with the world: CC BY-SA asks for it, and a
     # player deserves to know which wiki their world was grounded on.
+    # The name the player gave themselves becomes who they ARE in this world,
+    # not just a line in the build brief. Without this the world was built
+    # around Yuki Sarashina and then narrated to "the traveller", because
+    # create_playthrough falls back to default_protagonist and Session Zero's
+    # answer never reached it. Being called by your own name is most of what
+    # separates playing a character from steering a camera.
+    who = str((answers or {}).get("name") or "").strip()
+    if who:
+        raw["default_protagonist"] = who[:120]
+
     raw["sources"] = research.attribution(found)
     # The source's own running order, kept on the world so a playthrough can
     # be told which chapter it is in without a second lookup. Empty for an

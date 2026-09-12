@@ -259,9 +259,19 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         fate_line,
     ]
     if npc_action:
-        parts.append(f"\nAN NPC ACTS FIRST, UNPROMPTED: {npc_action}\nNarrate this as something that happens TO the player, initiated by that character.")
+        # "Do not restate it" is load-bearing. A live turn narrated this
+        # perfectly in its opening paragraph and then pasted the directive
+        # itself back as a closing sentence - in the third person, calling the
+        # player "the traveller" - so the passage ended by summarising its own
+        # first line in the wrong voice.
+        parts.append(f"\nAN NPC ACTS FIRST, UNPROMPTED: {npc_action}\n"
+                     f"Narrate this as something that happens TO the player, initiated "
+                     f"by that character. This line is raw material, never text: do not "
+                     f"quote it, echo it, or summarise it back at the end.")
     if beat:
-        parts.append(f"\nTHE STORY TURNS: {beat}\nWeave this in as something the world does, not something the player chose.")
+        parts.append(f"\nTHE STORY TURNS: {beat}\nWeave this in as something the world "
+                     f"does, not something the player chose. Same rule: raw material, "
+                     f"never text - do not restate it.")
     if action:
         who = actor_name.upper() if actor_name else "THE PLAYER"
         parts.append(f"\n{who} ACTS: {action}")
