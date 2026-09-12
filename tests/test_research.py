@@ -348,6 +348,44 @@ def test_the_narrator_stays_inside_the_story():
        "is a request and this one has already been ignored once")
 
 
+def test_a_wiki_is_asked_what_categories_it_has():
+    section("fandom — read the wiki's own categories instead of guessing names")
+    # THE CAUSE of every Fandom bucket coming back empty in production. The
+    # code probed a fixed list of guessed category names - "Category:Arcs",
+    # "Category:Locations", "Category:Organizations" - and the Demon Slayer
+    # wiki has none of them. Checked against the live wiki: 783 categories, no
+    # "Arcs" anywhere, and the arcs are filed as categories in their own right:
+    # "Mugen Train Arc", "Final Selection Arc", "Mount Natagumo Arc".
+    real = ["Characters", "Male Characters", "Female Characters", "Alive",
+            "Anime Images", "Asakusa Arc", "Mugen Train Arc", "Final Selection Arc",
+            "Locations", "Organizations", "Demon Slayer Corps", "Families",
+            "Abilities", "Breathing Styles", "Achievement Badges"]
+
+    ok(research.categories_for("characters", real) == [
+        "Characters", "Male Characters", "Female Characters"],
+       "the character categories this wiki actually has")
+    arcs = research.categories_for("arcs", real)
+    ok(arcs == ["Asakusa Arc", "Mugen Train Arc", "Final Selection Arc"],
+       f"every arc is found, because on this wiki each arc IS a category ({arcs})")
+    ok(research.categories_for("places", real) == ["Locations"],
+       "and the place category, under whichever of several names it uses")
+    ok("Demon Slayer Corps" in research.categories_for("factions", real),
+       "a setting-specific faction category is matched on shape, not on a guess")
+    ok(research.categories_for("powers", real) == ["Abilities", "Breathing Styles"],
+       "as is a setting-specific power system")
+
+    noise = research.categories_for("characters", real) + research.categories_for("places", real)
+    ok("Anime Images" not in noise and "Achievement Badges" not in noise
+       and "Alive" not in noise,
+       "wiki housekeeping categories are not mistaken for content")
+
+    ok(research.categories_for("nonsense", real) == [],
+       "an unknown bucket matches nothing rather than everything")
+    ok(len(research.categories_for("factions", real)) <= 4,
+       "container buckets take a handful; only arcs are unbounded, because "
+       "there each category is a whole chapter of the story")
+
+
 def test_chapters_survive_a_wiki_that_never_answers():
     section("chapters — the running order does not depend on Fandom being reachable")
     # THE ACTUAL CAUSE, found by reading a live dossier rather than guessing.
@@ -848,6 +886,7 @@ def _all():
             test_an_empty_room_is_told_it_is_empty,
             test_the_chapter_list_is_not_starved_by_the_request_budget,
             test_chapters_survive_a_wiki_that_never_answers,
+            test_a_wiki_is_asked_what_categories_it_has,
             test_the_narrator_stays_inside_the_story,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,

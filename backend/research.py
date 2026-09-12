@@ -508,23 +508,97 @@ def _wiki_is_about(sitename: str, setting: str, canonical: str, slug: str = "") 
     return False
 
 
-def find_wiki(setting: str, wiki_title: str, budget: _Budget) -> str | None:
+def find_wiki(setting: str, wiki_title: str, budget: _Budget,
+              *, trace: list | None = None) -> str | None:
     """Probe candidate subdomains, and only accept one that is demonstrably
-    about this setting."""
-    for slug in _slug_candidates(setting, wiki_title):
+    about this setting.
+
+    `trace` collects WHY each candidate was rejected. Without it this function
+    returns None for six different reasons - unreachable, blocked, 403, wrong
+    sitename, budget gone, no candidates - and reports all of them as an empty
+    string. A production dossier came back `wiki: ""` for weeks; the wiki was
+    answering in under 300ms the whole time, and two separate fixes went in
+    against causes that were never happening because there was nothing to read.
+    A failure that cannot say why is a failure that gets guessed at."""
+    cands = _slug_candidates(setting, wiki_title)
+    if trace is not None and not cands:
+        trace.append("no subdomain candidates for that name")
+    for slug in cands:
         if budget.left <= 5:
+            if trace is not None:
+                trace.append(f"budget exhausted before trying {slug}")
             break
         host = f"{slug}.fandom.com"
         try:
             # Probes are cheap and expected to fail, so no retry budget.
             data = _api(host, {"action": "query", "meta": "siteinfo",
                                "siprop": "general"}, budget, quick=True)
-        except ResearchError:
+        except ResearchError as e:
+            if trace is not None:
+                trace.append(f"{host}: {e}")
             continue
         sitename = ((data.get("query") or {}).get("general") or {}).get("sitename", "")
         if sitename and _wiki_is_about(sitename, setting, wiki_title, slug):
             return host
+        if trace is not None:
+            trace.append(f"{host}: answered as {sitename!r}, which is not this setting"
+                         if sitename else f"{host}: no sitename in reply")
     return None
+
+
+# What each bucket's categories actually LOOK LIKE, rather than what we hoped
+# they were called. Every wiki files things its own way, and guessing fixed
+# names failed silently: the Demon Slayer wiki has no "Category:Arcs" at all -
+# it has 783 categories including "Mugen Train Arc", "Final Selection Arc" and
+# "Mount Natagumo Arc", each an arc in its own right. Asking the wiki what
+# categories it HAS and matching them is the difference between reading a wiki
+# and hoping it is shaped like the last one.
+CATEGORY_PATTERNS = {
+    "characters": re.compile(r"^(characters|(male|female|human|demon) characters)$", re.I),
+    "arcs": re.compile(r"(^|\s)arcs?$|^(story arcs|sagas)$", re.I),
+    "places": re.compile(r"^(locations|places|buildings|countries|villages|cities)$", re.I),
+    "factions": re.compile(r"(organi[sz]ations|groups|corps|families|clans)$", re.I),
+    "powers": re.compile(r"(abilities|powers|techniques|breathing styles|"
+                         r"combat styles|cursed techniques|magic)$", re.I),
+}
+
+
+def all_categories(host: str, budget: _Budget, *, pages: int = 2) -> list:
+    """Every category this wiki actually has, cheaply.
+
+    One `allcategories` call returns up to 500, which covers most wikis in one
+    or two requests - far fewer than probing a handful of guessed category
+    names one at a time and getting nothing back."""
+    out, cont = [], None
+    for _ in range(max(1, pages)):
+        if budget.left <= 3:
+            break
+        params = {"action": "query", "list": "allcategories",
+                  "aclimit": "500", "acmin": "2"}
+        if cont:
+            params["accontinue"] = cont
+        try:
+            data = _api(host, params, budget)
+        except ResearchError:
+            break
+        out.extend(c.get("category") if isinstance(c, dict) else str(c)
+                   for c in ((data.get("query") or {}).get("allcategories") or []))
+        cont = ((data.get("continue") or {}).get("accontinue"))
+        if not cont:
+            break
+    return [c for c in out if c]
+
+
+def categories_for(bucket: str, available: list) -> list:
+    """The categories on THIS wiki that belong to this bucket."""
+    pat = CATEGORY_PATTERNS.get(bucket)
+    if not pat:
+        return []
+    hits = [c for c in available if pat.search(c)]
+    # An arc category IS an arc - "Mugen Train Arc" names the thing itself -
+    # so there can be dozens and they are all wanted. The other buckets are
+    # containers, and a handful is plenty.
+    return hits if bucket == "arcs" else hits[:4]
 
 
 CATEGORY_SETS = {
@@ -917,15 +991,37 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
         # starves it.
         curated = characters_from_wikipedia(setting, out["canonical_name"], budget)
 
-        host = find_wiki(setting, out["canonical_name"], budget) if depth == "full" else None
+        wiki_trace: list = []
+        host = (find_wiki(setting, out["canonical_name"], budget, trace=wiki_trace)
+                if depth == "full" else None)
+        # Recorded on the dossier whether or not it worked, because "no wiki"
+        # with no reason attached is what made this undiagnosable.
+        if not host:
+            out["wiki_note"] = "; ".join(wiki_trace)[:400] or "no fandom wiki probed"
         if host:
             out["wiki"] = host
             out["sources"].append({"title": f"{out['canonical_name']} Wiki",
                                    "url": f"https://{host}",
                                    "source": "Fandom", "license": "CC BY-SA 3.0"})
-            for bucket, cats in CATEGORY_SETS.items():
+            # Ask the wiki what it HAS before asking it for anything. Guessing
+            # fixed category names is how every Fandom bucket came back empty:
+            # this wiki has 783 categories and not one of them is "Arcs".
+            available = all_categories(host, budget)
+            for bucket, guesses in CATEGORY_SETS.items():
+                found_cats = categories_for(bucket, available) if available else []
+
+                # An arc category IS the arc. "Mugen Train Arc" does not need
+                # its members fetched to tell you the Mugen Train arc exists,
+                # and fetching them would return every character who appeared
+                # in it instead.
+                if bucket == "arcs" and found_cats:
+                    out[bucket] = [{"name": re.sub(r"\s*Arcs?$", "", c).strip() or c,
+                                    "note": ""} for c in found_cats[:12]]
+                    continue
+
                 names = []
-                for cat in cats:
+                for cat in (found_cats or list(guesses)):
+                    cat = cat if cat.lower().startswith("category:") else f"Category:{cat}"
                     names.extend(category_members(host, cat, budget,
                                                   limit=200 if bucket == "characters" else 120))
                     if len(names) >= 30 or budget.left <= 4:
