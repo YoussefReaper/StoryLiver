@@ -517,6 +517,13 @@ def test_the_player_is_somebody_before_turn_one():
                                  answers={"name": "Yuki Sarashina, a courier"})
     ok(built.get("default_protagonist", "").startswith("Yuki Sarashina"),
        "the name the player gave themselves becomes who they are in the world")
+    # OBSERVED LIVE: "Yuki Sarashina" came back as an NPC standing in the
+    # opening square, so the player could have walked up to themselves. The
+    # builder was told this was the protagonist and wrote them into the cast
+    # anyway. The prompt now forbids it and this is the wall behind it.
+    ok(not any("yuki sarashina" in (n.get("name") or "").lower()
+               for n in built.get("npcs") or []),
+       "and they are NOT also a character in it — the player never meets themselves")
     pt_id = engine.create_playthrough("wg", "emberfall")
     ok(engine._pt(pt_id)["protagonist"],
        "and a playthrough started without one still falls back to the world's, "

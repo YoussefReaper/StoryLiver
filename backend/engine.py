@@ -837,8 +837,15 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         # split_speech returns each speaker's name exactly as it appears in the
         # world, so an exact lookup is enough to get back to the id the plate
         # needs for its portrait and standing.
-        by_name = {world.npc_name(i): i for i in (state.get("present") or [])
-                   if i in world.by_id}
+        # EXACTLY the list the narrator was given - verdict["state"]["present"]
+        # is what narrate() reads - not a separately computed one. They had
+        # drifted apart: `state` here is rebuilt before the deterministic tick,
+        # so a character who moved during the turn was in one list and not the
+        # other, and every marked line by somebody in that gap was silently
+        # folded back into prose. A live turn marked "Giyu Tomioka: Come
+        # quietly" and lost the plate to exactly this.
+        present_now = (verdict.get("state") or {}).get("present") or []
+        by_name = {world.npc_name(i): i for i in present_now if i in world.by_id}
         blocks = narrator.split_speech(text, list(by_name))
 
         base_meta = {"premium": use_premium, "mode": mode, "player": player,
