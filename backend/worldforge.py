@@ -18,7 +18,7 @@ import json
 import re
 import uuid
 
-from . import arcs, canon_seed, config, db, llm, research, sessionzero, worldkit
+from . import arcs, canon_lore, canon_seed, config, db, llm, research, sessionzero, worldkit
 from . import worlds as world_registry
 
 # Settings that read as an existing IP get the personal-only treatment. This is
@@ -1109,13 +1109,13 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
     def _clean(vals, cap):
         return [str(v).strip()[:cap] for v in (vals or []) if str(v).strip()]
 
-    by = {_fold(c.get("name", "")): c for c in (out.get("characters") or [])
-          if isinstance(c, dict)}
-    for npc in canon:
-        card = by.get(_fold(npc["name"]))
-        if not card:
-            continue
-        anchors = dict(npc.get("anchors") or {})
+    def _apply_card(npc, anchors, card):
+        """Write one card's fields onto a character's anchors, and return them.
+
+        Used twice per character, in order: the curated floor first (what the
+        source says, no model call), then the model's card over it. Field by
+        field, so the model only fills what it actually answered and the floor
+        covers the rest."""
         if str(card.get("voice") or "").strip():
             anchors["voice"] = str(card["voice"]).strip()[:220]
         for key in ("constraints", "goals", "taboos"):
@@ -1133,7 +1133,6 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         if str(card.get("role") or "").strip():
             npc["role"] = str(card["role"]).strip()[:120]
         anchors["role"] = npc.get("role") or anchors.get("role") or "villager"
-        npc["anchors"] = anchors
         mem = _clean(card.get("memories"), 240)[:4]
         if mem:
             npc["seed_memories"] = mem
@@ -1146,6 +1145,25 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         # answers it instead.
         if card.get("public") is False:
             npc["hidden_start"] = True
+        return anchors
+
+    by = {_fold(c.get("name", "")): c for c in (out.get("characters") or [])
+          if isinstance(c, dict)}
+    for npc in canon:
+        anchors = dict(npc.get("anchors") or {})
+        # THE FLOOR FIRST. What the source says, with no model call. This is
+        # what stops a build handing the narrator "Nezuko Kamado / VOICE:
+        # soft-spoken and kind / CONSTRAINTS: is an ordinary mortal person" for
+        # a character who is mute, is a demon, and rides in a box - whether the
+        # model is offline, or simply does not know the character. The model
+        # card below then overrides it field by field.
+        floor = canon_lore.card(npc["name"])
+        if floor:
+            anchors = _apply_card(npc, anchors, floor)
+        said = by.get(_fold(npc["name"]))
+        if said:
+            anchors = _apply_card(npc, anchors, said)
+        npc["anchors"] = anchors
     return raw
 
 
@@ -1617,7 +1635,15 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
                                          fallback=str(raw.get("name") or ""))
     raw["researched"] = bool(found.get("found"))
     raw["personal_only"] = personal
-    raw["inspired_by"] = found.get("canonical_name") or (setting if personal else "")
+    # The SOURCE the narrator is told about is the setting, not the whole
+    # sentence the player typed. A crossover premise ("I and Charlie from Hazbin
+    # Hotel are inside the world of Demon Slayer") was recorded verbatim, so the
+    # narrator's source line read like the player's request rather than the
+    # world the story is actually in.
+    source_name = (found.get("canonical_name") or "").strip()
+    if not source_name and parsed.get("host_is_proper"):
+        source_name = (parsed.get("host") or "").strip()
+    raw["inspired_by"] = source_name or (setting if personal else "")
     raw["mode"] = "canon" if canon else "original"
     raw["scale"] = scale if scale in SCALES else "town"
     if personal:

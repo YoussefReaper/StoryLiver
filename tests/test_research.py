@@ -783,6 +783,64 @@ def test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal():
        "an ungrounded build is left exactly as the model wrote it")
 
 
+def test_a_canon_character_has_a_floor_beneath_the_model():
+    section("canon fidelity — the floor when the model says nothing")
+    # _apply_canon_personas asks the MODEL for each card, which is the right
+    # primary path. This is the floor under it. When that call is offline, or
+    # the model does not know a character, the character used to keep whatever
+    # the builder invented from a one-line roster note - which is how a build
+    # handed the narrator "Nezuko Kamado / VOICE: soft-spoken and kind /
+    # CONSTRAINTS: is an ordinary mortal person" for a character who is mute,
+    # is a demon, and rides in a box.
+    import backend.worldforge as wf
+
+    raw = {"npcs": [
+        {"id": "n1", "name": "Nezuko Kamado", "role": "a quiet village girl",
+         "origin": "canon",
+         "anchors": {"voice": "Soft-spoken and kind.",
+                     "constraints": ["Is an ordinary mortal person."]}},
+        {"id": "n2", "name": "Inosuke Hashibira", "origin": "canon",
+         "anchors": {"voice": "Plain, direct, unhurried.",
+                     "constraints": ["Is an ordinary mortal person."]}},
+        {"id": "n3", "name": "A Stall Keeper", "origin": "original",
+         "anchors": {"voice": "Sells rope.", "constraints": ["Is an ordinary mortal person."]}},
+    ]}
+    real, wf._resilient = wf._resilient, lambda *a, **k: {"characters": []}
+    try:
+        out = wf._apply_canon_personas(raw, "Demon Slayer", user_id="u_floor")
+    finally:
+        wf._resilient = real
+
+    nez = out["npcs"][0]["anchors"]
+    ok("not speak" in nez["voice"].lower() or "never speaks" in nez["voice"].lower(),
+       "a mute demon is not described as soft-spoken when the model is silent")
+    ok(any("demon" in c.lower() for c in nez["constraints"]),
+       "and what she actually is replaces 'an ordinary mortal person'")
+    ok(out["npcs"][0]["seed_memories"],
+       "and she arrives carrying something of her own")
+
+    ino = out["npcs"][1]["anchors"]
+    ok("third person" in ino["voice"].lower(),
+       "Inosuke speaks in the third person, from the floor")
+    ok(any("mask" in c.lower() for c in ino["constraints"]),
+       "and wears the boar mask rather than being an ordinary mortal")
+
+    ok(out["npcs"][2]["anchors"]["voice"] == "Sells rope.",
+       "an invented background resident is untouched — the floor covers real people only")
+
+    # The model still wins where it speaks: the floor is a floor, not a ceiling.
+    real, wf._resilient = wf._resilient, lambda *a, **k: {"characters": [
+        {"name": "Nezuko Kamado", "voice": "A newer, better line."}]}
+    try:
+        out2 = wf._apply_canon_personas(
+            {"npcs": [{"id": "n1", "name": "Nezuko Kamado", "origin": "canon",
+                       "anchors": {}}]}, "Demon Slayer", user_id="u_floor2")
+    finally:
+        wf._resilient = real
+    ok(out2["npcs"][0]["anchors"]["voice"] == "A newer, better line.",
+       "and a model card overrides the floor field by field")
+
+
 def test_character_list_furniture():
     section("correctness — an article's furniture is not a character")
     import re as _re
@@ -1052,6 +1110,7 @@ def _all():
             test_canon_is_dealt_across_districts_not_raced_for,
             test_unused_canon_is_seated_not_merely_labelled,
             test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
+            test_a_canon_character_has_a_floor_beneath_the_model,
             test_the_character_the_player_named_actually_turns_up,
             test_an_empty_room_is_told_it_is_empty,
             test_a_spoken_line_becomes_a_plate_the_way_people_are_named,
