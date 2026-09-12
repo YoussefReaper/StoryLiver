@@ -793,8 +793,45 @@ def _record_beyond(raw: dict, found: dict, *, keep: int = 6) -> dict:
     locs = raw.get("locations") or []
     if not locs:
         return raw
+    # The builder is told to build ONE settlement and leave the setting's
+    # landmarks on the map around it. It obeys most of the time and sometimes
+    # does the opposite - a live build came back with Mugen Train, Mount
+    # Natagumo, Mount Sagiri, Mount Kumotori and Infinity Castle AS the town's
+    # locations, which is the whole series folded into one square, and which
+    # also silently emptied the frontier because every canon place was then
+    # "already used". A prompt is a request; this is the wall.
+    #
+    # One canon landmark may legitimately be where the story is set, so the
+    # first is left alone and the rest are moved out to the frontier, which is
+    # exactly where they belong: reachable, named, and built when visited.
+    canon_names = {_fold(p["name"]) for p in places}
+    landmarks = [l for l in locs if _fold(l.get("name", "")) in canon_names]
+    start_id = raw.get("start_location")
+    for l in landmarks[1:]:
+        if l.get("id") == start_id:
+            continue          # never move the ground the player is standing on
+        l["frontier"] = True
+        l["kind"] = "frontier"
+        l["origin"] = "canon"
+        # Reachable from where the player is, not merely present on the map.
+        if start_id and start_id not in (l.get("connects") or []):
+            l.setdefault("connects", []).append(start_id)
+    if len(landmarks) > 1:
+        locs = [l for l in locs if not l.get("frontier")] + \
+               [l for l in locs if l.get("frontier")]
+        raw["locations"] = locs
+
     used = {_fold(l.get("name", "")) for l in locs}
-    hub = locs[0]["id"]
+    # Wired to where the player actually STANDS, not to locations[0]. They are
+    # different: a live world put the frontier on the hub while the player
+    # started in the market square, so "I take the road out to the Swordsmith
+    # Village" moved nobody - the destination was on the map and not reachable
+    # from the only place anyone was. The narration even said "the square
+    # behind you keeps its watchful noise as you leave it", while the player
+    # stayed exactly where they were.
+    ids = {l.get("id") for l in locs}
+    start = raw.get("start_location")
+    hub = start if start in ids else locs[0]["id"]
     added = 0
     for p in places:
         if added >= keep:
@@ -1578,7 +1615,16 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
             user_id=user_id)
         # The rest of the setting's geography, reachable rather than merely
         # mentioned. Costs nothing until somebody walks there.
-        raw = _record_beyond(raw, found)
+        # The frontier is built from researched places, and research is a
+        # network call that sometimes comes back thin - the same build produced
+        # eighteen places on one run and none on the next. When it does, the
+        # seeded roster still knows where this setting's real places are, and a
+        # world whose map ends at the town wall is a worse failure than a
+        # slightly shorter frontier.
+        beyond = found if (found.get("places") or []) else {
+            "places": canon_seed.fallback_places(
+                setting, found.get("canonical_name") or "", era=era)}
+        raw = _record_beyond(raw, beyond)
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)

@@ -232,11 +232,19 @@ def _get_json(url: str, params: dict, budget: _Budget, *, timeout=None,
 def _api(host: str, params: dict, budget: _Budget, *, quick=False) -> dict:
     """One MediaWiki Action API call, with the etiquette parameters set."""
     base = {"format": "json", "formatversion": "2", "maxlag": "5"}
+    # A "quick" probe is cheap and expected to fail OFTEN - it is guessing
+    # subdomains - but one of those guesses decides whether the entire Fandom
+    # half of research happens at all. At attempts=1 and a 3s ceiling it was
+    # losing that one on a COLD run: fresh DNS, fresh TLS, no pooled
+    # connection. Reproduced exactly - a build against a warm cache came back
+    # with the wiki, 18 places and 12 arcs, and the same build against an empty
+    # one came back with none of it, every time. The wiki itself answers in
+    # under 300ms once anything is warm.
     return _get_json(f"https://{host}/w/api.php" if "wikipedia" in host
                      else f"https://{host}/api.php",
                      {**base, **params}, budget,
-                     attempts=1 if quick else 3,
-                     timeout=3.0 if quick else None)
+                     attempts=2 if quick else 3,
+                     timeout=8.0 if quick else None)
 
 
 # ---------------------------------------------------------------------------
