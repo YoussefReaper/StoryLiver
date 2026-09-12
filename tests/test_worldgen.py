@@ -843,6 +843,37 @@ def test_a_chapter_ends_in_play_and_the_next_is_walked_to():
        "and the road out is walkable from a street that is not the hub")
 
 
+def test_the_cast_does_not_vanish_after_the_opening_turn():
+    section("the cast is still in the room the day you arrive")
+    # OBSERVED. A build seats its opening cast in the place the player arrives,
+    # but a schedule is a DAILY template - so the opening cast was only there
+    # for the opening phase, and by the next turn the room was empty. A live
+    # Demon Slayer world read "CHARACTERS PRESENT: nobody" on turn one with
+    # Tanjiro, Nezuko and Charlie all still on the map, one turn after the
+    # player had met them. The people in the room when you walked in are there
+    # for the rest of that day.
+    db.init()
+    uid = "presence-user"
+    pt_id = engine.create_playthrough(uid, "emberfall", "a traveller")
+    world = engine.world_for(engine._pt(pt_id))
+    start = world.get("start_location")
+    opening = {n["id"] for n in world.npcs if n["start_location"] == start}
+    ok(opening, "the opening scene has a cast to begin with")
+
+    present_each_turn = []
+    for _ in range(memory.OPENING_TURNS):
+        row = engine._pt(pt_id)
+        present_each_turn.append(
+            set(memory.npcs_at(pt_id, world, row["current_location"], row["current_turn"])))
+        engine.take_turn(pt_id, "I wait and watch the room.", player=memory.SOLO)
+
+    ok(all(here & opening for here in present_each_turn),
+       "and somebody from that opening cast is present on every turn of day one - "
+       "the room does not empty out from under the scene")
+    ok(memory.OPENING_TURNS == 4,
+       "the window is one day, not a freeze - the schedule owns them again after it")
+
+
 def test_the_opening_scene_has_people_in_it():
     section("the opening scene is inhabited, not staffed")
     # OBSERVED LIVE. A Demon Slayer build put its seven characters on seven
@@ -931,6 +962,7 @@ def _all():
             test_a_town_does_not_wear_a_landmarks_name,
             test_a_named_franchise_stays_canon_when_research_is_thin,
             test_a_chapter_ends_in_play_and_the_next_is_walked_to,
+            test_the_cast_does_not_vanish_after_the_opening_turn,
             test_the_opening_scene_has_people_in_it,
             test_a_premise_is_parsed_not_searched,
             test_research_enriches_and_never_gates,

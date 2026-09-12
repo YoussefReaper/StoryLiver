@@ -247,8 +247,23 @@ def validate(pt, world, action, *, user_id, player=memory.SOLO, party=None):
             for p in party) + "\n"
 
     events = memory.retrieve_events(pt["id"], state["turn"], action, k=8)
+    # The World Master is the arbiter of what is VALID, so it has to know what
+    # world it is judging. It was told "WORLD: Greyfall" and nothing else - so a
+    # Demon Slayer world was adjudicated as a generic village, and an action as
+    # ordinary there as breathing technique or a Blood Demon Art had no reason
+    # to be allowed. The narrator has been told the source for a while; this is
+    # the other half of the seam.
+    source = (world.get("inspired_by") or world.get("source_prompt") or "").strip()
+    source_line = ""
+    if source and world.get("mode") == "canon":
+        source_line = (
+            f"THE SOURCE: this world continues {source}. You know this setting. Judge an "
+            f"action by what is actually possible THERE - its techniques, its powers and "
+            f"their limits, its factions, what its people would and would not do - not by "
+            f"what would be possible in a generic village. Something ordinary in {source} "
+            f"is ordinary here. Only RULES below can make it invalid.\n")
     prompt = f"""WORLD: {world.name} - {world.get('tagline', '')}
-RULES:
+{source_line}RULES:
 {chr(10).join('  ' + r['id'] + ': ' + r['text'] for r in world.rules)}
 
 FATE:

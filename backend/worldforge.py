@@ -1574,10 +1574,24 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         ]
         structure = _stitch(plan, districts, filled)
 
+    # The laws are HARD constraints the engine enforces before any prose, so
+    # they have to fit the setting they are enforcing. Written from the world's
+    # own name and cast alone, a Demon Slayer world got laws like "there is no
+    # magic here. No spell, vision, or supernatural power is available to
+    # anyone" - which forbids the breathing techniques and Blood Demon Arts the
+    # whole setting runs on, and the World Master then rejects canon actions on
+    # the strength of them.
+    laws_source = (found.get("canonical_name") or "").strip()
+    if not laws_source and parsed.get("host_is_proper"):
+        laws_source = (parsed.get("host") or "").strip()
+    laws_setting = f"\nSETTING: {laws_source or setting}\n"
     laws_brief = (
-        f"WORLD: {structure.get('name')}\n"
+        f"WORLD: {structure.get('name')}{laws_setting}"
         f"PLACES: {', '.join(l.get('id', '') for l in structure.get('locations', []))}\n"
         f"PEOPLE: {', '.join(n.get('id', '') for n in structure.get('npcs', []))}\n\n"
+        "The laws are what is TRUE in this setting - its own physics, powers and "
+        "prohibitions - not a generic village's. A law that forbids something the "
+        "setting runs on is a law that breaks the world.\n"
         "Write the laws and the fate. JSON only."
     )
     laws = _resilient(

@@ -30,6 +30,9 @@ REL_MIN, REL_MAX = -100.0, 100.0
 
 SOLO = "user"      # the solo player's id; keeps single-player rows unchanged
 SHARED = "*"       # a memory the character holds regardless of who is asking
+# One full day (four phases). The people who were in the room when the player
+# arrived are still in the room for the rest of that day - see npcs_at.
+OPENING_TURNS = 4
 
 
 def _tokens(text: str) -> set[str]:
@@ -421,9 +424,21 @@ def hold_in_scene(pt_id, npc_ids, turn):
 
 
 def npcs_at(pt_id, world, location, turn):
-    """Who is here. Schedule drives position unless the sim moved someone."""
+    """Who is here. Schedule drives position unless the sim moved someone.
+
+    One exception, and it is the difference between meeting the cast and never
+    meeting them at all. A build seats its opening cast in the place the player
+    arrives, but a schedule is a DAILY template - so the opening cast is only
+    there for the opening phase, and by the next turn the room is empty. A live
+    Demon Slayer world read "CHARACTERS PRESENT: nobody" on turn one with
+    Tanjiro, Nezuko and Charlie all still on the map, one turn after the player
+    had met them. The people who were in the room when you walked in are still
+    in the room for the rest of the first day; after that the schedule owns them
+    again and the world moves normally."""
     here = []
     moved = False
+    start = world.get("start_location")
+    opening = bool(start) and location == start and turn < OPENING_TURNS
     for st in all_npc_states(pt_id):
         if not st["alive"]:
             continue
@@ -432,8 +447,11 @@ def npcs_at(pt_id, world, location, turn):
             continue
         scheduled = npc["schedule"][world.phase_for(turn)]
         loc = st["location"]
+        # The opening cast has not scattered yet - see the note on npcs_at.
+        if opening and npc["start_location"] == start:
+            loc = start
         # NPCs drift back to their schedule unless the sim pinned them this turn.
-        if st["last_act_turn"] < turn - 1:
+        elif st["last_act_turn"] < turn - 1:
             loc = scheduled
             if loc != st["location"]:
                 db.run("UPDATE npc_state SET location=? WHERE playthrough_id=? AND npc_id=?",
