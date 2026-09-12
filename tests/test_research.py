@@ -348,6 +348,69 @@ def test_the_narrator_stays_inside_the_story():
        "is a request and this one has already been ignored once")
 
 
+def test_arcs_are_put_in_the_order_the_source_tells_them():
+    section("chapters — canon order, from the source's own chapter numbers")
+    # A live build opened with Mugen Train third and Mount Natagumo seventh.
+    # Canon runs Natagumo first. The names were right - they come from the
+    # wiki - but a wiki lists categories ALPHABETICALLY, and asking a model to
+    # re-sort them is approximate. Approximate is wrong here: anyone who knows
+    # the series sees a wrong running order at a glance.
+    #
+    # The arc articles carry it exactly, in their infoboxes:
+    #     |chapters = [[Chapter 54|54]] - [[Chapter 66|66]]
+    def page(title, chapter):
+        return {"title": title, "revisions": [{"slots": {"main": {
+            "content": f"{{{{Story Arc\n|chapters = [[Chapter {chapter}|{chapter}]]\n}}}}"}}}]}
+
+    pages = [page("Final Selection Arc", 6), page("Asakusa Arc", 13),
+             page("Mount Natagumo Arc", 31), page("Rehabilitation Training Arc", 45),
+             page("Mugen Train Arc", 54), page("Entertainment District Arc", 71),
+             page("Swordsmith Village Arc", 98), page("Infinity Castle Arc", 137)]
+    alphabetical = ["Asakusa", "Entertainment District", "Final Selection",
+                    "Infinity Castle", "Mount Natagumo", "Mugen Train",
+                    "Rehabilitation Training", "Swordsmith Village"]
+
+    real = research._api
+    research._api = lambda *a, **k: {"query": {"pages": pages}}
+    try:
+        got = research.order_arcs("h", alphabetical, _Budget())
+    finally:
+        research._api = real
+
+    ok(got == ["Final Selection", "Asakusa", "Mount Natagumo",
+               "Rehabilitation Training", "Mugen Train", "Entertainment District",
+               "Swordsmith Village", "Infinity Castle"],
+       f"the real Demon Slayer running order, from chapter numbers ({got[:4]}…)")
+
+    # An arc with no chapter number falls back to its stated ordinal, and one
+    # with neither keeps its place rather than being moved on a guess.
+    mixed = [page("Alpha Arc", 10),
+             {"title": "Beta Arc", "revisions": [{"slots": {"main": {
+                 "content": "is the third story arc of something"}}}]},
+             {"title": "Gamma Arc", "revisions": [{"slots": {"main": {
+                 "content": "no ordering information at all"}}}]}]
+    research._api = lambda *a, **k: {"query": {"pages": mixed}}
+    try:
+        got2 = research.order_arcs("h", ["Gamma", "Beta", "Alpha"], _Budget())
+    finally:
+        research._api = real
+    ok(got2[0] == "Alpha",
+       "a real chapter number outranks an ordinal in prose")
+    ok(got2.index("Beta") < got2.index("Gamma"),
+       "an ordinal still beats nothing")
+    ok(got2[-1] == "Gamma",
+       "and an arc the wiki cannot place is left at the end rather than "
+       "reordered on a guess")
+
+    # If the request fails entirely, the names survive untouched.
+    research._api = lambda *a, **k: (_ for _ in ()).throw(ResearchError("down"))
+    try:
+        ok(research.order_arcs("h", alphabetical, _Budget()) == alphabetical,
+           "a failed lookup leaves the list exactly as it was")
+    finally:
+        research._api = real
+
+
 def test_a_wiki_is_asked_what_categories_it_has():
     section("fandom — read the wiki's own categories instead of guessing names")
     # THE CAUSE of every Fandom bucket coming back empty in production. The
@@ -887,6 +950,7 @@ def _all():
             test_the_chapter_list_is_not_starved_by_the_request_budget,
             test_chapters_survive_a_wiki_that_never_answers,
             test_a_wiki_is_asked_what_categories_it_has,
+            test_arcs_are_put_in_the_order_the_source_tells_them,
             test_the_narrator_stays_inside_the_story,
             test_character_list_furniture,
             test_confidence_gate, test_two_modes, test_offline_is_hermetic,

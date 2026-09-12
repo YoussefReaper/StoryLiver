@@ -719,13 +719,13 @@ def canon_chapters(setting: str, *, user_id: str, known: list | None = None) -> 
     # knowledge and hoping the two agree.
     names = [str(a.get("name") or a).strip() for a in (known or [])
              if str(a.get("name") if isinstance(a, dict) else a or "").strip()]
-    ask = f"WORK: {setting}\n\n"
+    # Research now orders arcs from the arc articles' own chapter numbers,
+    # which is exact. Asking a model to re-sort an already-correct sequence can
+    # only make it worse, so when research supplied one it is used as-is and
+    # this call never happens.
     if names:
-        ask += ("These are its arcs, listed alphabetically by a wiki. Put THESE in the "
-                "order the work tells them, keeping the names exactly as given, and add "
-                "any the list is missing:\n"
-                + "\n".join(f"- {n}" for n in names[:20]) + "\n\n")
-    ask += "Its arcs, in order. JSON only."
+        return [{"name": n, "note": ""} for n in names[:12]]
+    ask = f"WORK: {setting}\n\nIts arcs, in order. JSON only."
     out = _resilient("narrator", CHAPTERS_SYSTEM, ask,
                      user_id=user_id, max_tokens=1400, temperature=0.2,
                      stub=lambda: {"arcs": list(known or [])})
