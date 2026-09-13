@@ -3528,3 +3528,42 @@ button { background: none; border: 0; cursor: pointer; }
 .ad-who.ad-empty {
   display: block; font-size: 12.5px; color: var(--faint); font-style: italic;
 }
+
+/* ==========================================================================
+   SELECTED IS AN OUTLINE, NOT A FLOOD
+   Six controls painted their chosen state as solid --ember-soft and set
+   `color: var(--void)` on the container - which does nothing for a <small>
+   that carries its own --muted, so the description of the option you just
+   chose became the one description on the screen you could not read. Every
+   selectable card in the app now reads the same way: an amber edge, a tint of
+   the same amber behind it, and text that stays text. The solid fill is
+   reserved for a primary action, where there is nothing to read but a verb.
+   ========================================================================== */
+.mode-chip.on, .mode-card.on, .ff-kind.on, .report-reason.on,
+.ff-with .chip.on, .arc.on, .ex-try-opt.on {
+  border-color: var(--ember); background: var(--ember-glow); color: var(--vellum);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.35);
+}
+.mode-chip.on b, .mode-card.on b, .ff-kind.on b, .arc.on b, .ex-try-opt.on b {
+  color: var(--ember-soft);
+}
+.mode-chip.on small, .mode-card.on small, .ff-kind.on small,
+.arc.on small, .ex-try-opt.on small, .report-reason.on small {
+  color: var(--vellum-dim);
+}
+
+/* A modal that scrolls says so. Several of these run past the fold - the
+   org designer, the identity card, the world editor - and the only cue was
+   a sentence cut in half at the bottom edge. Classic CSS scroll shadows:
+   the `local` layers move with the content and the `scroll` ones stay put,
+   so a shadow appears at whichever end has more to show and at neither end
+   when everything fits. */
+.modal-card {
+  background:
+    linear-gradient(var(--panel) 30%, rgba(0,0,0,0)) top / 100% 26px no-repeat local,
+    linear-gradient(rgba(0,0,0,0), var(--panel) 72%) bottom / 100% 26px no-repeat local,
+    radial-gradient(farthest-side at 50% 100%, rgba(0,0,0,.45), rgba(0,0,0,0))
+      bottom / 100% 14px no-repeat scroll,
+    var(--panel);
+}
+.modal-body { padding-bottom: 30px; }
