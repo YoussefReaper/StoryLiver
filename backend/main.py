@@ -363,6 +363,13 @@ def list_playthroughs(user_id: str = Query(min_length=4)):
             r["world_name"] = world.name
         except (KeyError, worldkit.WorldError):
             r["location_name"], r["day"], r["world_name"] = "?", 1, r["world_id"]
+        # Who you were in that story. The library is the screen a returning
+        # player meets first, and it listed six rows of world names with no
+        # indication of which character was standing in which one.
+        card = db.row("SELECT name, avatar_url FROM cards WHERE playthrough_id=?"
+                      " ORDER BY updated_at DESC LIMIT 1", (r["id"],))
+        r["you"] = (card["name"] if card else "") or ""
+        r["avatar_url"] = (card["avatar_url"] if card else "") or ""
         r.pop("world_json", None)
     return {"playthroughs": rows, "mana": mana.status(user_id),
             "streak": streaks.status(user_id),

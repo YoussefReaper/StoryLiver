@@ -458,6 +458,15 @@ button { background: none; border: 0; cursor: pointer; }
 @media (max-width: 720px) {
   .home-nav-links { display: none; }
   .home-compare, .home-steps { grid-template-columns: minmax(0, 1fr); }
+  /* The two actions wrapped inside their own buttons on a phone - "Your
+     stories / 3 stories in progress" over three lines, "Start your story"
+     over three more - because both carried a second line of copy that only
+     fits on a desktop bar. */
+  .home-nav { gap: 10px; }
+  .home-nav .brand-text { display: none; }
+  .home-nav-actions { flex: 1; justify-content: flex-end; gap: 8px; }
+  .home-nav-actions .btn { white-space: nowrap; padding: 8px 12px; font-size: 12px; }
+  .home-nav-actions em { display: none; }
 }
 @media (max-width: 420px) {
   .home-systems { grid-template-columns: minmax(0, 1fr); }
@@ -3307,3 +3316,79 @@ button { background: none; border: 0; cursor: pointer; }
   background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
   box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
 }
+
+@media (max-width: 560px) {
+  /* The mock is a scale model of the Story screen, so it has to survive a
+     phone the way the real one does: the clock stops wrapping mid-timestamp
+     and the place gets the room it needs. */
+  .home-mock-bar { gap: 8px; padding: 10px 14px; font-size: 10.5px; }
+  .home-mock-bar .mono { white-space: nowrap; font-size: 9.5px; }
+  .home-mock-sep { display: none; }
+  .home-mock-body { padding: 18px 16px 16px; gap: 14px; }
+  .home-mock-prose, .home-mock-line { font-size: 15px; }
+  .home-mock-face { width: 52px; height: 52px; }
+  .home-mock-lie-text { font-size: 15.5px; }
+  .home-mock-foot { padding: 11px 14px 13px; }
+}
+
+/* Table talk has its own composer, deliberately - nothing typed there is
+   canon. Leaving the story composer underneath it put two text boxes on the
+   screen at once, one of which turns what you type into a scene the world
+   reacts to. That is not a choice anybody should have to make by reading
+   two placeholders carefully. */
+#app[data-view="ooc"] .composer,
+#app[data-view="room"] .composer { display: none; }
+
+/* A field label and its hint ran together - "Password at least 10 characters
+   — length beats symbols" reads as one sentence with a missing word. The
+   hint is a separate thing being said, so it looks like one. */
+.field .hint {
+  color: var(--faint); font-size: 11px; font-weight: 400;
+  padding-inline-start: 8px; margin-inline-start: 8px;
+  border-inline-start: 1px solid var(--rule-hair);
+}
+
+/* "Before you begin" - the one screen whose whole job is who you are. */
+.brief-head { display: flex; gap: 18px; align-items: center; margin-bottom: 6px; }
+.brief-head-side { min-width: 0; flex: 1; display: grid; gap: 14px; }
+.brief-face {
+  flex: none; width: 82px; height: 82px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden; position: relative;
+  font-family: var(--display); font-size: 30px; color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.brief-face::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(120deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+}
+.brief-face.has-art::after { display: none; }
+.brief-face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+[data-theme="parchment"] .brief-face {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+@media (max-width: 560px) {
+  .brief-head { flex-direction: column; align-items: flex-start; gap: 14px; }
+}
+
+/* Your stories: a row is a person standing somewhere, not a filename. */
+.world-row .wr-main { display: flex; align-items: center; gap: 12px; text-align: start; background: none; }
+.wr-face {
+  flex: none; width: 40px; height: 40px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden;
+  font-family: var(--display); font-size: 15px; color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.wr-face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+[data-theme="parchment"] .wr-face {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.wr-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.world-row .wr-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.world-row .wr-sub { display: block; margin: 0; }
+.wr-turn { flex: none; font-size: 11px; color: var(--faint); letter-spacing: .04em; }

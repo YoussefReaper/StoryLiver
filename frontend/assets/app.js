@@ -1437,7 +1437,7 @@ function setView(view) {
   // Story is the whole screen. Everything else keeps the tab bar, because
   // that is the way back out of it.
   const app = $('#app');
-  if (app) app.dataset.solo = view === 'story' ? '1' : '0';
+  if (app) { app.dataset.solo = view === 'story' ? '1' : '0'; app.dataset.view = view; }
   if (view !== 'story') openRail(null);
   $$('#tableTabs button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('on', v.dataset.pane === view));
@@ -2034,13 +2034,21 @@ function showRoomCode(code) {
 async function showLibrary() {
   const saves = await api('/playthroughs');
   const list = saves.playthroughs || [];
+  // A row is a story you were standing in, so it leads with the person you
+  // were standing as. It used to be six identical lines of world name and a
+  // turn count, with nothing to tell one run of the same world from another.
   showModal(`${head('Your stories', `${list.length} in progress.`)}
     <div class="modal-body">${list.length ? `<div class="world-list">${list.map((p) => `
-      <div class="world-row"><button class="wr-main" data-load="${p.id}" style="text-align:left;background:none">
-        <div class="wr-name">${esc(p.world_name || p.title)} &mdash; day ${p.day}</div>
-        <div class="wr-sub">turn ${p.current_turn} &middot; ${esc(p.location_name)} &middot; ${p.mana_balance} Mana${p.session_id ? ' &middot; in a room' : ''}</div>
+      <div class="world-row"><button class="wr-main" data-load="${p.id}">
+        ${faceHTML(p.avatar_url, p.you || p.world_name || '?', 'wr-face')}
+        <span class="wr-text">
+          <span class="wr-name">${esc(p.world_name || p.title)}</span>
+          <span class="wr-sub">${p.you ? `${esc(p.you)} &middot; ` : ''}day ${p.day} &middot;
+            ${esc(p.location_name)}${p.session_id ? ' &middot; in a room' : ''}</span>
+        </span>
+        <span class="wr-turn mono">t${p.current_turn}</span>
       </button><div class="wr-actions"><button data-del="${p.id}">Delete</button></div></div>`).join('')}</div>`
-      : '<div class="empty">Nothing yet.</div>'}</div>`);
+      : `<div class="empty">Nothing yet. Build a world and it will be waiting here.</div>`}</div>`);
 }
 
 async function showForge() {
@@ -5119,13 +5127,20 @@ function showBriefing() {
   const world = st.world || {};
   showModal(`${head('Before you begin', '')}
     <div class="modal-body">
-      <div class="brief-who">
-        <div class="brief-label">You are</div>
-        <div class="brief-line">${esc(st.protagonist || 'a traveller, unnamed here')}</div>
-      </div>
-      <div class="brief-who">
-        <div class="brief-label">Right now, you are at</div>
-        <div class="brief-line">${esc(st.location_name || 'the threshold')}</div>
+      <!-- The one screen in the product whose entire job is "who are you",
+           and it had no face on it. -->
+      <div class="brief-head">
+        ${faceHTML(S.identityAvatar, st.protagonist || '', 'brief-face')}
+        <div class="brief-head-side">
+          <div class="brief-who">
+            <div class="brief-label">You are</div>
+            <div class="brief-line">${esc(st.protagonist || 'a traveller, unnamed here')}</div>
+          </div>
+          <div class="brief-who">
+            <div class="brief-label">Right now, you are at</div>
+            <div class="brief-line">${esc(st.location_name || 'the threshold')}</div>
+          </div>
+        </div>
       </div>
       ${world.tagline ? `<div class="brief-tag">${esc(world.tagline)}</div>` : ''}
       ${world.premise ? `<p class="brief-premise">${esc(world.premise)}</p>` : ''}
