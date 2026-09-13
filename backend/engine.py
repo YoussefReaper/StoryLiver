@@ -770,7 +770,9 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
             entries.append(_render(pt_id, pt["current_turn"], "you", action, actor=player,
                                    meta={"name": actor_name or "You"}))
             text = narrator.refusal(pt, world, action, verdict, user_id=user_id)
-            memory.add_event(pt_id, pt["current_turn"], actor_name or "user", action,
+            refused_by = actor_name or _player_name(pt, player)
+            memory.add_event(pt_id, pt["current_turn"], refused_by,
+                             memory.retell(action, refused_by),
                              f"Refused: {verdict['reason']}", rule_ref=verdict.get("rule_ref"),
                              kind="rejection", importance=2, location=pt["current_location"])
             entries.append(_render(pt_id, pt["current_turn"], "refusal", text, actor="world",
@@ -831,7 +833,13 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                                meta={"name": actor_name or "You"}))
 
         applied = memory.apply_deltas(pt_id, verdict["relationship_deltas"], turn, player)
-        memory.add_event(pt_id, turn, actor_name or "user", action, verdict["consequence"],
+        # The timeline is shown to the player ("Memory & timeline"), so it is
+        # written the way the world remembers it: a name rather than the
+        # literal string "user", and the act in the third person rather than
+        # the keystrokes that produced it.
+        said = _player_name(pt, player) if not actor_name else actor_name
+        memory.add_event(pt_id, turn, said, memory.retell(action, said),
+                         verdict["consequence"],
                          rule_ref=verdict.get("rule_ref"), kind="action",
                          importance=verdict.get("importance", 3), location=new_loc)
         # A turn taken while SPLIT OFF is private, and the Chronicle reads the
@@ -842,8 +850,12 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         # only this player's chronicle can resolve it.
         away = betrayal.active(pt_id, player)
         action_key = betrayal.private_key(player, turn, new_loc) if away else ""
-        narrgraph.add(pt_id, turn, "action", action[:90], detail=verdict.get("consequence", ""),
-                      place_id=new_loc, actor=actor_name or "you",
+        # The narrative graph is what the Chronicle reads, and the Chronicle is
+        # the world's own account of itself - so the node is the act as the
+        # world would tell it, not the sentence the player typed into a box.
+        narrgraph.add(pt_id, turn, "action", memory.retell(action, said)[:110],
+                      detail=verdict.get("consequence", ""),
+                      place_id=new_loc, actor=said,
                       weight=verdict.get("importance", 2), fact_key=action_key)
 
         # Working against a fated event is an ordinary action that happens to
@@ -858,9 +870,15 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                              location=new_loc)
 
         state = world_master.build_state(pt, world, player)
-        npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
+        # What each witness privately remembers, in their own head, about a
+        # person they know the name of. This is injected verbatim into their
+        # prompts, so "I saw the traveller: I look around and take stock of
+        # the room" was teaching every character in the world to refer to the
+        # player as a nameless traveller and to quote them in the wrong tense.
+        npc_sim.observe_turn(pt_id, turn, state["present"], memory.retell(action, said),
+                             verdict["consequence"],
                              verdict.get("importance", 3), player=player,
-                             actor_name=actor_name or "the traveller")
+                             actor_name=said)
         # D10: a present NPC's information-seeking goal is tracked here, once
         # per turn - pending the first time it's on the table with them
         # present, answered the NEXT turn they are still present with the
@@ -889,9 +907,13 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         if mode == mana.FULL and not fired_fate and budget.affordable("npc"):
             actor_id = npc_sim.pick_actor(pt, state, player)
             if actor_id:
+                # Characters call you by your NAME. "The Runner crosses to the
+                # traveller" was the engine's placeholder leaking into the
+                # prose of a world that had been told who you are since
+                # Session Zero.
                 npc_action = npc_sim.maybe_act(pt, world, actor_id, user_id=user_id,
                                                player=player,
-                                               actor_name=actor_name or "the traveller")
+                                               actor_name=actor_name or _player_name(pt, player))
                 if npc_action:
                     try:
                         canon.check_npc_action(pt_id, world, actor_id, npc_action["action"],

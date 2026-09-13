@@ -222,6 +222,18 @@ def _stub(action, state):
     # call fails, which is exactly when nobody is reading the prompt closely.
     did = re.sub(r"^\s*(?:i|i'll|i'm|i've|i'd)\b[\s,]*", "", action.strip(),
                  flags=re.I)
+    # Stripping the LEADING pronoun is not enough: a reported clause carries a
+    # second one, and "You say I am looking for work" is the same bug one
+    # clause further in. Everything after the first verb is about the same
+    # person, so it converts to the second person too.
+    for pattern, repl in (
+        (r"\bI am\b", "you are"), (r"\bI'm\b", "you are"),
+        (r"\bI have\b", "you have"), (r"\bI've\b", "you have"),
+        (r"\bI will\b", "you will"), (r"\bI'll\b", "you will"),
+        (r"\bI\b", "you"), (r"\bmyself\b", "yourself"),
+        (r"\bmy\b", "your"), (r"\bmine\b", "yours"), (r"\bme\b", "you"),
+    ):
+        did = re.sub(pattern, repl, did)
     did = did.strip().rstrip(".")
     if not did:
         did = action.strip().rstrip(".")

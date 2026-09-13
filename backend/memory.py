@@ -108,7 +108,21 @@ _NOT_A_VERB = set("""the a an his her their its my your our this that these thos
 into onto in on at to for from with by of out up down over under across through back away not no nor all some any
 both each every much many more most other another such same so very just only even still yet than as if when while
 because since until before after about against between during without within along around behind beneath beside
-one two three four five six seven eight nine ten""".split())
+one two three four five six seven eight nine ten
+who whom whose what which where why how whether""".split())
+
+# Reported speech. "I say I am looking for work" swaps the second pronoun to
+# "they" and leaves the verb agreeing with the first person: "said they am".
+# The embedded clause has to shift tense with the reporting verb, which is
+# exactly what these pairs do. Applied after the pronoun swap, so it also
+# catches "they is" produced by a third-person subject earlier in the line.
+_REPORTED = [
+    (r"\bthey (?:am|are|is)\b", "they were"),
+    (r"\bthey (?:have|has)\b", "they had"),
+    (r"\bthey don't\b", "they did not"), (r"\bthey do\b", "they did"),
+    (r"\bthey will\b", "they would"), (r"\bthey can\b", "they could"),
+    (r"\bthey shall\b", "they should"), (r"\bthey may\b", "they might"),
+]
 
 
 # Multi-syllable verbs that double their final consonant anyway, because the
@@ -208,6 +222,8 @@ def retell(action: str, who: str = "") -> str:
 
     out = f"{name} {body}".strip()
     for pattern, repl in _PRONOUNS:
+        out = re.sub(pattern, repl, out)
+    for pattern, repl in _REPORTED:
         out = re.sub(pattern, repl, out)
     return out
 
