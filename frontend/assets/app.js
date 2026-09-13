@@ -734,7 +734,10 @@ function renderCombat() {
       ${c.board.filter((b) => b.zone === z).map((b) => `
         <div class="fighter ${b.mine ? 'mine' : ''} ${b.ally ? 'ally' : 'foe'} ${b.down ? 'down' : ''}
              ${S.combatTarget === b.id ? 'targeted' : ''}" data-fighter="${esc(b.id)}">
-          <div class="f-name"><b>${esc(b.name)}</b>
+          <div class="f-name">
+            ${faceHTML(b.mine ? S.identityAvatar
+    : (S.state?.npcs?.find((n) => n.id === b.id) || {}).portrait, b.name, 'f-face')}
+            <b>${esc(b.name)}</b>
             ${b.advantage ? `<span class="f-adv ${b.advantage > 0 ? 'up' : 'down'}">${b.advantage > 0 ? '+' : ''}${b.advantage}</span>` : ''}</div>
           <div class="f-hp"><i style="width:${clamp(b.hp / b.max_hp * 100, 0, 100)}%"></i></div>
           ${(b.status || []).length ? `<div class="f-status">${b.status.map((s) => `<span>${esc(s)}</span>`).join('')}</div>` : ''}
@@ -1010,8 +1013,12 @@ function applyDirection() {
     const el = $(sel);
     if (el) el.setAttribute('dir', rtl ? 'rtl' : 'ltr');
   }
+  // `auto` in both directions, not `rtl`. The browser takes the direction
+  // from the first strong character, so an Arabic turn types right-to-left
+  // and the English placeholder still reads left-to-right - forcing `rtl`
+  // rendered "What do you do?" as "?What do you do".
   const ta = $('#actionInput');
-  if (ta) ta.setAttribute('dir', rtl ? 'rtl' : 'auto');
+  if (ta) ta.setAttribute('dir', 'auto');
 }
 
 /* The speaker plate — the design system's signature component.

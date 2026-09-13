@@ -3392,3 +3392,28 @@ button { background: none; border: 0; cursor: pointer; }
 .world-row .wr-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .world-row .wr-sub { display: block; margin: 0; }
 .wr-turn { flex: none; font-size: 11px; color: var(--faint); letter-spacing: .04em; }
+
+/* A fight is between people you know, so it shows their faces. */
+.f-name { display: flex; align-items: center; gap: 7px; }
+.f-face {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden;
+  font-family: var(--display); font-size: 9px; color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.f-face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+[data-theme="parchment"] .f-face {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.fighter.down .f-face { filter: grayscale(1); opacity: .55; }
+
+/* Arabic has no italic. A browser asked for one synthesises an oblique by
+   shearing the glyphs, which on a naskh face is not emphasis - it is damage.
+   Secondhand report keeps its dashed rule; that is what marks it. */
+[dir="rtl"] .hearsay-wrap .prose,
+[dir="rtl"] .entry-refusal .prose,
+[dir="rtl"] .whisper-said,
+[dir="rtl"] .brief-tag { font-style: normal; }
