@@ -3470,3 +3470,61 @@ button { background: none; border: 0; cursor: pointer; }
   font-family: var(--ui); font-size: 14px; color: var(--vellum);
 }
 .tl-find input::placeholder { color: var(--faint); }
+
+/* A chosen mode was painted solid amber while its body copy stayed
+   `--muted` - so the one card whose description you most want to read
+   ("Canon is a suggestion. The guardrail warns, then allows.") was the one
+   you could not. Selection is an outline and a tint, like every other
+   selected thing in this app; the fill is reserved for a primary action. */
+.mode-card.on {
+  border-color: var(--ember); background: var(--ember-glow); color: var(--vellum);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.35);
+}
+.mode-card.on b { color: var(--ember-soft); }
+.mode-card.on small { color: var(--vellum-dim); }
+
+/* Same bug, same fix: a selected chip was a solid amber fill with its blurb
+   left at --muted, which is unreadable on it. */
+.mode-chip.on {
+  border-color: var(--ember); background: var(--ember-glow); color: var(--vellum);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.35);
+}
+.mode-chip.on b { color: var(--ember-soft); }
+.mode-chip.on small { color: var(--vellum-dim); }
+
+/* Who you would find there. A place was a name and a visit count; the thing
+   that decides whether you walk to the mill is who is standing at it. */
+.ad-who {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start;
+  margin: 14px 0 4px; padding-top: 12px; border-top: 1px solid var(--rule-hair);
+}
+.ad-face {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  width: 72px; padding: 0; background: none; border: 0; cursor: pointer;
+}
+/* Two lines rather than an ellipsis: "The Ward…" is worse than a wrap, and
+   almost every name in a built world is two short words. */
+.ad-face span {
+  font-size: 10.5px; line-height: 1.25; color: var(--muted); text-align: center;
+  max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
+}
+.ad-face:hover span { color: var(--ember-soft); }
+.ad-portrait {
+  width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center;
+  overflow: hidden; font-family: var(--display); font-size: 14px;
+  color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.ad-portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
+[data-theme="parchment"] .ad-portrait {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.ad-face:hover .ad-portrait { box-shadow: inset 0 0 0 1px var(--ember); }
+.ad-strangers { align-self: center; font-size: 11.5px; color: var(--faint); line-height: 1.4; }
+.ad-who.ad-empty {
+  display: block; font-size: 12.5px; color: var(--faint); font-style: italic;
+}

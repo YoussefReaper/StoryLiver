@@ -563,7 +563,36 @@ function renderAtlasDetail() {
       <span>${esc(n.kind)}</span>
     </div>
     ${n.note ? `<p style="margin-top:8px;font-style:italic">${esc(n.note)}</p>` : ''}
+    ${whoIsAt(n)}
     ${reachable && !n.here ? `<button class="btn btn-ghost" data-travel="${esc(n.name)}">Go there</button>` : ''}`;
+}
+
+/* Who you would find there.
+
+   A place on the map was a name, a description and a visit count - which is a
+   gazetteer entry, not somewhere you might go. The thing that decides whether
+   a player walks to the mill is who is standing at it, and the client already
+   knows: every character carries a location. Only the ones you have actually
+   met are named; a place you have merely heard of does not hand you its
+   census. */
+function whoIsAt(place) {
+  // Everything but a place you have never heard named. The Living rail
+  // already tells you where every character is standing, so hiding the same
+  // fact one panel over would make the two surfaces disagree without keeping
+  // anything back.
+  if (place.status === 'hidden') return '';
+  const here = (S.state?.npcs || []).filter((n) => n.alive && n.location === place.id);
+  if (!here.length) {
+    return place.here ? '<div class="ad-who ad-empty">Nobody is here but you.</div>' : '';
+  }
+  return `<div class="ad-who">
+    ${here.slice(0, 8).map((n) => `
+      <button class="ad-face" data-soul="${esc(n.id)}" title="${esc(n.name)} - ${esc(n.role || '')}">
+        ${faceHTML(n.portrait, n.name, 'ad-portrait')}
+        <span>${esc(shortName(n.name))}</span>
+      </button>`).join('')}
+    ${here.length > 8 ? `<span class="ad-strangers">and ${here.length - 8} more</span>` : ''}
+  </div>`;
 }
 
 /* ==================================================================== GRAPH */
@@ -5382,12 +5411,14 @@ async function showIdentity(cardId) {
   const id = S.identityDraft || {};
   showModal(`${head('Who they are', 'Re-sent to the model on every single call — never summarised, so it cannot drift.')}
     <div class="modal-body">
-      <label class="field"><span>Their art (you upload it — nothing here is generated)</span>
+      <!-- The same face component as everywhere else. This slot used to be a
+           solid amber disc with a "+" in it, which is the only portrait in the
+           app that did not look like the others. -->
+      <label class="field"><span>Their art <small class="hint">you upload it — nothing here is generated</small></span>
         <div class="row">
-          <div class="seat-avatar lg" id="idn-avatar">${S.identityAvatar
-            ? `<img src="${esc(S.identityAvatar)}" alt="" />` : '<span>+</span>'}</div>
+          ${faceHTML(S.identityAvatar, $('#cdName')?.value || '', 'card-portrait', 'idn-avatar')}
           <input type="file" id="idn-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
-          <button class="btn btn-ghost" id="idn-pick">Choose an image</button>
+          <button class="btn btn-ghost" id="idn-pick">${S.identityAvatar ? 'Change' : 'Choose an image'}</button>
         </div></label>
 
       ${IDENTITY_FIELDS.map(([k, label, hint, kind]) => `
@@ -5666,7 +5697,7 @@ document.addEventListener('change', async (ev) => {
     if (url) {
       S.identityAvatar = url;
       const slot = document.getElementById('idn-avatar');
-      if (slot) slot.innerHTML = `<img src="${url}" alt="" />`;
+      if (slot) slot.outerHTML = faceHTML(url, '', 'card-portrait', 'idn-avatar');
       toast('Your art, uploaded. Nothing here was generated.');
     }
   }
