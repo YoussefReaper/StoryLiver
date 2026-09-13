@@ -25,7 +25,7 @@ os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
 from backend import (arcs, auth, budget, canon, config, db, death, engine,  # noqa: E402
                      fastforward, identity, mana, memory, modes, party,
-                     persona, relationships, runs, sessions, trust)
+                     persona, relationships, runs, sessions, transcript, trust)
 
 FAILS = []
 NOTES = []
@@ -522,6 +522,33 @@ def test_trust_and_safety():
        "IP worlds are private-only, as the halal + legal constraints require")
 
 
+def test_the_story_reads_back():
+    section("§the keepsake — the prose, not the state")
+    db.init()
+    pt = engine.create_playthrough("transcript-user")
+    engine.take_turn(pt, "I ask the keeper who lit the lamps.", player=memory.SOLO)
+    engine.take_turn(pt, "I wait in the dark and watch the door.", player=memory.SOLO)
+
+    page = transcript.render(pt)
+    ok(page.startswith("<!doctype html>"), "it is one self-contained page")
+    ok("<script" not in page.lower(),
+       "with no script in it — a keepsake somebody may open in five years")
+    ok("http://" not in page and "https://" not in page,
+       "and no network at all: no font fetch, no image host, nothing phones home")
+    ok("I ask the keeper who lit the lamps." in page,
+       "your own turns are in it, in your own words — this is the one place they should be")
+    ok('class="mine"' in page,
+       "and marked as yours rather than folded into the narration")
+
+    # The export is the STATE. This is deliberately not that.
+    ok("relationship" not in page.lower() or "affinity" not in page.lower(),
+       "no scalars, no anchors, no memory weights — /export is where those live")
+
+    # Anything the feed uses as chrome must never reach the page.
+    for chrome in ("thinking", "queued", "blocked"):
+        ok(chrome not in transcript.READABLE, f"{chrome!r} is not part of the story")
+
+
 def main():
     print("StoryLiver — full-blueprint gate")
     print("  offline stub, no API key, no spend\n")
@@ -529,7 +556,7 @@ def main():
                test_action_spam_is_rate_limited_not_in_world_content, test_modes,
                test_identity_block, test_character_library, test_death,
                test_runs, test_timeline_and_au, test_fastforward, test_party,
-               test_trust_and_safety):
+               test_trust_and_safety, test_the_story_reads_back):
         fn()
     passed = 0
     for n in NOTES:
@@ -549,7 +576,7 @@ def test_all_full():
                test_action_spam_is_rate_limited_not_in_world_content, test_modes,
                test_identity_block, test_character_library, test_death,
                test_runs, test_timeline_and_au, test_fastforward, test_party,
-               test_trust_and_safety):
+               test_trust_and_safety, test_the_story_reads_back):
         fn()
     assert not FAILS, "\n".join(FAILS)
 

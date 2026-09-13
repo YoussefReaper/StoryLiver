@@ -20,8 +20,8 @@ from . import (aftermath, arcs, atlas, auth, authority, awareness, awayworld, be
                death, engine, fastforward, identity, llm, mana, memory, modes,
                narrgraph,
                party, payments, persona, precommit, relationships, rt, runs, sessions,
-               narrator, sharecard, streaks, trust, voice, world_master, worldforge,
-               worldkit, worldstate)
+               narrator, sharecard, streaks, transcript, trust, voice, world_master,
+               worldforge, worldkit, worldstate)
 from . import worlds as world_registry
 
 FRONTEND = config.ROOT / "frontend"
@@ -492,6 +492,22 @@ def export(pt_id: str, user_id: str = Query(default="")):
     name = f"storyliver-{pt['world_id']}-{pt_id}.json"
     return Response(payload, media_type="application/json",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/playthroughs/{pt_id}/story.html")
+def story_page(pt_id: str, user_id: str = Query(default="")):
+    """The story, as something a person can read.
+
+    /export is the STATE - every layer, every memory, every scalar - and it is
+    the right thing to offer and nobody has ever read one. This is the prose,
+    in order, in one self-contained file the player can keep, print or send.
+    """
+    pt = _own(pt_id, user_id)
+    page = transcript.render(pt_id, user_id=user_id)
+    name = f"storyliver-{pt['world_id']}-{pt_id}.html"
+    return Response(page, media_type="text/html; charset=utf-8",
+                    headers={"Content-Disposition": f'inline; filename="{name}"',
+                             "Cache-Control": "no-store"})
 
 
 @app.post("/api/playthroughs/{pt_id}/purchase")

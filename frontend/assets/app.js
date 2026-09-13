@@ -2444,6 +2444,7 @@ function showMenu() {
       ${group('Practical', `
         ${item('settings', 'gear', 'How it looks', 'Theme, density, power mode')}
         ${item('cost', 'chart', 'Running cost', 'What this story has actually cost')}
+        ${item('read', 'book', 'Read it back', 'Your story as one page — keep it, print it, send it')}
         ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
         ${item('ethics', 'shield', 'Your data is yours', 'No training, no guilt hooks, export any time')}
         ${item('explain', 'book', 'What is StoryLiver?', 'What this actually is, and what it does not do')}
@@ -3218,6 +3219,12 @@ async function onGlobalClick(e) {
     explain: () => showExplainer(true), profile: showProfile,
   };
   if (routes[k]) return routes[k]();
+  if (k === 'read') {
+    // The prose, not the state. Opens as a page rather than downloading,
+    // because the first thing anyone wants to do with it is read it.
+    window.open(`/api/playthroughs/${S.ptId}/story.html?user_id=${encodeURIComponent(S.userId)}`, '_blank');
+    closeOverlays(); return toast('Your story, in one page. Print it or save it — it is self-contained.');
+  }
   if (k === 'export') {
     window.open(`/api/playthroughs/${S.ptId}/export?user_id=${encodeURIComponent(S.userId)}`, '_blank');
     closeOverlays(); return toast('Exported. Your world state is yours.');
