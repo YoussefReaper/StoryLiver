@@ -1117,11 +1117,31 @@ function initialsOf(name) {
 function faceHTML(portrait, name, cls = 'face', id = '') {
   const src = MEDIA_PATH.test(String(portrait || '')) ? String(portrait) : '';
   const at = `${id ? ` id="${esc(id)}"` : ''} aria-hidden="true"`;
+  const initials = esc(initialsOf(name));
   if (src) {
-    return `<span${at} class="${cls} has-art"><img src="${esc(src)}" alt=""></span>`;
+    // The monogram travels with the picture. A free-tier host hands the app a
+    // fresh empty filesystem on every redeploy, so an uploaded face can be
+    // gone while the path to it is still in the world - and the worst
+    // possible version of that is a browser's broken-image glyph inside a
+    // circle. The fallback below swaps it back to the initials.
+    return `<span${at} class="${cls} has-art" data-initials="${initials}">`
+      + `<img src="${esc(src)}" alt=""></span>`;
   }
-  return `<span${at} class="${cls}">${esc(initialsOf(name))}</span>`;
+  return `<span${at} class="${cls}">${initials}</span>`;
 }
+
+/* A portrait that will not load becomes its monogram.
+
+   `error` does not bubble, so this listens in the CAPTURE phase - one
+   listener for every face in the app, including ones rendered later. */
+document.addEventListener('error', (ev) => {
+  const img = ev.target;
+  if (!img || img.tagName !== 'IMG') return;
+  const slot = img.parentElement;
+  if (!slot || !slot.classList.contains('has-art')) return;
+  slot.classList.remove('has-art');
+  slot.textContent = slot.dataset.initials || '?';
+}, true);
 
 function speakerPlate(who, meta) {
   if (!who || !who.name) return '';
