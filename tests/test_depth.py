@@ -478,6 +478,25 @@ def test_a_face_is_a_first_class_field():
     ok(cards[0]["avatar_url"] == w2["default_portrait"],
        "and the face they chose is on it")
 
+    # Mid-play, from the character sheet: a face for somebody you have just
+    # met, written to THIS story's pinned copy of the world rather than to the
+    # world itself - so playing the same world again is untouched.
+    db.init()
+    art = "/media/" + ("c" * 32) + ".png"
+    w3 = _wk.normalise(worldforge.blank("Facetown2"))
+    pt2 = engine.create_playthrough("face-user-2", world_json=json.dumps(w3))
+    target = w3["npcs"][0]["id"]
+    data = json.loads(json.dumps(engine.world_for(engine._pt(pt2)).data))
+    next(n for n in data["npcs"] if n["id"] == target)["portrait"] = art
+    db.run("UPDATE playthroughs SET world_json=? WHERE id=?",
+           (json.dumps(_wk.normalise(data, strict=False)), pt2))
+    live = engine.world_for(engine._pt(pt2))
+    ok(next(n for n in live.npcs if n["id"] == target)["portrait"] == art,
+       "a face given mid-play survives on the playthrough's own copy")
+    ok(all(not n.get("portrait") for n in _wk.normalise(worldforge.blank("Facetown2"))["npcs"]),
+       "and the world it was built from is untouched")
+
+
 
 def _all():
     return (test_the_world_keeps_its_own_hours,

@@ -1812,7 +1812,14 @@ async function showSoul(npcId) {
   const latest = n.reflections.length ? n.reflections[n.reflections.length - 1] : null;
   d.innerHTML = `
     <div class="drawer-head"><div class="dh-top">
-      ${faceHTML(live.portrait, n.name, 'dh-face')}
+      <!-- The moment a player wants somebody to have a picture is the moment
+           they meet them, not at build time with the editor two menus away
+           and pointed at the world rather than at this story. -->
+      <button class="dh-face-btn" data-npc-art="${esc(npcId)}"
+              title="${live.portrait ? 'Change their picture' : 'Give them a face — your own art'}">
+        ${faceHTML(live.portrait, n.name, 'dh-face')}
+        <span class="dh-face-hint">${live.portrait ? 'change' : '+ face'}</span>
+      </button>
       <div style="flex:1"><h2>${esc(n.name)}${n.alive ? '' : ' &dagger;'}</h2>
         <div class="dh-role">${esc(n.role)}
           <span class="mood-chip mood-${esc((live.disposition || 'stranger').split(' ')[0])}">${esc(live.disposition || 'stranger')}</span>
@@ -5592,6 +5599,24 @@ document.addEventListener('click', async (ev) => {
   }
   const pClear = pick('[data-portrait-clear]');
   if (pClear) { setItemPortrait(pClear.closest('.fe-item'), ''); return; }
+
+  // A face for somebody you have just met. Writes to THIS story's pinned copy
+  // of the world, so it never rewrites the world for anyone else.
+  const npcArt = pick('[data-npc-art]');
+  if (npcArt) {
+    const id = npcArt.dataset.npcArt;
+    const url = await askForArt();
+    if (!url) return;
+    try {
+      await api(`/playthroughs/${S.ptId}/npc/${id}/portrait`,
+                { method: 'POST', body: { portrait: url } });
+    } catch (e) { return toast(e.message, 'err'); }
+    const who = S.state?.npcs?.find((x) => x.id === id);
+    if (who) who.portrait = url;
+    renderSouls();
+    showSoul(id);
+    return toast('Their face, from your own art. Only in this story.');
+  }
   if (pick('#idn-add-line')) {
     const wrap = document.getElementById('idn-lines');
     const i = wrap.children.length;

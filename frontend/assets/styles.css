@@ -3441,3 +3441,18 @@ button { background: none; border: 0; cursor: pointer; }
 }
 .composer > * { position: relative; }
 .feed { padding-bottom: 18px; }
+
+/* The character sheet's portrait is a button, because giving somebody a face
+   is the thing a player wants to do the moment they meet them. */
+.dh-face-btn {
+  position: relative; padding: 0; border: 0; background: none; flex: none;
+  border-radius: 50%; line-height: 0; cursor: pointer;
+}
+.dh-face-hint {
+  position: absolute; inset-inline: 0; bottom: -2px;
+  font-family: var(--mono); font-size: 8.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--label); text-align: center;
+  opacity: 0; transition: opacity .16s;
+}
+.dh-face-btn:hover .dh-face-hint { opacity: 1; }
+.dh-face-btn:hover .dh-face { box-shadow: inset 0 0 0 1px var(--ember); }

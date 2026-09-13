@@ -1217,6 +1217,39 @@ def vote_card(pt_id: str, card_id: str, body: CardVote, user_id: str = Query(def
     return card
 
 
+class NpcPortrait(BaseModel):
+    # A /media path this server issued, or "" to take the picture off again.
+    portrait: str = Field(default="", max_length=200)
+
+
+@app.post("/api/playthroughs/{pt_id}/npc/{npc_id}/portrait")
+def set_npc_portrait(pt_id: str, npc_id: str, body: NpcPortrait,
+                     user_id: str = Query(default="")):
+    """Give somebody you have just met a face.
+
+    The world editor can do this, but only before you play - and the moment a
+    player actually wants a character to have a picture is the moment they
+    meet them, twenty turns in, with the editor two menus away and pointed at
+    the WORLD rather than at this story. This writes to the playthrough's own
+    pinned copy, so it changes this run and nothing else: the same world
+    played again, or by somebody else, is untouched.
+    """
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    data = json.loads(json.dumps(world.data))       # never mutate the cached world
+    hit = next((n for n in data.get("npcs", []) if n.get("id") == npc_id), None)
+    if not hit:
+        raise HTTPException(404, "no such character")
+    hit["portrait"] = body.portrait
+    # Back through normalise so the path is validated exactly as it is on a
+    # build - a remote URL is refused here for the same reason it is there.
+    clean = worldkit.normalise(data, strict=False)
+    db.run("UPDATE playthroughs SET world_json=? WHERE id=?",
+           (json.dumps(clean), pt_id))
+    saved = next((n for n in clean["npcs"] if n["id"] == npc_id), {})
+    return {"npc": npc_id, "portrait": saved.get("portrait", "")}
+
+
 @app.get("/api/playthroughs/{pt_id}/card-roll")
 def card_roll(pt_id: str, player: str = Query(default="user"), name: str = "",
               user_id: str = Query(default="")):
