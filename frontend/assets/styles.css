@@ -251,24 +251,50 @@ button { background: none; border: 0; cursor: pointer; }
 .home-mock-mana .ico { fill: var(--ember); stroke: var(--ember); }
 .home-mock-body { padding: 22px 22px 18px; display: flex; flex-direction: column; gap: 16px; }
 .home-mock-prose {
-  margin: 0; padding-left: 16px; border-left: 1px solid var(--line);
-  font-family: var(--display); font-size: 15.5px; line-height: 1.6; color: var(--vellum);
+  margin: 0; padding: 0; border: 0;
+  font-family: var(--display); font-size: 16px; line-height: 1.72; color: var(--vellum);
 }
+/* The hero mock IS the Story screen, at two-thirds scale. It used to show a
+   design that no longer exists - a square hatched portrait behind a 2px
+   border, and the lie inside a crimson box - which meant the front page was
+   advertising a product the player would not recognise when they got there.
+   Same grammar as the feed: a circular portrait, the mood chip, and the lie
+   between two rules. */
 .home-mock-npc {
-  display: flex; gap: 13px; align-items: flex-start; padding: 14px 16px;
-  border-left: 2px solid var(--ember-deep);
-  background: linear-gradient(90deg, var(--panel-2), var(--panel) 72%);
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 0; border: 0; background: none;
 }
 .home-mock-face {
-  width: 42px; height: 54px; flex: none; border: 1px solid var(--line); border-radius: 3px;
-  background: repeating-linear-gradient(135deg, var(--panel-3) 0 5px, var(--panel-2) 5px 10px);
+  width: 64px; height: 64px; flex: none; border: 0; border-radius: 50%;
+  position: relative; overflow: hidden;
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
 }
-.home-mock-who { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
-.home-mock-name { font-size: 13px; font-weight: 600; color: var(--vellum); }
-.home-mock-line { margin: 0; font-family: var(--display); font-size: 15.5px; line-height: 1.5; color: var(--vellum); }
-.home-mock-lie { padding: 12px 15px; border: 1px solid var(--crimson); border-radius: var(--r-sm); background: var(--panel-2); }
-.home-mock-lie-label { font-size: 9.5px; letter-spacing: .14em; color: var(--crimson); margin-bottom: 7px; }
-.home-mock-lie-text { margin: 0; font-family: var(--display); font-size: 15px; line-height: 1.5; color: var(--vellum); }
+.home-mock-face::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(120deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+}
+[data-theme="parchment"] .home-mock-face {
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.home-mock-who { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
+.home-mock-name { font-family: var(--display); font-size: 16px; font-weight: 600; color: var(--said); }
+.home-mock-role {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--label);
+}
+.home-mock-line { margin: 0; font-family: var(--display); font-size: 17px; line-height: 1.5; color: var(--said); }
+.home-mock-lie {
+  padding: 13px 0 14px; border: 0; border-radius: 0; background: none;
+  border-top: 1px solid rgba(255,107,122,.6); border-bottom: 1px solid rgba(255,107,122,.24);
+}
+.home-mock-lie-label { font-size: 9px; letter-spacing: .16em; color: var(--crimson); margin-bottom: 9px; }
+.home-mock-lie-text { margin: 0; font-family: var(--display); font-size: 17.5px; line-height: 1.45; color: var(--said); }
+.home-mock-mine {
+  margin: 0; border-inline-start: 2px solid rgba(240,169,76,.6); padding-inline-start: 14px;
+  font-family: var(--ui); font-size: 14px; line-height: 1.6; color: var(--mine);
+}
 .home-mock-foot {
   display: flex; align-items: center; gap: 12px; padding: 13px 18px 16px;
   background: var(--panel); border-top: 1px solid var(--line);
@@ -2946,9 +2972,11 @@ button { background: none; border: 0; cursor: pointer; }
     height: auto; padding: 10px 16px; flex-wrap: wrap; gap: 0 10px;
     font-size: 10.5px; white-space: normal;
   }
+  /* The slashes go, so the gap has to do their job — without it the strip
+     reads "mana 48chapter 1". */
   .ambient .am-sep { display: none; }
   .ambient .am-here { flex-basis: 100%; color: var(--muted); }
-  .ambient .am-right { padding-inline-start: 0; }
+  .ambient .am-right { padding-inline-start: 0; gap: 10px; }
   .feed { padding: 22px 18px 0; }
   .prose, .entry-fate .fate-body { font-size: 17.5px; line-height: 1.72; }
   .plate { gap: 14px; }
@@ -2973,3 +3001,309 @@ button { background: none; border: 0; cursor: pointer; }
 [dir="rtl"] .feed-label, [dir="rtl"] .mono, [dir="rtl"] .mood-chip,
 [dir="rtl"] .plate-role { direction: ltr; }
 [dir="rtl"] .world-note .feed-label { direction: rtl; }
+
+/* ==========================================================================
+   FACES
+   One portrait component, five sizes. The art is always the player's own -
+   see backend/uploads.py - so the no-art monogram is the COMMON case and has
+   to look like a design decision rather than a broken <img>. It is the
+   design system's hatched ground with initials in the reading serif.
+   ========================================================================== */
+
+/* Any slot carrying real art: crop to fill, never letterbox, and keep the
+   ring so a photograph still reads as part of the same set as a monogram. */
+.plate-face.has-art, .soul-face.has-art, .dh-face.has-art,
+.fe-portrait.has-art, .card-portrait.has-art, .you-sigil.has-art { color: transparent; }
+.plate-face img, .soul-face img, .dh-face img,
+.fe-portrait img, .card-portrait img, .you-sigil img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+/* The hatch is the placeholder's texture; over real art it would be dirt. */
+.plate-face.has-art::after, .fe-portrait.has-art::after,
+.card-portrait.has-art::after, .you-sigil.has-art::after { display: none; }
+
+/* --- the Living rail ---------------------------------------------------- */
+/* A row that leads with a face reads as a person; the old one led with a
+   pulsing dot and put the role on its own line under the name. */
+.soul-top { align-items: center; gap: 10px; }
+.soul-face {
+  flex: none; width: 38px; height: 38px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden;
+  font-family: var(--display); font-size: 15px; letter-spacing: .01em;
+  color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+[data-theme="parchment"] .soul-face {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.soul-id { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.soul-id .soul-name { font-size: 14px; }
+.soul-id .soul-role { margin: 0; }
+.soul-at { margin-top: 7px; font-size: 10.5px; color: var(--faint); }
+.soul.dead .soul-face { filter: grayscale(1); opacity: .6; }
+
+/* --- the character sheet ------------------------------------------------ */
+.dh-top { align-items: flex-start; gap: 14px; }
+.dh-face {
+  flex: none; width: 64px; height: 64px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden;
+  font-family: var(--display); font-size: 24px;
+  color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+[data-theme="parchment"] .dh-face {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+
+/* --- your own card ------------------------------------------------------ */
+.card-face {
+  display: flex; gap: 18px; align-items: center; margin-bottom: 20px;
+  padding: 16px; border-radius: var(--r-lg);
+  background: var(--panel); box-shadow: inset 0 0 0 1px var(--rule-hair);
+}
+.card-portrait {
+  flex: none; width: 92px; height: 92px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden; position: relative;
+  font-family: var(--display); font-size: 34px;
+  color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.card-portrait::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(120deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+}
+[data-theme="parchment"] .card-portrait {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+[data-theme="parchment"] .card-portrait::after {
+  background: repeating-linear-gradient(120deg, rgba(0,0,0,.04) 0 2px, transparent 2px 9px);
+}
+.card-face-side { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.card-face-title {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--label);
+}
+.card-face-side .fineprint { margin: 0; }
+.card-face-side .row { display: flex; gap: 8px; margin-top: 4px; }
+
+/* --- the You card in the rail ------------------------------------------ */
+.you-sigil.has-art { border-color: rgba(240,169,76,.3); }
+
+/* --- the world editor's cast list --------------------------------------- */
+.fe-person { position: relative; }
+.fe-face {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--line-soft);
+}
+.fe-portrait {
+  flex: none; width: 56px; height: 56px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden; position: relative;
+  font-family: var(--display); font-size: 21px;
+  color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.fe-portrait::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(120deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+}
+[data-theme="parchment"] .fe-portrait {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.fe-face-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ==========================================================================
+   THE WORLD EDITOR
+   The screen every player lands on the moment their world finishes building,
+   and it was a database form: ten characters as ten stacks of six textareas,
+   roughly four thousand pixels of <input> in which the world's actual cast
+   was invisible. You cannot edit a world you cannot read.
+
+   Now every item is a row you can see - a face, a name, what they are here -
+   and the fields open underneath the one you actually want to change.
+   ========================================================================== */
+
+/* What you got, in one line, before any of the sections. */
+.fe-glance {
+  display: flex; flex-wrap: wrap; gap: 0; margin-bottom: 18px;
+  font-family: var(--mono); font-size: 11px; color: var(--label);
+  letter-spacing: .04em;
+}
+.fe-glance span { padding-inline-end: 18px; }
+.fe-glance b { color: var(--ember); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+.fe-section { background: var(--panel-2); }
+.fe-head h4 {
+  font-family: var(--ui); font-size: 12px; font-weight: 600;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--vellum-dim);
+}
+.fe-head .fe-n { font-family: var(--mono); font-size: 11px; }
+
+/* --- one item: a readable row, and the form underneath ------------------ */
+.fe-item { border-top: 1px solid var(--line-soft); padding: 0; display: block; }
+.fe-item:first-child { border-top: 0; }
+.fe-item-head {
+  display: flex; align-items: center; gap: 11px; width: 100%; text-align: start;
+  padding: 11px 2px; cursor: pointer; color: inherit;
+}
+.fe-item-head:hover { color: var(--ember-soft); }
+.fe-item-head .chev { flex: none; color: var(--faint); font-size: 11px; transition: transform .18s; }
+.fe-item.open .fe-item-head .chev { transform: rotate(90deg); }
+.fe-item-head b {
+  font-family: var(--display); font-size: 15.5px; font-weight: 500;
+  color: var(--vellum); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fe-who { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.fe-sub {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fe-law {
+  font-family: var(--display) !important; font-size: 14px !important;
+  color: var(--vellum-dim) !important; line-height: 1.5;
+  white-space: normal !important; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.fe-item-body { display: none; padding: 4px 0 16px; }
+.fe-item.open .fe-item-body { display: grid; gap: 8px; }
+.fe-item .fe-portrait { width: 34px; height: 34px; font-size: 13px; }
+.fe-face-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.fe-hint { font-size: 11px; color: var(--faint); }
+.fe-del {
+  justify-self: start; margin-top: 4px; font-size: 11.5px; color: var(--faint);
+  padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line-soft);
+}
+.fe-del:hover { color: var(--crimson); border-color: rgba(255,107,122,.4); background: rgba(255,107,122,.08); }
+
+/* --- the pinned action bar ---------------------------------------------- */
+/* The primary button used to be the ghost one at the far bottom of the whole
+   form. A player who has just built a world wants to play it, and that button
+   should never be something they have to go looking for. */
+.modal-body.has-dock { padding-bottom: 10px; }
+.modal-dock {
+  position: sticky; bottom: 0; z-index: 3;
+  display: flex; gap: 10px; justify-content: flex-end;
+  padding: 14px 24px 18px;
+  background: linear-gradient(to top, var(--panel) 72%, transparent);
+  border-top: 1px solid var(--line-soft);
+}
+.modal-dock .btn { min-width: 128px; }
+
+/* The same treatment for every other modal that ends in a row of actions. */
+.modal-body .forge-actions {
+  position: sticky; bottom: -26px; margin-top: 20px;
+  padding: 14px 0 16px;
+  background: linear-gradient(to top, var(--panel) 72%, transparent);
+}
+
+@media (max-width: 560px) {
+  .modal-dock { padding: 12px 16px 16px; }
+  .modal-dock .btn { flex: 1; min-width: 0; }
+}
+
+/* ==========================================================================
+   WHAT THE WORLD NOTICES
+   The same grammar as the feed: a hairline and a mono label do the work, and
+   colour is carried by the label rather than by a 3px bar and a tinted card.
+   Three of these stacked used to be the loudest thing on the screen, and what
+   they are reporting is ambient - word travelling, somebody watching.
+   ========================================================================== */
+.aw-head {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--label);
+}
+.sig-list { gap: 14px; }
+.sig {
+  padding: 11px 0 0; border: 0; border-radius: 0; background: none;
+  border-top: 1px solid var(--rule-hair); gap: 10px;
+}
+.sig-danger { border-top-color: rgba(255,107,122,.4); }
+.sig-warn   { border-top-color: rgba(240,169,76,.3); }
+.sig-good   { border-top-color: rgba(86,196,192,.3); }
+.sig-ico { width: 13px; height: 13px; margin-top: 3px; opacity: .9; }
+.sig-text { font-family: var(--ui); font-size: 13px; line-height: 1.45; color: var(--note); }
+.sig-detail { font-size: 11.5px; color: var(--faint); }
+.sig-eta {
+  font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--ember);
+}
+.sig-eta small { font-family: var(--mono); font-size: 8.5px; letter-spacing: .1em; color: var(--faint); }
+
+.fac-strip { gap: 7px; margin-top: 16px; }
+.fac-chip {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  padding: 4px 9px; border: 0; background: none;
+  box-shadow: inset 0 0 0 1px var(--rule-dash); color: var(--label);
+}
+.fac-name { color: var(--vellum-dim); font-weight: 500; }
+.fac-band { color: var(--faint); }
+.band-hunted, .band-hated    { box-shadow: inset 0 0 0 1px rgba(255,107,122,.45); }
+.band-disliked               { box-shadow: inset 0 0 0 1px rgba(240,169,76,.4); }
+.band-trusted, .band-beloved { box-shadow: inset 0 0 0 1px rgba(86,196,192,.4); }
+
+/* A face here is the same component as everywhere else: a portrait, a name,
+   and one word for where they stand. */
+.face-row { gap: 2px; margin-top: 14px; }
+.aw-face {
+  display: flex; align-items: center; gap: 10px; padding: 9px 0;
+  border-top: 1px solid var(--rule-hair);
+}
+.aw-portrait {
+  flex: none; width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden;
+  font-family: var(--display); font-size: 13px; color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+[data-theme="parchment"] .aw-portrait {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.aw-face-body { min-width: 0; flex: 1; }
+.aw-face-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aw-face .face-name { font-family: var(--ui); font-size: 13px; color: var(--vellum); }
+.aw-face .mood-chip { font-size: 9px; padding: 3px 7px; }
+.aw-face .face-knows { font-size: 11px; color: var(--faint); margin-top: 3px; }
+
+/* ==========================================================================
+   THE STORY MENU
+   Thirty-one entries in one flat column is a list nobody reads. Grouped by
+   the question being asked, with the group name in the mono label the rest
+   of the app uses for exactly this job.
+   ========================================================================== */
+.menu-group + .menu-group { margin-top: 22px; }
+.menu-group-head {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 500; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--label);
+  padding: 0 0 8px 12px; border-bottom: 1px solid var(--rule-hair); margin-bottom: 6px;
+}
+.menu-item .mi-main { display: flex; flex-direction: column; gap: 2px; }
+.menu-item .mi-t { display: block; font-family: var(--ui); font-size: 13.5px; color: var(--vellum); }
+.menu-item .mi-s { display: block; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.menu-item:hover .mi-t { color: var(--ember-soft); }
+
+/* Your own face in the rail is the same component as every other face, so it
+   is the same shape. It was a 12px-radius square next to five circles. */
+.you-sigil {
+  border-radius: 50%; border: 0;
+  font-family: var(--display); color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.you-sigil::after { display: none; }
+[data-theme="parchment"] .you-sigil {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}

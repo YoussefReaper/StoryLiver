@@ -208,6 +208,9 @@ class CardDraft(BaseModel):
     anomaly: str = ""
     autofill: bool = False
     card_id: str | None = None
+    # A /media path from this player's own upload. Blank means "unchanged";
+    # a literal "-" clears it. See identity.save().
+    avatar_url: str = Field(default="", max_length=200)
 
 
 class CardVote(BaseModel):
@@ -1153,7 +1156,8 @@ def save_card(pt_id: str, body: CardDraft, request: Request, user_id: str = Quer
     pt = _own(pt_id, user_id)
     world = engine.world_for(pt)
     draft = {"player_id": body.player_id, "name": body.name, "concept": body.concept,
-             "aspects": body.aspects, "anomaly": body.anomaly}
+             "aspects": body.aspects, "anomaly": body.anomaly,
+             "avatar_url": body.avatar_url}
     if body.autofill:
         with budget.turn(f"card:{pt_id}", limit=1):
             draft = identity.autofill(world, draft, user_id=body.user_id, pt_id=pt_id)

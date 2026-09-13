@@ -39,6 +39,179 @@ def _tokens(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z']+", (text or "").lower()) if len(w) > 2 and w not in STOP}
 
 
+# ---------------------------------------------------------------------------
+# Saying what somebody DID, rather than quoting what the player typed
+# ---------------------------------------------------------------------------
+#
+# A witness record is read back in three places a player actually looks at -
+# the rumour that reaches the next town, the "what you know" card, and the
+# Chronicle - and every one of them was printing the raw input with a name
+# stuck on the front:
+#
+#     A traveller: I look around and take stock of the room.
+#
+# That is a log line, not a thing anybody saw. Nobody who watched you do
+# something reports it in your words, in your tense, addressed to you. This
+# recasts the sentence the way the room would tell it: third person, past
+# tense, the player named.
+#
+# It is deliberately mechanical. A model call per witnessed act would be one
+# of the most expensive things in the engine and this fires on EVERY action;
+# the transformation below is free, runs offline, and is right for the shapes
+# players actually type ("I ask her who lit them", "I wait in the dark").
+# Anything it cannot parse it leaves alone rather than mangling.
+
+_IRREGULAR_PAST = {
+    "am": "was", "are": "were", "is": "was", "have": "had", "has": "had",
+    "do": "did", "does": "did", "go": "went", "say": "said", "tell": "told",
+    "take": "took", "make": "made", "get": "got", "give": "gave", "come": "came",
+    "see": "saw", "sit": "sat", "stand": "stood", "run": "ran", "hold": "held",
+    "keep": "kept", "leave": "left", "let": "let", "put": "put", "read": "read",
+    "hit": "hit", "cut": "cut", "set": "set", "let's": "let", "buy": "bought",
+    "bring": "brought", "think": "thought", "catch": "caught", "teach": "taught",
+    "fight": "fought", "seek": "sought", "draw": "drew", "throw": "threw",
+    "know": "knew", "grow": "grew", "blow": "blew", "fly": "flew", "speak": "spoke",
+    "break": "broke", "wake": "woke", "steal": "stole", "choose": "chose",
+    "freeze": "froze", "write": "wrote", "ride": "rode", "drive": "drove",
+    "rise": "rose", "eat": "ate", "fall": "fell", "feel": "felt", "find": "found",
+    "hear": "heard", "lead": "led", "lose": "lost", "meet": "met", "pay": "paid",
+    "sell": "sold", "send": "sent", "shoot": "shot", "sleep": "slept",
+    "spend": "spent", "swear": "swore", "sweep": "swept", "swim": "swam",
+    "win": "won", "wear": "wore", "lay": "laid", "lie": "lay", "hide": "hid",
+    "bind": "bound", "build": "built", "burn": "burnt", "bend": "bent",
+    "shut": "shut", "spread": "spread", "beat": "beat", "become": "became",
+    "begin": "began", "bite": "bit", "deal": "dealt", "dig": "dug", "drink": "drank",
+    "forget": "forgot", "forgive": "forgave", "kneel": "knelt", "mean": "meant",
+    "ring": "rang", "shake": "shook", "shine": "shone", "sing": "sang",
+    "sink": "sank", "slide": "slid", "strike": "struck", "swing": "swung",
+    "tear": "tore", "understand": "understood", "wind": "wound",
+}
+
+# Words that are not the verb: an adverb or a modal can sit between "I" and the
+# action ("I quietly ask her", "I will not move"). A modal is already tenseless
+# in the past for our purposes - "I will wait" reported later is "would wait".
+_MODALS = {"will": "would", "can": "could", "may": "might", "shall": "should",
+           "must": "had to", "would": "would", "could": "could",
+           "might": "might", "should": "should"}
+
+_PRONOUNS = [
+    (r"\bmyself\b", "themselves"), (r"\bmy\b", "their"), (r"\bmine\b", "theirs"),
+    (r"\bme\b", "them"), (r"\bI'm\b", "they were"), (r"\bI've\b", "they had"),
+    (r"\bI'll\b", "they would"), (r"\bI\b", "they"),
+]
+
+# Words that cannot be the verb of a clause. Used to decide whether the word
+# after an "and" is a second action to conjugate ("looked around and TOOK
+# stock") or the start of a noun phrase ("the room and THE door"). Leaving a
+# bare verb in the present was the one thing the recast still got wrong.
+_NOT_A_VERB = set("""the a an his her their its my your our this that these those it he she they we you there then
+into onto in on at to for from with by of out up down over under across through back away not no nor all some any
+both each every much many more most other another such same so very just only even still yet than as if when while
+because since until before after about against between during without within along around behind beneath beside
+one two three four five six seven eight nine ten""".split())
+
+
+# Multi-syllable verbs that double their final consonant anyway, because the
+# stress falls on the last syllable (or because British spelling says so).
+# Without these the rule below would give "prefered" and "traveled".
+_DOUBLERS = {"prefer", "refer", "defer", "occur", "permit", "admit", "commit",
+             "submit", "omit", "regret", "forget", "begin", "control",
+             "patrol", "travel", "cancel", "signal", "label", "level",
+             "marvel", "quarrel", "shovel", "unravel", "equip"}
+
+
+def _syllables(word: str) -> int:
+    """Vowel groups. A crude count, and all this needs it for is one/many."""
+    return len(re.findall(r"[aeiouy]+", word)) or 1
+
+
+def _past(verb: str) -> str:
+    """Best-effort past tense of a bare present-tense verb."""
+    low = verb.lower()
+    if low in _IRREGULAR_PAST:
+        return _IRREGULAR_PAST[low]
+    if low.endswith("e"):
+        return low + "d"
+    if len(low) > 2 and low.endswith("y") and low[-2] not in "aeiou":
+        return low[:-1] + "ied"
+    # Consonant doubling needs the final syllable to be the STRESSED one, so
+    # "stop" doubles and "open" does not. Syllable count is the cheap proxy:
+    # one syllable is always stressed on itself.
+    doubles = (len(low) > 2 and low[-1] not in "aeiouwxy"
+               and low[-2] in "aeiou" and low[-3] not in "aeiou"
+               and (_syllables(low) == 1 or low in _DOUBLERS))
+    return low + low[-1] + "ed" if doubles else low + "ed"
+
+
+def _and_clauses(words: list[str]) -> list[str]:
+    """Put the SECOND verb of "I looked around and take stock" into the past too.
+
+    Only where the word after "and"/"then" can actually be a verb: "the room
+    and the door" must be left alone, and a determiner is the reliable tell.
+    """
+    out = list(words)
+    for i, w in enumerate(out[:-1]):
+        if w.lower().strip(",") not in ("and", "then"):
+            continue
+        nxt = out[i + 1]
+        low = nxt.lower().strip(",.")
+        if not low or low in _NOT_A_VERB or not low.isalpha():
+            continue
+        punct = nxt[len(nxt.rstrip(",.")):]
+        out[i + 1] = _past(low) + punct
+    return out
+
+
+def retell(action: str, who: str = "") -> str:
+    """Recast a player's first-person action as a witness would report it.
+
+    "I ask her who lit them"  ->  "Ilsabet Marr asked her who lit them"
+    "I wait in the dark"      ->  "Ilsabet Marr waited in the dark"
+
+    Returns the original text unchanged if it is not first person - a player
+    who already wrote in the third person, or a rumour that came from
+    somewhere else, is left exactly as it is.
+    """
+    text = (action or "").strip()
+    if not text:
+        return ""
+    name = (who or "").strip() or "A traveller"
+
+    m = re.match(r"^\s*I\s+(.*)$", text)
+    if not m:
+        # Not first person. Still swap any stray "my"/"me" so a mixed sentence
+        # does not address the reader, and hand it back.
+        return text
+    rest = m.group(1)
+
+    # Skip any adverbs that sit between the pronoun and the verb, so
+    # "I quietly ask" conjugates `ask` and not `quietly`.
+    lead: list[str] = []
+    words = rest.split()
+    while words and (words[0].lower().endswith("ly") or words[0].lower() in ("just", "then")):
+        lead.append(words.pop(0))
+    if not words:
+        return f"{name} {rest}".strip()
+
+    first = words[0]
+    low = first.lower().strip(",.")
+    if low in ("do", "don't", "dont"):
+        # "I don't move" -> "did not move"
+        tail = " ".join(words[1:])
+        neg = "did not" if low != "do" else "did"
+        body = " ".join(lead + [neg, tail]).strip()
+    elif low in _MODALS:
+        body = " ".join(lead + [_MODALS[low]] + words[1:])
+    else:
+        punct = first[len(first.rstrip(",.")):]
+        body = " ".join(lead + [_past(low) + punct] + _and_clauses(words[1:]))
+
+    out = f"{name} {body}".strip()
+    for pattern, repl in _PRONOUNS:
+        out = re.sub(pattern, repl, out)
+    return out
+
+
 def _overlap(a: set, b: set) -> float:
     if not a or not b:
         return 0.0

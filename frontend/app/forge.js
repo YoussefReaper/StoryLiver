@@ -270,7 +270,9 @@ function youStep(f) {
       attr: `data-zero-${q.id}`, id: o.id, title: o.label,
       blurb: o.blurb || '', selected: f.answers[q.id] === o.id,
     })))
-    : `<input class="fld-input" data-zero-text="${esc(q.id)}"
+    : q.kind === 'art'
+      ? artField(f.answers[q.id] || '', f.answers.name || '')
+      : `<input class="fld-input" data-zero-text="${esc(q.id)}"
              maxlength="160" value="${esc(f.answers[q.id] || '')}"
              placeholder="${esc(q.placeholder || '')}">`}
       </div>`).join('')}
@@ -278,6 +280,34 @@ function youStep(f) {
       <button class="btn btn-ghost" data-forge-next="shape">Back</button>
       <button class="btn btn-primary" data-forge-next="build">Next — build</button>
     </div>`;
+}
+
+/* Your face, asked for in the same breath as your name.
+
+   The upload itself belongs to the shell (app.js owns the transport and the
+   toast), so this renders the slot and a button and lets the shell's global
+   click handler do the work — the same pattern the rest of this module uses
+   for everything that talks to the server. */
+function artField(url, name) {
+  const initials = String(name || '?').split(/[\s,]+/).filter(Boolean)
+    .map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+  return `<div class="zero-art">
+    <span class="zero-face${url ? ' has-art' : ''}" aria-hidden="true">
+      ${url ? `<img src="${esc(url)}" alt="">` : esc(initials)}</span>
+    <div class="zero-art-side">
+      <button type="button" class="btn btn-ghost sm" data-zero-art="portrait">
+        ${url ? 'Change picture' : 'Add your picture'}</button>
+      ${url ? '<button type="button" class="btn btn-ghost sm" data-zero-art-clear="portrait">Remove</button>' : ''}
+    </div>
+  </div>`;
+}
+
+/** Called by the shell once an upload lands. */
+export function setArt(qid, url) {
+  const f = get('forge');
+  if (!f) return;
+  patch('forge', { answers: { ...f.answers, [qid]: url } });
+  render();
 }
 
 /* ----------------------------------------------------------------- build */

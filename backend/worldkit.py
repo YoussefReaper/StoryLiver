@@ -104,6 +104,22 @@ def _as_list(value: Any) -> list[str]:
     return [str(v).strip() for v in value if str(v).strip()]
 
 
+# A portrait is a path this server issued, never a URL.
+#
+# A world dict is untrusted input - hand-edited, imported from a file, or
+# produced by a model - so an arbitrary `portrait` would let one embed an
+# off-site image: a tracking pixel that fires for every player who meets that
+# character, or a `javascript:` string dropped into an href somewhere
+# downstream. Accepting ONLY what backend/uploads.store() produced makes the
+# field structurally incapable of pointing anywhere but this origin.
+_MEDIA_PATH = re.compile(r"^/media/[0-9a-f]{32}\.(?:png|jpg|gif|webp)$")
+
+
+def _portrait(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if _MEDIA_PATH.match(text) else ""
+
+
 
 def _factions(raw: dict, npc_ids: set, loc_ids: set) -> list:
     """Declared power blocs, cleaned against the world that actually exists.
@@ -308,6 +324,14 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "name": str(npc.get("name") or nid.replace("_", " ").title()),
             "role": str(npc.get("role") or anchors.get("role") or "villager"),
             "start_location": start,
+            # A face, and only ever one the PLAYER brought. Nothing in this
+            # product generates a likeness - see backend/uploads.py - so this
+            # holds a /media/<hash> path from their own upload, or "".
+            # Whitelisted here or it is dropped on the first save, which is
+            # what happens to every field this function does not name: the
+            # editor would appear to accept a portrait and the world would
+            # come back without one.
+            "portrait": _portrait(npc.get("portrait")),
             # F3: see the matching note on locations above.
             "origin": str(npc.get("origin") or "canon"),
             # Somebody a stranger could not simply walk up to at the start:
@@ -457,6 +481,10 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         "chapters": [c for c in (raw.get("chapters") or []) if isinstance(c, dict)][:12],
         "start_location": start_location,
         "default_protagonist": str(raw.get("default_protagonist") or "a traveller nobody here has heard of"),
+        # The player's own picture, answered in Session Zero and carried on the
+        # world so it survives a save, a reload and a second playthrough of the
+        # same world. engine.create_playthrough turns it into their card.
+        "default_portrait": _portrait(raw.get("default_portrait")),
         "opening": str(raw.get("opening") or raw.get("premise") or ""),
         "arrival": str(raw.get("arrival") or f"You arrive in {name}."),
         "locations": locations,

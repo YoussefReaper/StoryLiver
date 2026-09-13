@@ -167,11 +167,21 @@ def adopt(card_id, pt_id, *, player_id, session_id="") -> dict:
 def save(pt_id, draft, *, session_id="", card_id=None, account_id=""):
     now = db.now()
     aspects = json.dumps(draft.get("aspects") or {})
+    # The picture travels with the card, not only with the identity block.
+    # It used to be writable from exactly one screen ("Who they are"), so a
+    # player who set a face on the character card watched it vanish on save.
+    # A blank here means "not supplied by this screen", never "clear it" -
+    # the card editor sends the current value back, and the Remove button
+    # sends a literal "-" so erasing stays possible and explicit.
+    avatar = str(draft.get("avatar_url") or "").strip()
     if card_id:
         db.run("UPDATE cards SET name=?, concept=?, aspects=?, anomaly=?, updated_at=?"
                " WHERE id=? AND playthrough_id=?",
                (draft.get("name", "")[:60], draft.get("concept", "")[:160], aspects,
                 (draft.get("anomaly") or "")[:300], now, card_id, pt_id))
+        if avatar:
+            db.run("UPDATE cards SET avatar_url=? WHERE id=?",
+                   ("" if avatar == "-" else avatar[:200], card_id))
         # Claimed on first edit after signing in. Playing as a guest and making
         # an account afterwards is the ordinary path, and the character you
         # made an hour ago should not be the one thing that stays behind.
@@ -182,11 +192,12 @@ def save(pt_id, draft, *, session_id="", card_id=None, account_id=""):
     card_id = _cid()
     db.run(
         "INSERT INTO cards (id,playthrough_id,session_id,player_id,account_id,name,concept,"
-        "aspects,anomaly,status,approvals,created_at,updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,'draft','{}',?,?)",
+        "aspects,anomaly,avatar_url,status,approvals,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,'draft','{}',?,?)",
         (card_id, pt_id, session_id, draft.get("player_id", ""), account_id,
          draft.get("name", "")[:60], draft.get("concept", "")[:160], aspects,
-         (draft.get("anomaly") or "")[:300], now, now))
+         (draft.get("anomaly") or "")[:300],
+         "" if avatar == "-" else avatar[:200], now, now))
     return get(card_id)
 
 

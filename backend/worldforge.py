@@ -1687,6 +1687,13 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # create_playthrough falls back to default_protagonist and Session Zero's
     # answer never reached it. Being called by your own name is most of what
     # separates playing a character from steering a camera.
+    # Their own picture, if they brought one. normalise() refuses anything
+    # that is not a path this server issued, so a hand-edited world cannot
+    # smuggle a remote image in here.
+    face = str((answers or {}).get("portrait") or "").strip()
+    if face:
+        raw["default_portrait"] = face
+
     who = str((answers or {}).get("name") or "").strip()
     if who:
         raw["default_protagonist"] = who[:120]

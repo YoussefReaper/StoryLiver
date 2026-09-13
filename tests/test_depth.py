@@ -262,7 +262,10 @@ def test_session_zero():
     # with an opinion, and the builder used to invent all of it. `cast_mix` is
     # the one that IS canon-only: how much invented cast to put around the real
     # one is a question about nothing when every character is invented anyway.
-    ok(ids == ["name", "origin", "known", "ties", "role", "power", "limit"],
+    # `portrait` sits with `name` deliberately: a face is part of saying who
+    # you are, and asking for it here is the only place in the product a
+    # player is offered one before they have already started playing.
+    ok(ids == ["name", "portrait", "origin", "known", "ties", "role", "power", "limit"],
        f"an original world is asked who they are as well as what they can do ({ids})")
     ok("cast_mix" not in ids,
        "but not how to balance a canon cast it does not have")

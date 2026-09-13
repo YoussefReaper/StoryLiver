@@ -261,6 +261,73 @@ def mode_setup(pt_id, world, mode_id, *, turn=0) -> dict:
     return out
 
 
+def _player_name(pt, player=memory.SOLO) -> str:
+    """What the world calls this player.
+
+    A room supplies a display name on every turn; a solo world does not, and
+    every witness record fell back to the literal string "A traveller" even
+    when Session Zero had asked for a name and the card was sitting right
+    there. Card first (the player wrote it), then the protagonist line the
+    world was built with, then the honest fallback.
+    """
+    try:
+        row = db.row("SELECT name FROM cards WHERE playthrough_id=? AND player_id=?"
+                     " AND name != '' ORDER BY updated_at DESC LIMIT 1",
+                     (pt["id"], player))
+        if row and row["name"]:
+            return row["name"]
+    except Exception:
+        pass
+    who = str(pt.get("protagonist") or "").strip()
+    if who and not who.lower().startswith("a traveller nobody"):
+        # "Yuki, a courier who reads more than she admits" -> "Yuki"
+        return re.split(r"[,(—-]", who)[0].strip() or who[:40]
+    return "A traveller"
+
+
+def _seed_player_card(pt_id, world, session_id):
+    """Make the card Session Zero already answered.
+
+    `default_protagonist` is one string holding both halves - "Yuki, a courier
+    who reads more than she admits" - because that is how a person writes it.
+    Split on the first comma or dash: the name is what the cast calls you, the
+    rest is the concept. A single word is a name with no concept, which is a
+    legitimate answer and not an error.
+
+    Solo only. In a room every seat writes their own card and an unprompted
+    one standing in a player's slot would be worse than none.
+    """
+    if session_id:
+        return
+    who = str(world.get("default_protagonist") or "").strip()
+    face = str(world.get("default_portrait") or "").strip()
+    if not face and (not who or who.startswith("a traveller nobody")):
+        return                      # nothing was answered; leave the card unmade
+    head, _, tail = who.partition(",")
+    if not tail:
+        head, _, tail = who.partition(" - ")
+    name = head.strip()[:60]
+    from . import identity
+    identity.save(pt_id, {
+        "player_id": memory.SOLO,
+        "name": name,
+        "concept": tail.strip()[:160],
+        "aspects": {},
+        "anomaly": "",
+        "avatar_url": face,
+    }, session_id="", account_id=_account_for(pt_id))
+
+
+def _account_for(pt_id):
+    """The account this story belongs to, if the player has one. A guest gets
+    "" and their card lives with the world rather than in a library."""
+    row = db.row("SELECT user_id FROM playthroughs WHERE id=?", (pt_id,))
+    if not row:
+        return ""
+    acct = db.row("SELECT id FROM accounts WHERE id=?", (row["user_id"],))
+    return acct["id"] if acct else ""
+
+
 def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=None,
                        session_id="", world_json=None, session_type="", seed=0):
     world = world_registry.resolve(world_id, world_json)
@@ -321,6 +388,12 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     # The source's running order travels with the story, so "which chapter am
     # I in" is answerable without going back to the world every time.
     chapters.set_book(pt_id, world.get("chapters") or [])
+
+    # Session Zero already asked who you are and what you look like. Turning
+    # those two answers into the character card here means a player who filled
+    # the forge in properly does not then have to retype their own name into a
+    # modal before the world shows it back to them.
+    _seed_player_card(pt_id, world, session_id)
 
     # Whatever this mode needs staged before it is playable. Solo modes only:
     # a room stages itself when the host sets the table.
@@ -496,7 +569,7 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
             cause_node = narrgraph.add(
                 pt["id"], turn,
                 "rupture" if relationships.is_harmful(event) else "bond",
-                f"{actor_name or 'You'}: {action[:80]}",
+                memory.retell(action[:120], actor_name or _player_name(pt, player))[:140],
                 detail=verdict.get("consequence", "")[:200],
                 place_id=pt["current_location"], actor=player, weight=4)
         for npc_id in aimed_at[:3]:
@@ -518,7 +591,14 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
     if severity >= 3 and event not in (None, "spoke_kindly", "listened"):
         fact = awareness.witness(
             pt["id"], world, actor=player, kind=event or "action",
-            summary=f"{actor_name or 'A traveller'}: {action[:120]}",
+            # What the room SAW, not what the player typed. This used to be
+            # the raw input with a name stuck on the front - "A traveller: I
+            # look around and take stock of the room" - and that string is
+            # read back in the three places a player actually looks: the
+            # rumour that reaches the next town, the "what you know" card,
+            # and the Chronicle. Nobody who watched you do something reports
+            # it in your words, in your tense, addressed to you.
+            summary=memory.retell(action[:160], actor_name or _player_name(pt, player))[:180],
             detail=verdict.get("consequence", "")[:200],
             place_id=pt["current_location"], turn=turn, severity=severity,
             present=state["present"], subject=player)
@@ -578,11 +658,14 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
                                    "killed_ally_of", "insulted"):
         seen = authority.patrol_tick(
             pt["id"], world, turn, place_id=pt["current_location"], actor=player,
-            summary=f"{actor_name or 'Someone'}: {action[:100]}", severity=severity)
+            summary=memory.retell(action[:140], actor_name or _player_name(pt, player))[:160],
+            severity=severity)
         for hit in seen["witnessed_by_authority"]:
             out["authority"].append(authority.register_crime(
                 pt["id"], world, player=player, faction_id=hit["faction"],
-                severity=cost_sev, summary=action[:140], turn=turn))
+                severity=cost_sev,
+                summary=memory.retell(action[:140], actor_name or _player_name(pt, player))[:160],
+                turn=turn))
 
     # Institutions forget slowly, but they do forget - otherwise one bad turn
     # is a life sentence, which reads as the world being broken, not strict.
@@ -1107,6 +1190,10 @@ def snapshot(pt_id, player=memory.SOLO):
         loc = st.get("location", npc["start_location"])
         npcs.append({
             "id": npc["id"], "name": npc["name"], "role": npc["role"],
+            # The face the player gave them, if they gave one. Carried in the
+            # turn state rather than fetched per character, because the
+            # speaker plate needs it at the moment a line lands.
+            "portrait": npc.get("portrait", ""),
             "voice": npc["anchors"]["voice"],
             "goals": npc["anchors"]["goals"], "taboos": npc["anchors"]["taboos"],
             "constraints": npc["anchors"]["constraints"],
