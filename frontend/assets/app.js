@@ -1263,7 +1263,15 @@ async function submitAction(text) {
     if (fired.reveal) showTraitorReveal(fired.reveal);
     if (r.ending) showEnding(r.ending);
   } catch (err) {
-    toast(`The world stalled: ${err.message}`, 'err');
+    // Give the player their words back. The composer clears on submit, so a
+    // dropped connection or a stalled turn used to eat a sentence somebody
+    // had just spent a minute writing - and the only way to find that out
+    // was to look at an empty box.
+    const ta = $('#actionInput');
+    if (ta && !ta.value.trim()) { ta.value = text; autosize(ta); }
+    toast(err.message === 'Failed to fetch'
+      ? 'Lost the connection. Your turn is still in the box — try it again.'
+      : `The world stalled: ${err.message}`, 'err');
   } finally {
     if (!overSocket) { S.busy = false; thinking(false); }
     $('#actionInput').focus();
