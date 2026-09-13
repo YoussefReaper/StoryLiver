@@ -1104,11 +1104,20 @@ function speakerPlate(who, meta) {
   // fires when something real moved.
   const moved = (meta?.relationship_changes || []).some((d) => d.npc === who.npc)
     || (meta?.relationship_events || []).some((r) => r.npc === who.npc);
-  // A spoken line is set as speech; an act they took is set as narration.
+  // A SPOKEN line is the plate's whole point: it is the line the scene turns
+  // on, and it appears nowhere else.
+  //
+  // An ACT is different. The narrator is handed the same sentence and told to
+  // play it out, so the passage above already contains it — printing it again
+  // underneath made every unprompted move read twice, verbatim in the offline
+  // narrator and as a near-paraphrase with a live one. The plate still earns
+  // its place by answering the question the prose cannot: WHO chose that, what
+  // do they look like, and where do they stand with you now.
   const line = who.said
     ? `<q class="plate-line plate-said">${esc(who.action || '')}</q>`
-    : `<span class="plate-line">${esc(who.action || '')}</span>`;
-  return `<aside class="plate${who.said ? ' plate-speaking' : ''}" data-soul="${esc(who.npc || '')}">
+    : `<span class="plate-moved mono">moved first &mdash; nobody asked them to</span>`;
+  return `<aside class="plate${who.said ? ' plate-speaking' : ''}" data-soul="${esc(who.npc || '')}"
+      ${who.said ? '' : `title="${esc(who.action || '')}"`}>
     ${faceHTML(npc.portrait, who.name, 'plate-face')}
     <span class="plate-body">
       <span class="plate-who">
@@ -2690,14 +2699,50 @@ function stopWhisper() {
   $('#actionInput').placeholder = 'What do you do?';
 }
 
+/* Read the last TURN, not the last paragraph.
+
+   It used to read only the newest narration block, so a turn whose whole
+   point was a line somebody said - the plate, the thing the scene turns on -
+   was read aloud with the line missing. A passage is narration plus whoever
+   spoke in it, in the order it happened, with the speaker named the way a
+   person reading to you would name them. */
+function lastPassage() {
+  const feed = $('#feed');
+  if (!feed) return '';
+  const kids = [...feed.children];
+  // Everything since the most recent turn rule is one turn.
+  let start = 0;
+  for (let i = kids.length - 1; i >= 0; i -= 1) {
+    if (kids[i].classList.contains('turn-rule')) { start = i + 1; break; }
+  }
+  const bits = [];
+  for (const el of kids.slice(start)) {
+    if (el.classList.contains('entry-you')) continue;   // your own line, not the world's
+    const said = el.querySelector('.plate-said');
+    if (said) {
+      const who = el.querySelector('.plate-name')?.textContent.trim();
+      bits.push(`${who ? `${who} says. ` : ''}${said.textContent.trim()}`);
+      continue;
+    }
+    const prose = el.querySelector('.prose, .fate-body, .whisper-said, .reveal-line');
+    if (prose) bits.push(prose.textContent.trim());
+  }
+  // Nothing in this turn yet (the feed opens mid-passage): fall back to the
+  // newest readable block anywhere.
+  if (!bits.length) {
+    const nodes = $$('.entry-narration .prose, .entry-fate .fate-body, .entry-opening .prose');
+    if (nodes.length) bits.push(nodes[nodes.length - 1].textContent.trim());
+  }
+  return bits.join('\n\n');
+}
+
 function speakLast() {
-  const nodes = $$('.entry-narration .prose, .entry-fate .fate-body, .entry-opening .prose');
-  const last = nodes[nodes.length - 1];
-  if (!last) return toast('Nothing to read yet.');
+  const passage = lastPassage();
+  if (!passage) return toast('Nothing to read yet.');
   if (!('speechSynthesis' in window)) return toast('This browser cannot read aloud.', 'warn');
   const btn = $('#voiceBtn');
   if (speechSynthesis.speaking) { speechSynthesis.cancel(); btn.classList.remove('on'); return; }
-  const u = new SpeechSynthesisUtterance(last.textContent.trim());
+  const u = new SpeechSynthesisUtterance(passage);
   u.rate = 0.94; u.pitch = 0.95;
   u.onend = () => btn.classList.remove('on');
   btn.classList.add('on');

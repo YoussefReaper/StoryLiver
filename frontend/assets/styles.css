@@ -3417,3 +3417,14 @@ button { background: none; border: 0; cursor: pointer; }
 [dir="rtl"] .entry-refusal .prose,
 [dir="rtl"] .whisper-said,
 [dir="rtl"] .brief-tag { font-style: normal; }
+
+/* An act, not a line. The prose already told you what they did; this says who
+   chose it, and is quiet enough not to compete with the passage above it. */
+.plate-moved {
+  display: block; margin-top: 8px; font-size: 10px; font-weight: 500;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--label);
+}
+/* Without a spoken line the plate is a header, so it sits closer to the prose
+   and its portrait does not need to be the anchor of the whole screen. */
+.plate:not(.plate-speaking) { align-items: center; gap: 14px; }
+.plate:not(.plate-speaking) .plate-face { width: 54px; height: 54px; font-size: 20px; }
