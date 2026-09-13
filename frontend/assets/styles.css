@@ -411,9 +411,26 @@ button { background: none; border: 0; cursor: pointer; }
   cursor: pointer; transition: border-color .18s var(--ease), transform .12s var(--ease);
 }
 .home-world:hover { border-color: var(--ember-deep); transform: translateY(-1px); }
+/* A lit horizon, not an empty image slot. This was a flat grey gradient
+   band 92px tall at the top of the card, which reads as a picture that
+   failed to load - the one thing a "step into this world" card must not look
+   like. It is the same hatched ground the portraits use, with something
+   burning below the ridge, which is what the card is about. */
 .home-world-art {
   display: block; height: 92px; border-bottom: 1px solid var(--line);
-  background: linear-gradient(160deg, var(--panel-2), var(--ink));
+  position: relative; overflow: hidden;
+  background:
+    radial-gradient(120% 150% at 50% 168%, rgba(255,169,77,.45), rgba(240,169,76,.08) 42%, transparent 62%),
+    linear-gradient(160deg, #241F2E, #16131A 72%);
+}
+.home-world-art::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(115deg, rgba(255,255,255,.035) 0 2px, transparent 2px 11px);
+}
+[data-theme="parchment"] .home-world-art {
+  background:
+    radial-gradient(120% 150% at 50% 168%, rgba(194,116,15,.35), rgba(194,116,15,.06) 42%, transparent 62%),
+    linear-gradient(160deg, #EFE6D9, #E2D6C4 72%);
 }
 .home-world-body { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px 20px; }
 .home-world-name { font-family: var(--display); font-weight: 400; font-size: 24px; color: var(--vellum); }
