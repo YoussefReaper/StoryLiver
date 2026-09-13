@@ -12,47 +12,59 @@
 [hidden] { display: none !important; }
 
 :root {
-  /* ink (default) */
-  --void:        #06080C;
-  --ink:         #0A0D13;
-  --panel:       #0F131B;
-  --panel-2:     #141924;
-  --panel-3:     #1A2130;
-  --line:        #1D2432;
-  --line-soft:   #161C27;
+  /* "Ember" — the Story Screen palette. The old ground was a blue-black at
+     almost no chroma (#06080C / #0A0D13), which is the colour of a switched-
+     off monitor: every accent on top of it had to shout to be seen at all,
+     and that is how the feed ended up as a wall of tinted boxes. This ground
+     is a violet-black with actual saturation in it, lit by one amber — so a
+     rule, a label or a single word can carry a whole entry type without a
+     container around it. Six colours do all ten entries.
 
-  --vellum:      #EAE3D5;
-  --vellum-dim:  #ADA695;
-  --muted:       #6E7789;
-  --faint:       #4A5265;
+       ground #16131A   raise #1E1A26   ink #EFE9E1   lit #F0A94C
+       signal #56C4C0   break #FF6B7A   fear #C98AD6  paper #FBF8F4      */
+  --void:        #16131A;
+  --ink:         #16131A;
+  --panel:       #1E1A26;
+  --panel-2:     #1E1A26;
+  --panel-3:     #262130;
+  --line:        #2E2836;
+  --line-soft:   #241F2C;
 
-  --ember:       #E8A54B;
-  --ember-soft:  #F6D19A;
-  --ember-deep:  #B87A2C;
-  --ember-glow:  rgba(232,165,75,.13);
+  --vellum:      #EFE9E1;
+  --vellum-dim:  #C4BDB4;
+  --muted:       #9C968F;
+  --faint:       #6E6870;
 
-  --verdigris:   #4FB3A6;
-  --crimson:     #D0563D;
-  --violet:      #8E7DCB;
-  --rose:        #CF7A9E;
+  --ember:       #F0A94C;
+  --ember-soft:  #F5B96A;
+  --ember-deep:  #C2740F;
+  --ember-glow:  rgba(240,169,76,.14);
 
-  --ok:          #57B98C;
+  --verdigris:   #56C4C0;
+  --crimson:     #FF6B7A;
+  --violet:      #C98AD6;
+  --rose:        #DCA0C6;
+
+  --ok:          #56C4C0;
 
   --shadow-1: 0 1px 2px rgba(0,0,0,.4);
   --shadow-2: 0 8px 30px -12px rgba(0,0,0,.75);
   --shadow-3: 0 24px 70px -20px rgba(0,0,0,.85);
 
-  --serif: "Spectral", "Iowan Old Style", "Palatino Linotype", Georgia, "Times New Roman", serif;
-  --sans:  "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Three faces, and --serif/--sans are now aliases of them rather than a
+     second, competing trio. Everything that is read as prose is Spectral;
+     every control is Manrope; every number, timestamp and small-caps label
+     is JetBrains Mono. */
+  --display: "Spectral", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --ui:      "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono:    "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --serif:   var(--display);
+  --sans:    var(--ui);
+  --ember-line: #3B3020;
 
-  /* The design system's own three faces: a display serif for anything that
-     is read as prose, a sans for controls, a mono for the numbers and the
-     small caps labels. Introduced by the home page; the shell still runs on
-     --serif/--sans above until the rest of it is rebuilt on these. */
-  --display: "Newsreader", Georgia, "Iowan Old Style", serif;
-  --ui:      "Archivo", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono:    "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --ember-line: #3A2F1C;
+  /* The reading measure. Everything that is prose sits in this column and
+     nothing is allowed to be wider than it. */
+  --measure: 33rem;
 
   --r-sm: 8px;  --r: 12px;  --r-lg: 18px;  --r-xl: 26px;
   --rail-l: 300px;
@@ -60,31 +72,35 @@
   --ease: cubic-bezier(.22,.68,.36,1);
 }
 
+/* The light theme is its own design, not an inversion of the dark one. Warm
+   paper rather than white, ink rather than off-white, and the accents pulled
+   down to weights that hold their own against a lit ground — the amber goes
+   to a burnt ochre, the break red to a true crimson. */
 [data-theme="parchment"] {
-  --void:        #E8E1D2;
-  --ink:         #F2ECDE;
-  --panel:       #FBF6EA;
-  --panel-2:     #F5EFE0;
-  --panel-3:     #EDE5D3;
-  --line:        #DDD3BE;
-  --line-soft:   #E7DECB;
+  --void:        #F3EEE6;
+  --ink:         #FBF8F4;
+  --panel:       #F5F0E8;
+  --panel-2:     #F1EBE1;
+  --panel-3:     #EBE4D8;
+  --line:        #DED5C8;
+  --line-soft:   #E9E1D5;
 
-  --vellum:      #23201A;
-  --vellum-dim:  #514B3F;
-  --muted:       #7C7466;
-  --faint:       #A79E8C;
+  --vellum:      #221D28;
+  --vellum-dim:  #4A4351;
+  --muted:       #6E6676;
+  --faint:       #9A9299;
 
-  --ember:       #9C5F16;
-  --ember-soft:  #C4862F;
-  --ember-deep:  #7A4A10;
-  --ember-glow:  rgba(156,95,22,.10);
-  --ember-line:  #D8C7A4;
+  --ember:       #C2740F;
+  --ember-soft:  #A85C07;
+  --ember-deep:  #A85C07;
+  --ember-glow:  rgba(194,116,15,.10);
+  --ember-line:  #E0CFB4;
 
-  --verdigris:   #1F7A6E;
-  --crimson:     #A63A22;
-  --violet:      #5B4B96;
-  --rose:        #A34D71;
-  --ok:          #2C7A55;
+  --verdigris:   #0F5F5B;
+  --crimson:     #B91C3B;
+  --violet:      #6B3E8A;
+  --rose:        #9A4478;
+  --ok:          #0F5F5B;
 
   --shadow-1: 0 1px 2px rgba(90,70,40,.10);
   --shadow-2: 0 8px 26px -14px rgba(90,70,40,.35);
@@ -2547,3 +2563,413 @@ button { background: none; border: 0; cursor: pointer; }
 .mode-card b { display: block; font-size: 13px; margin-bottom: 3px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
 @media (max-width: 620px) { .mode-pick { grid-template-columns: 1fr; } }
+
+/* ==========================================================================
+   THE STORY SCREEN
+   Implements "StoryLiver Story Screen.dc.html" (turn 3 - Ember palette,
+   circular plate, Spectral / Manrope / JetBrains Mono).
+
+   The whole point of this screen is that the prose is the interface. The old
+   shell put a 288px rail, a 320px rail and a nine-tab bar around a column of
+   writing, which left the actual story with 56% of a 1400px window; every
+   entry that was not plain narration then had to be a bordered, tinted box to
+   be noticed in the noise, and there were ten of those competing at roughly
+   equal weight. Both halves of that are fixed here. The column owns the
+   screen and the instruments are summoned; the ten entry types are separated
+   by RULE WEIGHT, INDENT and SHAPE first, with colour carried by a label and
+   a hairline rather than by a filled panel.
+
+   Frequency decides loudness, and the rare entries are the only loud ones:
+   narration (every turn) has no chrome at all; the lie coming apart (twice a
+   session) is the only thing on the screen allowed to be 23px between two
+   rules.
+   ========================================================================== */
+
+:root {
+  /* Ink laid over the ground at fixed opacities. Every rule, label and quiet
+     passage in the feed is one of these, so the whole grammar re-tunes for
+     the light theme by overriding six values rather than fifty rules. */
+  --rule-hair:  rgba(239,233,225,.12);
+  --rule-thin:  rgba(239,233,225,.20);
+  --rule-dash:  rgba(239,233,225,.24);
+  --label:      rgba(239,233,225,.62);
+  --note:       rgba(239,233,225,.70);
+  --quiet:      rgba(239,233,225,.66);
+  --mine:       rgba(239,233,225,.74);
+  --said:       #F8F4EE;
+  --signal-soft:#7FDEDB;
+  --signal-dim: #6FB9B6;
+  --break-soft: #FF8A96;
+  --fear-soft:  #D3A0DD;
+}
+[data-theme="parchment"] {
+  --rule-hair:  rgba(34,29,40,.14);
+  --rule-thin:  rgba(34,29,40,.22);
+  --rule-dash:  rgba(34,29,40,.26);
+  --label:      rgba(34,29,40,.66);
+  --note:       rgba(34,29,40,.74);
+  --quiet:      rgba(34,29,40,.72);
+  --mine:       rgba(34,29,40,.78);
+  --said:       #14101A;
+  --signal-soft:#0F5F5B;
+  --signal-dim: #2A7570;
+  --break-soft: #B91C3B;
+  --fear-soft:  #6B3E8A;
+}
+
+/* One mono label style, used by every entry type that has one. */
+.feed-label {
+  display: inline-block; font-family: var(--mono); font-size: 9.5px; font-weight: 500;
+  line-height: 1; letter-spacing: .12em; text-transform: uppercase; color: var(--label);
+  direction: ltr;
+}
+
+/* -------------------------------------------------------- ambient strip -- */
+/* Four facts, no panels. The hour, the sky, where you are standing, and what
+   you have left - the things a player checks without wanting to look away. */
+.ambient {
+  flex: none; display: flex; align-items: center; gap: 0;
+  padding: 0 24px; height: 38px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono); font-size: 11px; letter-spacing: .05em;
+  color: var(--label); direction: ltr; white-space: nowrap; overflow: hidden;
+}
+.ambient .am-time { color: var(--vellum-dim); }
+.ambient .am-sep { font-style: normal; opacity: .3; padding: 0 12px; }
+.ambient .am-here { overflow: hidden; text-overflow: ellipsis; }
+.ambient .am-right { margin-inline-start: auto; display: flex; align-items: center; padding-inline-start: 16px; }
+.ambient .am-mana { color: var(--ember); }
+.ambient .am-chapter:empty { display: none; }
+.ambient .am-chapter:empty + .am-sep, .ambient .am-right .am-sep:last-child { display: none; }
+
+/* ------------------------------------------------------- the solo column -- */
+/* Story view only. Every other view keeps the tab bar, because that is how
+   you get back out of it. */
+@media (min-width: 1041px) {
+  #app[data-solo="1"] .stage { grid-template-columns: minmax(0,1fr); position: relative; }
+  #app[data-solo="1"] .table-tabs { display: none; }
+
+  /* The rails become drawers: off-canvas, summoned by key, gone on Escape. */
+  #app[data-solo="1"] .rail {
+    position: absolute; top: 0; bottom: 0; z-index: 32; width: var(--rail-r);
+    visibility: hidden; box-shadow: var(--shadow-3);
+    transition: transform .26s var(--ease), visibility .26s;
+  }
+  #app[data-solo="1"] .rail-left  { left: 0;  width: var(--rail-l); transform: translateX(-102%); }
+  #app[data-solo="1"] .rail-right { right: 0; transform: translateX(102%); }
+  #app[data-solo="1"].pane-left  .rail-left,
+  #app[data-solo="1"].pane-right .rail-right { visibility: visible; transform: none; }
+  #app[data-solo="1"].pane-left  .rail-scrim,
+  #app[data-solo="1"].pane-right .rail-scrim { display: block; }
+}
+.rail-scrim {
+  position: absolute; inset: 0; z-index: 31; display: none;
+  background: rgba(10,8,14,.5); backdrop-filter: blur(1.5px);
+}
+[data-theme="parchment"] .rail-scrim { background: rgba(60,50,40,.28); }
+
+/* ----------------------------------------------------------- the column -- */
+.table { background: var(--ink); }
+.feed { padding: 30px 24px 0; }
+.entry, .entry-you, .entry-speech, .entry-fate, .entry-whisper, .entry-away,
+.turn-rule, .thinking, .quick-row, .composer-hint {
+  max-width: var(--measure);
+}
+.entry { margin: 0 auto 26px; }
+.feed-inner { max-width: var(--measure); }
+
+.prose { font-family: var(--display); font-size: 18.5px; line-height: 1.75; color: var(--vellum); }
+.prose p + p { margin-top: 1.05em; }
+.entry-opening .prose { font-size: 18.5px; }
+
+/* The turn rule is a bookmark, not a header. */
+.turn-rule { margin: 0 auto 20px; }
+.turn-rule::before, .turn-rule::after { background: var(--rule-hair); }
+.turn-rule span { font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); }
+
+/* 02 - your own action, every turn. An indent and one lit rule. No label:
+   nothing else on the screen is indented against the amber, so it reads as
+   yours without having to be told. */
+.entry-you { margin: 0 auto 22px; }
+.you-line {
+  font-family: var(--ui); font-style: normal; font-size: 15px; line-height: 1.6;
+  color: var(--mine); background: none; border: 0; border-radius: 0; padding: 0;
+  border-inline-start: 2px solid rgba(240,169,76,.6); padding-inline-start: 15px;
+}
+.you-line b {
+  display: inline; margin: 0 6px 0 0; font-family: var(--mono); font-size: 9.5px;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--label);
+}
+/* Solo play: the actor is always you, so the name is noise. */
+.you-line b.is-you { display: none; }
+
+/* 03 - refusal, roughly one turn in five. The world declining you is part of
+   the fiction, so it is set as prose behind a hairline. It was a crimson
+   left-border with a warning glyph, which read as a validation error. */
+.entry-refusal .refusal-wrap {
+  border: 0; border-inline-start: 1px solid var(--rule-thin);
+  padding: 0; padding-inline-start: 15px;
+}
+.entry-refusal .refusal-head {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 500; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--label); margin-bottom: 7px;
+}
+.entry-refusal .refusal-head .ico { display: none; }
+.entry-refusal .prose { font-size: 17.5px; font-style: normal; color: var(--quiet); }
+.refusal-reason { font-size: 12.5px; color: var(--muted); }
+
+/* 04 - word reaches you: secondhand, unverified, possibly wrong. The dashes
+   are the whole idea - the rule itself is not solid, and neither is this. */
+.entry-hearsay { max-width: var(--measure); margin: 0 auto 26px; }
+.hearsay-wrap {
+  border-inline-start: 1px dashed var(--rule-dash); padding-inline-start: 15px; color: var(--quiet);
+}
+.hearsay-wrap .prose { font-size: 17.5px; font-style: italic; color: var(--quiet); }
+.hearsay-wrap .feed-label { margin-bottom: 7px; }
+
+/* 05 - something shifted / 06 - contested. The world moving on its own, and
+   a push you did not simply win. One line each, over a hairline. */
+.world-note {
+  border-top: 1px solid var(--rule-hair); padding-top: 11px; margin: 0;
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+}
+.world-note .feed-label { flex: none; }
+.world-note span.wn-text { font-family: var(--ui); font-size: 14.5px; line-height: 1.55; color: var(--note); }
+.world-note.is-shift .feed-label { color: var(--verdigris); }
+.world-note.is-contest { border-top-color: rgba(240,169,76,.3); }
+.world-note.is-contest .feed-label { color: var(--ember); }
+.world-note.is-contest span.wn-text { color: var(--vellum-dim); }
+.world-notes { display: grid; gap: 14px; margin-top: 22px; }
+
+.entry-contest .contest-slab { background: none; border: 0; padding: 0; border-radius: 0; }
+.entry-contest .contest-head {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; color: var(--ember);
+  border-top: 1px solid rgba(240,169,76,.3); padding-top: 11px; margin-bottom: 8px;
+}
+.entry-contest .contest-head .ico { display: none; }
+.entry-contest .contest-vs { font-family: var(--ui); font-size: 14.5px; color: var(--note); margin-bottom: 6px; }
+.entry-contest .fate-body { font-family: var(--display); font-size: 17.5px; color: var(--quiet); }
+
+/* 07 - character speech, the line a scene turns on, once or twice a turn.
+   The portrait is the anchor of the whole screen: 92px, circular, and given
+   a real placeholder rather than a grey square, because most characters in a
+   built world will never have art. */
+.plate {
+  display: flex; gap: 18px; align-items: flex-start; margin: 0;
+  padding: 0; border: 0; background: none; border-radius: 0;
+}
+.entry-narration .plate { margin-top: 24px; }
+.plate:hover { border: 0; }
+.plate-face {
+  flex: none; width: 92px; height: 92px; border-radius: 50%;
+  display: grid; place-items: center; position: relative; overflow: hidden;
+  font-family: var(--display); font-size: 34px; font-weight: 400; letter-spacing: .01em;
+  color: rgba(240,169,76,.72); background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+/* The hatch is the no-art state, and it is meant to look deliberate. */
+.plate-face::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(120deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+}
+[data-theme="parchment"] .plate-face {
+  color: var(--ember-deep); background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+[data-theme="parchment"] .plate-face::after { background: repeating-linear-gradient(120deg, rgba(0,0,0,.04) 0 2px, transparent 2px 9px); }
+.plate-body { gap: 0; }
+.plate-who { align-items: baseline; gap: 10px; }
+.plate-name { font-family: var(--display); font-size: 19px; font-weight: 600; color: var(--said); }
+.plate-role {
+  font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--label); border: 0; background: none; padding: 0;
+}
+.plate-line {
+  display: block; margin-top: 9px; font-family: var(--display);
+  font-size: 18.5px; line-height: 1.65; color: var(--vellum);
+}
+.plate-said { font-size: 21px; line-height: 1.55; color: var(--said); }
+.plate-speaking { border: 0; }
+.entry-speech { margin: 0 auto 26px; }
+
+/* Mood chips. One word for where a character stands with you right now - the
+   main way the simulation shows itself, and the replacement for four bars.
+   Outline = steady state. Filled = it changed this turn. */
+.mood-chip {
+  display: inline-block; margin: 0; padding: 4px 9px; border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: .1em;
+  text-transform: uppercase; background: none; border: 0; color: var(--label);
+  box-shadow: inset 0 0 0 1px var(--rule-dash);
+}
+.mood-close, .mood-warm, .mood-devoted {
+  color: var(--ember-soft); box-shadow: inset 0 0 0 1px rgba(240,169,76,.45);
+}
+.mood-wary   { color: var(--signal-soft); box-shadow: inset 0 0 0 1px rgba(86,196,192,.4); }
+.mood-cold   { color: var(--signal-dim);  box-shadow: inset 0 0 0 1px rgba(86,196,192,.28); }
+.mood-stranger { color: var(--note); box-shadow: inset 0 0 0 1px var(--rule-dash); }
+.mood-hostile  { color: var(--break-soft); box-shadow: inset 0 0 0 1px rgba(255,107,122,.5); }
+.mood-terrified{ color: var(--fear-soft);  box-shadow: inset 0 0 0 1px rgba(201,138,214,.45); }
+.mood-sworn  { color: var(--ink); background: var(--ember); box-shadow: none; }
+.mood-burned { color: var(--ink); background: var(--crimson); box-shadow: none; }
+.mood-chip.moved { color: var(--ink); background: var(--ember); box-shadow: none; }
+.mood-chip.moved.mood-hostile, .mood-chip.moved.mood-burned,
+.mood-chip.moved.mood-terrified { background: var(--crimson); }
+
+/* 08 - whispered to you only. Rare, and the one entry nobody else can see,
+   so it is the one entry with a ground of its own. */
+.entry-whisper { margin: 0 auto 26px; }
+.entry-whisper .whisper-slab {
+  border: 0; border-radius: 10px; padding: 14px 16px;
+  background: rgba(86,196,192,.10);
+}
+[data-theme="parchment"] .entry-whisper .whisper-slab { background: rgba(15,95,91,.08); }
+.entry-whisper .whisper-head {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+  color: var(--signal-soft); margin-bottom: 8px;
+}
+.entry-whisper .whisper-head .ico { display: none; }
+.entry-whisper .whisper-said {
+  font-family: var(--display); font-size: 18px; font-style: normal; line-height: 1.55;
+  color: var(--said);
+}
+.entry-whisper .whisper-reply { font-size: 17px; color: var(--quiet); }
+
+/* 09 - sealed / not yet reached. Something is coming and you cannot know
+   what. Redaction bars rather than a sentence, because any sentence here
+   would be a sentence the player is not allowed to have. */
+.entry-sealed { max-width: var(--measure); margin: 0 auto 26px; }
+.sealed-slab {
+  border-radius: 10px; padding: 15px 16px;
+  background: repeating-linear-gradient(135deg, rgba(255,255,255,.045) 0 6px, transparent 6px 13px);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+}
+[data-theme="parchment"] .sealed-slab {
+  background: repeating-linear-gradient(135deg, rgba(34,29,40,.05) 0 6px, transparent 6px 13px);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.10);
+}
+.sealed-slab .feed-label { color: var(--label); margin-bottom: 9px; }
+.sealed-bars { display: flex; flex-direction: column; gap: 7px; }
+.sealed-bars i { display: block; height: 9px; border-radius: 2px; background: var(--rule-hair); }
+
+/* 10 - the lie comes apart. Twice a session, and the loudest thing on the
+   screen by a wide margin. It earns that by almost never happening. */
+.entry-reveal { max-width: var(--measure); margin: 0 auto 30px; }
+.entry-reveal .reveal-slab {
+  background: none; border: 0; border-radius: 0; padding: 16px 0 18px;
+  border-top: 1px solid rgba(255,107,122,.6); border-bottom: 1px solid rgba(255,107,122,.24);
+}
+[data-theme="parchment"] .entry-reveal .reveal-slab {
+  border-top-color: rgba(185,28,59,.6); border-bottom-color: rgba(185,28,59,.24);
+}
+.entry-reveal .reveal-head {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em; color: var(--crimson);
+  margin-bottom: 12px;
+}
+.entry-reveal .reveal-line {
+  font-family: var(--display); font-size: 23px; line-height: 1.5; color: var(--said);
+}
+.entry-reveal .reveal-line s { color: var(--muted); }
+.entry-reveal .reveal-caught { font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+/* Fate keeps running, and keeps not announcing itself. It reads as narration
+   with one lit hairline over it - never as a slab with a seal. */
+.entry-fate { margin: 0 auto 26px; }
+.entry-fate .fate-slab {
+  background: none; border: 0; border-radius: 0; padding: 14px 0 0;
+  border-top: 1px solid rgba(240,169,76,.32);
+}
+.entry-fate .fate-slab::after { display: none; }
+.entry-fate .fate-title { font-family: var(--display); font-size: 19px; color: var(--said); margin-bottom: 8px; }
+.entry-fate .fate-body { font-family: var(--display); font-size: 18.5px; line-height: 1.75; color: var(--vellum); }
+.entry-fate .fate-seal { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; color: var(--faint); }
+
+.entry-safety .safety-slab { border-radius: 10px; }
+.entry-combat .combat-slab { background: none; border: 0; padding: 0; }
+.entry-combat .byline { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; color: var(--label); }
+
+/* Whatever is left of the chip row: quiet, mono, and under the prose rather
+   than over it. A chip is never the reason to look at an entry. */
+.tags { gap: 8px; margin-bottom: 0; margin-top: 18px; }
+.tag {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 500; letter-spacing: .1em;
+  text-transform: uppercase; padding: 4px 9px; border: 0;
+  box-shadow: inset 0 0 0 1px var(--rule-dash); background: none; color: var(--label);
+}
+.tag-premium, .tag-ember { color: var(--label); box-shadow: inset 0 0 0 1px var(--rule-dash); }
+.deltas { gap: 8px; margin-top: 16px; }
+.delta {
+  font-family: var(--ui); font-size: 12.5px; color: var(--muted);
+  background: none; border: 0; border-inline-start: 1px solid var(--rule-hair);
+  padding: 0; padding-inline-start: 10px; border-radius: 0;
+}
+.delta b { color: var(--vellum-dim); font-weight: 600; }
+
+/* ------------------------------------------------------------- composer -- */
+/* One line until it needs more. */
+.composer {
+  border-top: 0; background: linear-gradient(to top, var(--ink) 62%, transparent);
+  padding: 14px 24px 20px;
+}
+.composer-shell {
+  max-width: var(--measure); margin: 0 auto; background: var(--panel);
+  border: 0; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--rule-hair);
+}
+.composer-shell:focus-within { box-shadow: inset 0 0 0 1px rgba(240,169,76,.5), 0 0 0 3px var(--ember-glow); }
+.composer-line { display: flex; align-items: flex-start; gap: 12px; padding: 12px 15px; }
+.composer-mark { flex: none; color: var(--ember); font-size: 12px; font-weight: 500; line-height: 1.6; }
+.composer-line #actionInput {
+  flex: 1; min-width: 0; width: auto; border: 0; outline: 0; background: none; resize: none;
+  font-family: var(--ui); font-size: 15px; line-height: 1.6; color: var(--vellum); padding: 0;
+}
+.composer-line #actionInput::placeholder { color: var(--label); font-style: normal; }
+.instruments { flex: none; display: flex; gap: 2px; align-self: center; }
+.instruments button {
+  position: relative; font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: .07em; color: var(--label); padding: 4px 7px; border-radius: 5px;
+  transition: color .15s, background .15s;
+}
+.instruments button:hover { color: var(--ember); background: var(--ember-glow); }
+.instruments .dot-badge { position: absolute; top: 1px; inset-inline-end: 1px; }
+.composer-foot { padding: 0 12px 10px 15px; }
+.composer-foot .toggle-label, .composer-foot .counter,
+.composer-foot .mini-btn { font-size: 11px; color: var(--muted); }
+.composer-hint { margin: 8px auto 0; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; }
+.quick-row { margin: 8px auto 0; }
+
+.thinking { margin: 0 auto; }
+.thinking-ambient { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; }
+
+/* --------------------------------------------------------------- mobile -- */
+/* The column IS the design here: nothing is taken away, it just narrows. */
+@media (max-width: 640px) {
+  .ambient {
+    height: auto; padding: 10px 16px; flex-wrap: wrap; gap: 0 10px;
+    font-size: 10.5px; white-space: normal;
+  }
+  .ambient .am-sep { display: none; }
+  .ambient .am-here { flex-basis: 100%; color: var(--muted); }
+  .ambient .am-right { padding-inline-start: 0; }
+  .feed { padding: 22px 18px 0; }
+  .prose, .entry-fate .fate-body { font-size: 17.5px; line-height: 1.72; }
+  .plate { gap: 14px; }
+  .plate-face { width: 68px; height: 68px; font-size: 26px; }
+  .plate-name { font-size: 18px; }
+  .plate-said { font-size: 19px; }
+  .entry-reveal .reveal-line { font-size: 20px; }
+  .composer { padding: 10px 14px 12px; }
+  .instruments { display: none; }
+}
+
+/* ------------------------------------------------------------------ RTL -- */
+/* Every rule and indent above is already logical (border-inline-start,
+   padding-inline-start), so a world narrated in Arabic mirrors on its own.
+   These are the two things that do not mirror: the reading face, and any
+   run of digits. */
+[dir="rtl"] .prose, [dir="rtl"] .plate-line, [dir="rtl"] .plate-name,
+[dir="rtl"] .you-line, [dir="rtl"] .whisper-said, [dir="rtl"] .reveal-line,
+[dir="rtl"] .fate-body, [dir="rtl"] .hearsay-wrap .prose {
+  font-family: "Noto Naskh Arabic", var(--display); line-height: 1.95;
+}
+[dir="rtl"] .feed-label, [dir="rtl"] .mono, [dir="rtl"] .mood-chip,
+[dir="rtl"] .plate-role { direction: ltr; }
+[dir="rtl"] .world-note .feed-label { direction: rtl; }

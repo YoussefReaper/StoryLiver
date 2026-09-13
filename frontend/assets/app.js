@@ -299,8 +299,28 @@ function renderTopbar() {
   clock.title = `Turn ${st.turn} · ${w.temperature ?? '?'}°C · light ${w.here?.light ?? w.light}/5`
     + ` · noise ${w.here?.noise ?? w.noise}/5`;
 
+  // The ambient strip. Same live state as the topbar clock, said as four
+  // facts directly above the prose — the hour, the sky, where you are
+  // standing, what you have left — because the weather is part of the scene
+  // and not part of the chrome.
+  const amb = $('#ambient');
+  if (amb) {
+    $('#amTime').textContent = `Day ${st.day} · ${st.phase}`;
+    $('#amSky').textContent = w.weather_word || w.weather || '—';
+    $('#amHere').textContent = st.location_name || '';
+    const ch = st.chapter || {};
+    $('#amChapter').textContent = ch.n ? `chapter ${ch.n}${ch.total ? `/${ch.total}` : ''}` : '';
+  }
+  // With the tab bar out of the way, its badges would go with it. One dot on
+  // the "everything else" key carries all of them.
+  const dot = $('#instDot');
+  if (dot) dot.hidden = !$$('#tableTabs .tab-badge').some((b) => b.textContent.trim());
+
   const m = st.mana;
   const btn = $('#manaBtn');
+  if ($('#amMana')) {
+    $('#amMana').textContent = m.mode === 'ember' ? 'ember' : `mana ${m.balance + m.free_left}`;
+  }
   $('#manaValue').textContent = m.mode === 'ember' ? 'Ember' : `${m.balance + m.free_left}`;
   btn.classList.toggle('is-ember', m.mode === 'ember');
   btn.title = m.mode === 'ember' ? 'Out of Mana — playing in Ember. Nothing is locked.'
@@ -768,9 +788,13 @@ function entryHTML(e, meta) {
     case 'opening':
       return `<article class="entry entry-opening"><div class="prose">${paras(e.text)}</div></article>`;
     case 'you': {
+      // An indent against one lit rule, and nothing else. The label is kept
+      // for a room — where whose turn it is genuinely matters — and hidden in
+      // solo play, where "YOU" over every second entry is the screen telling
+      // a player something they already know.
       const mine = !S.sessionId || e.actor === S.playerId;
       return `<div class="entry entry-you"><div class="you-line">
-        <b>${esc(mine ? 'You' : (meta.name || 'A player'))}</b>${esc(e.text)}</div></div>`;
+        <b class="${mine ? 'is-you' : ''}">${esc(mine ? 'You' : (meta.name || 'A player'))}</b>${esc(e.text)}</div></div>`;
     }
     case 'speech': {
       // A character's spoken line is its own entry, so it gets the plate: who
@@ -778,25 +802,36 @@ function entryHTML(e, meta) {
       // now, and the line itself in the reading serif.
       const sp = meta.speaker || {};
       return `<article class="entry entry-speech">${
-        speakerPlate({ npc: sp.npc, name: sp.name, action: e.text, said: true })}</article>`;
+        speakerPlate({ npc: sp.npc, name: sp.name, action: e.text, said: true }, meta)}</article>`;
     }
     case 'safety':
       return `<article class="entry entry-safety"><div class="safety-slab">${esc(e.text)}</div></article>`;
     case 'refusal':
+      // Refusal is never an error. It used to be a crimson rule with a
+      // no-entry glyph on it, which is the visual language of a form
+      // rejecting your input; this is the world declining, in the world's own
+      // voice, behind the quietest hairline on the screen.
       return `<article class="entry entry-refusal"><div class="refusal-wrap">
-        <div class="refusal-head"><svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="6"/><path d="M4.2 11.8 11.8 4.2"/></svg>
-          The world refuses</div>
+        <div class="refusal-head">the world declines</div>
         <div class="prose">${paras(e.text)}</div>
         ${S.prefs.power && meta.reason
     ? `<div class="refusal-reason">${esc(meta.reason)}</div>` : ''}
       </div></article>`;
     case 'fate':
+      // Word that reached you is not the same class of thing as something you
+      // watched happen, and the design separates them before you read a word:
+      // a broken rule for the report you cannot verify, a solid one for the
+      // thing that happened in front of you.
+      if (meta.as_news) {
+        return `<article class="entry entry-hearsay"><div class="hearsay-wrap">
+          <div class="feed-label">word reaches you &middot; secondhand</div>
+          <div class="prose">${paras(e.text.replace(/^Word reaches you:\s*/i, ''))}</div>
+        </div></article>`;
+      }
       return `<article class="entry entry-fate"><div class="fate-slab">
         ${meta.title ? `<div class="fate-title">${esc(meta.title)}</div>` : ''}
         <div class="fate-body">${paras(e.text)}</div>
-        <div class="fate-seal">${meta.as_news
-    ? 'It happened somewhere you were not. Nothing could have stopped it.'
-    : 'Written before you arrived. Nothing could have stopped it.'}</div></div></article>`;
+        <div class="fate-seal">Nothing could have stopped it.</div></div></article>`;
     case 'contest':
       return `<article class="entry entry-contest"><div class="contest-slab">
         <div class="contest-head"><svg viewBox="0 0 16 16" class="ico"><path d="M3 13 13 3M6 3H3v3M10 13h3v-3"/></svg>Contested</div>
@@ -829,22 +864,27 @@ function entryHTML(e, meta) {
         ${w.reply ? `<div class="whisper-reply">${esc(w.reply)}</div>` : ''}</div></article>`;
     }
     default: {
-      const tags = [];
-      // `${name} acted on their own` was the engine applauding itself: a chip
-      // announcing that a SYSTEM had fired, when the interesting thing was a
-      // person deciding. The act is attributed data — npc, name, action — so
-      // it gets a stage instead of a label. See speakerPlate().
-      if (meta.director_beat) tags.push(`<span class="tag tag-beat">
-        <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 9.9 5.7l4.5.5-3.4 3 1 4.4L8 11.4l-4 2.2 1-4.4-3.4-3 4.5-.5z"/></svg>
-        Something shifted here</span>`);
-      if (meta.discovered) tags.push(`<span class="tag tag-world">Found ${esc(meta.discovered.name)}</span>`);
-      if (meta.unseen) tags.push(`<span class="tag tag-unseen">Nobody saw that</span>`);
-      for (const r of (meta.reputation || [])) {
-        tags.push(`<span class="tag tag-rep">${esc(r.name)} ${r.delta > 0 ? '+' : ''}${Math.round(r.delta)}</span>`);
+      // The world moving on its own is a SENTENCE over a hairline, not a
+      // pill. `Something shifted here`, `Found the mill road` and
+      // `Nobody saw that` were three chips of identical weight sitting above
+      // the prose, competing with it for the first glance; as notes they sit
+      // under it, carry the actual clause the director wrote, and only the
+      // label is coloured.
+      const notes = [];
+      if (meta.director_beat) {
+        notes.push(worldNote('shifted', meta.director_beat.beat
+          || 'Something moved here that you did not move.'));
       }
+      if (meta.discovered) notes.push(worldNote('found', meta.discovered.name));
+      if (meta.unseen) notes.push(worldNote('', 'Nobody saw that. It stays here until someone talks.'));
       for (const h of (meta.hunts_ordered || [])) {
-        tags.push(`<span class="tag tag-rep">${esc(h.faction_name)} sent someone</span>`);
+        notes.push(worldNote('contested', `${h.faction_name} has sent someone after you.`));
       }
+      for (const r of (meta.reputation || [])) {
+        notes.push(worldNote('', `${r.name} ${r.delta > 0 ? 'thinks better' : 'thinks less'} of you than they did.`));
+      }
+
+      const tags = [];
       if (meta.premium) tags.push('<span class="tag tag-premium">Deep prose</span>');
       else if (meta.mode === 'ember') tags.push('<span class="tag tag-ember">Ember</span>');
 
@@ -853,10 +893,11 @@ function entryHTML(e, meta) {
       const byline = (S.sessionId && meta.actor_name)
         ? `<div class="byline"><i></i>${esc(meta.actor_name)}&rsquo;s turn</div>` : '';
       return `<article class="entry entry-narration">${byline}
-        ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}
         <div class="prose">${paras(e.text)}</div>
-        ${speakerPlate(meta.npc_initiated)}
-        ${rel.length ? `<div class="deltas">${rel.join('')}</div>` : ''}</article>`;
+        ${speakerPlate(meta.npc_initiated, meta)}
+        ${notes.length ? `<div class="world-notes">${notes.join('')}</div>` : ''}
+        ${rel.length ? `<div class="deltas">${rel.join('')}</div>` : ''}
+        ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}</article>`;
     }
   }
 }
@@ -962,12 +1003,30 @@ function applyDirection() {
    Portraits are sigils, not generated art: the world builder does not ship
    images and inventing faces for real characters would be worse than a
    monogram. The hatched ground is the design's own placeholder treatment. */
-function speakerPlate(who) {
+/* One line over a hairline: the world moved, and here is the clause that says
+   how. `kind` colours the label only — "shifted" in the signal teal,
+   "contested" in the amber, anything else in plain ink. */
+function worldNote(kind, text) {
+  if (!text) return '';
+  const cls = kind === 'shifted' || kind === 'found' ? ' is-shift'
+    : kind === 'contested' ? ' is-contest' : '';
+  const label = kind === 'found' ? 'found' : kind;
+  return `<div class="world-note${cls}">
+    ${label ? `<span class="feed-label">${esc(label)}</span>` : ''}
+    <span class="wn-text">${esc(text)}</span></div>`;
+}
+
+function speakerPlate(who, meta) {
   if (!who || !who.name) return '';
   const npc = S.state?.npcs?.find((n) => n.id === who.npc) || {};
   const mood = (npc.disposition || '').trim();
   const role = (npc.role || '').trim();
-  const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
+  // Outline chip = steady. Filled chip = this is the turn it changed. The
+  // difference is the only animation of state the screen has, and it only
+  // fires when something real moved.
+  const moved = (meta?.relationship_changes || []).some((d) => d.npc === who.npc)
+    || (meta?.relationship_events || []).some((r) => r.npc === who.npc);
+  const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   // A spoken line is set as speech; an act they took is set as narration.
   const line = who.said
     ? `<q class="plate-line plate-said">${esc(who.action || '')}</q>`
@@ -978,7 +1037,7 @@ function speakerPlate(who) {
       <span class="plate-who">
         <b class="plate-name">${esc(who.name)}</b>
         ${role ? `<span class="plate-role mono">${esc(role)}</span>` : ''}
-        ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>` : ''}
+        ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}${moved ? ' moved' : ''}">${esc(mood)}</span>` : ''}
       </span>
       ${line}
     </span>
@@ -1290,8 +1349,26 @@ const head = (title, sub) => `<div class="modal-head"><div style="flex:1">
   <h2>${title}</h2>${sub ? `<p>${sub}</p>` : ''}</div>${closeX}</div>`;
 
 /* ---------------------------------------------------------- view switch */
+/* Summoned, not resident. A rail is a drawer over the column now, and it is
+   dismissed by the scrim, by Escape, or by summoning the other one. */
+function openRail(side) {
+  const app = $('#app');
+  const want = side && !app.classList.contains(`pane-${side}`);
+  app.classList.remove('pane-left', 'pane-right');
+  if (want) app.classList.add(`pane-${side}`);
+  const scrim = $('#railScrim');
+  if (scrim) scrim.hidden = !want;
+  $$('#mobileTabs button').forEach((b) => b.classList.toggle(
+    'on', b.dataset.pane === (want ? side : 'read')));
+}
+
 function setView(view) {
   S.view = view;
+  // Story is the whole screen. Everything else keeps the tab bar, because
+  // that is the way back out of it.
+  const app = $('#app');
+  if (app) app.dataset.solo = view === 'story' ? '1' : '0';
+  if (view !== 'story') openRail(null);
   $$('#tableTabs button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('on', v.dataset.pane === view));
   if (view === 'atlas') renderAtlas();
@@ -2379,7 +2456,7 @@ function startWhisper(kind, id, name) {
 function stopWhisper() {
   S.whisperTo = null;
   $('#whisperBar').hidden = true;
-  $('#actionInput').placeholder = 'What do you do? Write it plainly — or press / for commands.';
+  $('#actionInput').placeholder = 'What do you do?';
 }
 
 function speakLast() {
@@ -2597,11 +2674,34 @@ function wire() {
 
   $('#mobileTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-pane]'); if (!b) return;
-    $$('#mobileTabs button').forEach((x) => x.classList.toggle('on', x === b));
-    const app = $('#app');
-    app.classList.remove('pane-left', 'pane-right');
-    if (b.dataset.pane !== 'read') app.classList.add(`pane-${b.dataset.pane}`);
+    openRail(b.dataset.pane === 'read' ? null : b.dataset.pane);
   });
+
+  // The instruments: four letters at the end of the composer, and the same
+  // four keys. Nothing here stays open — you look, and the prose comes back.
+  $('#instruments').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-instrument]'); if (!b) return;
+    summon(b.dataset.instrument);
+  });
+  $('#railScrim').addEventListener('click', () => openRail(null));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if ($('#app').hidden) return;
+    const t = e.target;
+    // Never steal a letter from someone who is typing a turn.
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (e.key === 'Escape') return openRail(null);
+    const key = { m: 'atlas', w: 'right', s: 'left', h: 'chronicle' }[e.key.toLowerCase()];
+    if (key) { e.preventDefault(); summon(key); }
+  });
+}
+
+function summon(what) {
+  if (what === 'left' || what === 'right') return openRail(what);
+  if (what === 'more') { $('#app').dataset.solo = '0'; return; }
+  openRail(null);
+  setView(what);
 }
 
 async function onGlobalClick(e) {
@@ -4811,10 +4911,13 @@ function showChapterEnd() {
     <div class="modal-body">
       <p class="ch-note">The people here remember what you did. They will still
         be here, and they will still remember, whenever you come back.</p>
-      <div class="ch-next">
+      ${c.next ? `<div class="ch-next">
         <span class="eyebrow">Next in the story</span>
-        <b>${esc(c.next || '')}</b>
-      </div>
+        <b>${esc(c.next)}</b>
+      </div>` : `<div class="sealed-slab">
+        <div class="feed-label">sealed &middot; not yet reached</div>
+        <div class="sealed-bars"><i style="width:86%"></i><i style="width:71%"></i><i style="width:44%"></i></div>
+      </div>`}
       <div class="ch-actions">
         <button class="btn btn-ghost" data-close>Stay a while</button>
         <button class="btn btn-primary" id="chapterGo">
