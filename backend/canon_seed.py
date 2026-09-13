@@ -45,6 +45,7 @@ SEEDS = {
             ("Giyu Tomioka", "Water Hashira, said almost nothing since his sister died"),
             ("Shinobu Kocho", "Insect Hashira, smiles the whole way through killing you"),
             ("Kyojuro Rengoku", "Flame Hashira, booming, never hedges, never rests"),
+            ("Akaza", "Upper Rank Three, obsessed with strength and worthy opponents"),
             ("Muzan Kibutsuji", "the first demon, wears whatever face keeps him hidden"),
         ],
         # F1 - era selection. "Sengoku era" is not an ARC of Tanjiro's story
@@ -72,6 +73,37 @@ SEEDS = {
                 "places": [
                     ("The Tsugikuni Estate", "the twins' family home, and the start of everything between them"),
                     ("A Nameless Village", "burned the night Yoriichi arrived too late"),
+                ],
+            },
+        },
+        # P2 - entry point. "The very beginning" used to seat the ENTIRE
+        # franchise roster, so Rengoku and Shinobu stood on Mt. Sagiri in
+        # chapter one. An entry point overrides cast AND places for that one
+        # moment. Silence here must mean "leave research alone" - never "dump
+        # the whole roster in", which is the bug this exists to fix.
+        "arcs": {
+            "start": {
+                "label": "The very beginning",
+                "cast": [
+                    ("Tanjiro Kamado", "a charcoal seller's son, not a slayer yet"),
+                    ("Nezuko Kamado", "his sister, and the only one of the family left"),
+                    ("Giyu Tomioka", "Water Hashira, on the mountain the night it happened"),
+                ],
+                "places": [
+                    # A place a story is FOUNDED on has to say which way it lies,
+                    # or the narrator invents a direction and repeats it. A live
+                    # Final Selection scene had the whole cast staring DOWN the
+                    # hill for ten turns while the trial grounds sat above them -
+                    # nothing in the world said otherwise, so nothing corrected
+                    # it. Direction lives on the place, where the prose reads it.
+                    ("Mt. Sagiri", "the snowbound mountain the Kamado family lives on. "
+                                   "The Final Selection grounds lie UPHILL from the "
+                                   "village at its foot; the village and the roads out "
+                                   "are the only things below."),
+                    ("Kamado Household", "the charcoal family's mountainside home, "
+                                         "up the slope from the village. Still whole "
+                                         "and still lived in, unless the night has "
+                                         "already come."),
                 ],
             },
         },
@@ -190,6 +222,30 @@ def known(name: str) -> bool:
     return any(n == _norm(a) for entry in SEEDS.values() for a in entry["aliases"])
 
 
+def franchise_for_character(name: str) -> str:
+    """Best-effort franchise name for a character in the seed roster.
+
+    Used when a premise parser captured a PERSON as the host world (e.g.
+    "I meet Akaza"). If the character is in the curated seed cast, return the
+    franchise's primary alias so world resolution can still land on the world
+    rather than on a person page.
+    """
+    n = _norm(name)
+    if not n:
+        return ""
+    for entry in SEEDS.values():
+        cast_names = [*entry.get("protagonists", []),
+                      *[c[0] for c in (entry.get("cast") or [])]]
+        for cname in cast_names:
+            cn = _norm(cname)
+            if not cn:
+                continue
+            if n == cn or n in cn or cn in n:
+                aliases = entry.get("aliases") or ()
+                return aliases[0] if aliases else ""
+    return ""
+
+
 def era_options(setting: str, canonical: str = "") -> list:
     """The eras Session Zero can offer for this setting, or [] if it only
     has one. Each entry: {id, label, blurb}. F1 - asked for "the Sengoku
@@ -235,6 +291,45 @@ def fallback_places(setting: str, canonical: str = "", era: str = "") -> list:
     e = _era(entry, era)
     places = e["places"] if e and e.get("places") else entry.get("places", [])
     return [{"name": n, "note": note} for n, note in places]
+
+
+def _arc(entry: dict, arc: str, era: str = "") -> dict | None:
+    """The entry-point override for `arc`. Looked up inside the chosen era
+    first - a start point belongs to a timeline - then on the franchise."""
+    if not entry or not arc:
+        return None
+    eras = entry.get("eras") or {}
+    if era and era in eras:
+        hit = (eras[era].get("arcs") or {}).get(arc)
+        if hit:
+            return hit
+    return (entry.get("arcs") or {}).get(arc)
+
+
+def arc_cast(setting: str, canonical: str = "", arc: str = "", era: str = "") -> list:
+    """The cast of ONE moment in the story, or [] when this franchise has
+    none on record for it.
+
+    Deliberately does NOT fall back the way fallback_cast does. It answers
+    "is there a canon answer for this specific entry point", and silence has
+    to mean "leave what research found alone" - falling through to the whole
+    franchise roster is exactly the bug this exists to fix, because picking
+    "the very beginning" then seats every Hashira at chapter one.
+    """
+    hit = _arc(match(setting, canonical), arc, era)
+    if not hit or not hit.get("cast"):
+        return []
+    return [{"name": n, "note": note} for n, note in hit["cast"]]
+
+
+def arc_places(setting: str, canonical: str = "", arc: str = "", era: str = "") -> list:
+    """The places of one moment. See arc_cast for why this returns [] rather
+    than defaulting to every place the franchise ever had - an unmatched
+    moment must not silently widen the map."""
+    hit = _arc(match(setting, canonical), arc, era)
+    if not hit or not hit.get("places"):
+        return []
+    return [{"name": n, "note": note} for n, note in hit["places"]]
 
 
 def pin_protagonists(setting: str, canonical: str, characters: list, era: str = "") -> list:

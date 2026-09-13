@@ -270,12 +270,35 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         "here see first, every time, until something changes their mind.\n"
     ) if friction else ""
 
+    # WHERE IN THE SOURCE THIS STARTED. The cast list says who EXISTS; it says
+    # nothing about who has MET whom, and the model fills that gap with the
+    # settled version of the story every time. A build opened at the very
+    # beginning of Demon Slayer - three correct people, right place - and had
+    # all of them greet the player by name, know his business, and offer to
+    # take the mountain apart with him, in a scene where nobody has met
+    # anybody yet. At the beginning of a story, almost everyone is a stranger,
+    # and the narrator has to be told so on every turn rather than once at
+    # build time.
+    early_line = ""
+    if world.get("mode") == "canon" and str(world.get("entry_point") or "") == "start":
+        early_line = (
+            "\nTHIS IS THE VERY BEGINNING OF THE SOURCE. The people present have not met "
+            "the player before, have not heard of him, and owe him nothing. Introduce them "
+            "as strangers meeting a stranger: they size him up, they ask, they are wary or "
+            "curious or dismissive. Do not have anyone greet him by name unless he gave it "
+            "in this scene, do not let anyone already know what he wants or where he is "
+            "from, and do not have a canon character treat him as an ally, a student, or a "
+            "comrade they have not yet become. Anyone the source has not introduced by this "
+            "point in its own story is not here yet - speak of them as rumour or not at all.\n"
+        )
+
     # Past the last chapter of the source there is nothing written left to
     # follow, and the narrator should stop implying there is.
     from . import chapters as _chapters
     parts = [
         setting_line,
         friction_line,
+        early_line,
         _chapters.aftermath_directive(_chapters.of(pt["id"])),
         f"PLACE: {loc['name']} - {loc['desc']}",
         f"TIME: day {state['day']}, {state['phase']}",

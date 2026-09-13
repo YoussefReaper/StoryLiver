@@ -122,7 +122,11 @@ FACTIONS are the institutions with a grip on this place. `law` is 0 for a social
 
 NPC_EDGES are how the characters feel about EACH OTHER, not about the player. Give at least six. Values are -100..100 for affinity and trust, 0..100 for fear and obligation. Two people who cannot stand each other, in the same room, is where a scene comes from. At least one pair here must want incompatible things.
 
-LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone). A district this size is 6-8 real places, not a dozen rooms of the same building.
+LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone).
+
+WHERE A PLACE IS, IS PART OF WHAT IT IS. If the researched material says a place sits above, below, beyond or inside another - or names a landmark it stands in relation to - put that in the `desc`. A narrator with no geography invents one on turn one and then repeats it for the whole session: a live build had every character staring DOWN the hill at a Final Selection whose trial grounds are UP it, and nothing in the world ever contradicted them. One clause about direction is the difference between a place and a backdrop.
+
+BUILD THE MOMENT, NOT THE SERIES. When you are given an entry point, the people you seat are the people who are THERE at that moment - not everyone the setting will ever contain. A character who has not yet appeared, or has not yet met the protagonist, must not be standing around knowing them. A smaller cast that is right beats a full roster that is early. A district this size is 6-8 real places, not a dozen rooms of the same building.
 
 Return ONLY JSON:
 {
@@ -162,6 +166,10 @@ You are given a setting. Produce the PLACES and the CHARACTERS of a small, dense
 Characters must be people, not archetypes. Each one needs a VOICE another writer could imitate, hard CONSTRAINTS that limit what they can do, WANTS that conflict with someone else's, and TABOOS they will not cross. At least two pairs of characters must want incompatible things.
 
 LOCATIONS are places a SCENE happens, not a floor plan. A location earns its own id when something could happen there that could not happen in the room next to it - a different set of people, a different rule, a different reason to be there. A sub-room of a larger place ("the training ground" inside "the manor", "the back office" behind "the tavern") is DETAIL folded into the parent's `desc`, not its own id, unless it is genuinely a different scene (its own people, its own danger, its own reason to go there alone).
+
+WHERE A PLACE IS, IS PART OF WHAT IT IS. If the researched material says a place sits above, below, beyond or inside another - or names a landmark it stands in relation to - put that in the `desc`. A narrator with no geography invents one on turn one and then repeats it for the whole session: a live build had every character staring DOWN the hill at a Final Selection whose trial grounds are UP it, and nothing in the world ever contradicted them. One clause about direction is the difference between a place and a backdrop.
+
+BUILD THE MOMENT, NOT THE SERIES. When you are given an entry point, the people you seat are the people who are THERE at that moment - not everyone the setting will ever contain. A character who has not yet appeared, or has not yet met the protagonist, must not be standing around knowing them. A smaller cast that is right beats a full roster that is early.
 
 Return ONLY JSON:
 {
@@ -958,6 +966,24 @@ Write what is TRUE OF THEM IN THE SOURCE, not a plot summary:
                 lose, what they do when they are the one in the wrong, the
                 moment they refuse to fight. Ask what this character does when
                 it goes WRONG, not only when they are announcing themselves.
+
+                A LINE MUST NOT INVENT A FACT ABOUT THE CHARACTER. Writing
+                something for the "grief" beat is where this goes wrong, because
+                the easiest line to write is a bereavement the character never
+                had: a live Demon Slayer build had Kyojuro Rengoku say "My
+                younger brother was taken by demons" - his brother Senjuro is
+                alive, and nobody in that family was taken by demons. The
+                narrator is told to deliver these verbatim and to treat them as
+                canon, so an invented dead relative becomes a permanent fact of
+                the world.
+
+                So: a line is something they SAY. It is never a new fact about
+                who died, who they loved, what happened to them, or what they
+                have lost - unless the source actually says so. If you cannot
+                write the beat without asserting biography you are not sure of,
+                either keep the line general enough to be true, or leave that
+                beat out. A missing line costs one scene; a false one costs the
+                character.
 
 Be concrete and specific to the individual. "Speaks plainly", "is an ordinary
 person" and "wants to survive" are failures - they are what this exists to
@@ -1859,7 +1885,18 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # people (Kaname, Aiko: never in Demon Slayer). Merged HERE, before the
     # grounding brief is written, so the builder is TOLD the real cast and the
     # seating pass below can put back anyone it still skipped.
-    if mode != "original":
+    #
+    # BUT NOT OVER AN ENTRY POINT THE PLAYER CHOSE. The arc override above
+    # narrows the cast to the people who are actually in that moment - "the
+    # very beginning" of Demon Slayer is Tanjiro, Nezuko and Giyu, THREE
+    # people. This merge then saw a cast of three, treated it as a research
+    # failure, and poured the whole franchise roster back in: four Hashira and
+    # Muzan Kibutsuji standing at Final Selection, answering to the player by
+    # name, because an epoch-appropriate cast of three was mistaken for an
+    # empty one. The floor's job is to cover a MISS, so it now stays out of the
+    # way whenever an entry point actually supplied a cast.
+    if mode != "original" and not (arc and canon_seed.arc_cast(
+            setting, found.get("canonical_name") or "", arc, era=era)):
         seeded = canon_seed.fallback_cast(
             setting, found.get("canonical_name") or "", era=era)
         if seeded and len(found.get("characters") or []) < 4:
@@ -2135,6 +2172,14 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     raw["inspired_by"] = source_name or (setting if personal else "")
     raw["mode"] = "canon" if canon else "original"
     raw["scale"] = scale if scale in SCALES else "town"
+    # WHERE IN THE SOURCE THIS STARTS, recorded on the world so the narrator
+    # can be told it every turn. Without it the cast list is the only thing
+    # that knows the moment, and the cast list says who EXISTS - not who has
+    # met whom. A live build opened at the very beginning, seated three
+    # correct people, and had all of them greet the player by name and offer
+    # to stop the mountain for him, in a scene where nobody has met anybody
+    # yet. The entry point is a fact about the world, so it travels with it.
+    raw["entry_point"] = (answers or {}).get("entry") or "start"
     if personal:
         raw["name"] = _strip_ip_name(str(raw.get("name") or ""), setting)
     raw.setdefault("opening", raw.get("premise", ""))

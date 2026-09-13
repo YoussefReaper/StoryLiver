@@ -1088,6 +1088,95 @@ def test_the_forge_sends_what_the_endpoint_requires():
        "this app has ever raised")
 
 
+def test_an_entry_point_is_not_undone_by_the_floor():
+    section("entry point - the very beginning is three people, not the roster")
+
+    # THE BUG. "The very beginning" of Demon Slayer is Tanjiro (not yet a
+    # slayer), Nezuko and Giyu - three people, which is the correct answer.
+    # The curated floor then saw a cast shorter than four, decided research
+    # had failed, and poured the whole franchise roster back in: four sitting
+    # Hashira and Muzan Kibutsuji standing at Final Selection, greeting the
+    # player by name in a scene where nobody has met anybody yet.
+    #
+    # The floor exists to cover a MISS. It must never overrule an answer.
+    start = canon_seed.arc_cast("Demon Slayer", "Demon Slayer: Kimetsu no Yaiba", "start")
+    names = [c["name"] for c in start]
+    ok(len(start) == 3, f"the start moment is a small cast ({names})")
+    ok("Tanjiro Kamado" in names,
+       f"and it is the people who are actually there - Tanjiro is {names}")
+    ok("Muzan Kibutsuji" not in names and "Kyojuro Rengoku" not in names,
+       f"not the settled version of everyone ({names})")
+
+    # The floor is STILL a floor: asked for a moment it has no record of, it
+    # answers nothing, and the fallback roster is what keeps a franchise build
+    # from seating invented strangers. The fix must not have disabled it.
+    none_found = canon_seed.arc_cast("Demon Slayer", "Demon Slayer: Kimetsu no Yaiba",
+                                     "an arc this franchise has no record of")
+    ok(none_found == [],
+       f"a moment with no record leaves research alone ({none_found})")
+    floor = canon_seed.fallback_cast("Demon Slayer", "Demon Slayer: Kimetsu no Yaiba")
+    ok(len(floor) >= 8,
+       f"and the franchise floor is still there for a build that found nothing "
+       f"({len(floor)} names)")
+
+    # A world built at the beginning carries that fact, so the narrator can be
+    # told every turn that these people are strangers - the cast list says who
+    # EXISTS, never who has MET whom.
+    w = worldforge.bootstrap("Demon Slayer", user_id="wg",
+                             answers={"name": "Youssef", "entry": "start"})
+    ok(w.get("entry_point") == "start",
+       f"the entry point travels on the world ({w.get('entry_point')!r})")
+    kept = worldkit.normalise(w, strict=True)
+    ok(kept.get("entry_point") == "start",
+       "and survives normalisation instead of being dropped on save")
+
+
+def test_one_person_is_one_record_but_a_namesake_is_two_people():
+    section("cast — a double dies, a namesake lives")
+
+    # The dedupe that kills a canon double has to key on IDENTITY, not on the
+    # name string. Keyed on the name alone it also deletes honest namesakes,
+    # and a world-scale build came back with 6 characters where 48 had been
+    # generated: every district of eight had named a local "Person 1".
+    #
+    # Both halves are asserted here, because a fix for either one alone is the
+    # bug. Same name + same origin + same home = one person written twice.
+    # Same name + different home = two people who happen to share a name.
+    raw = {
+        "name": "Test Ward",
+        "source_prompt": "A Test Setting",
+        "locations": [
+            {"id": "gate", "name": "The Gate", "desc": "d", "kind": "place",
+             "connects": ["mill"]},
+            {"id": "mill", "name": "The Mill", "desc": "d", "kind": "place",
+             "connects": ["gate"]},
+        ],
+        "rules": [{"id": f"r{i}", "text": f"rule {i}"} for i in range(9)],
+        "fated_events": [{"id": f"f{i}", "text": f"event {i}",
+                          "when": f"chapter {i + 1}"} for i in range(7)],
+        "npcs": [
+            {"id": "a1", "name": "Canute", "origin": "canon",
+             "start_location": "gate", "anchors": {}},
+            {"id": "a2", "name": "Canute", "origin": "canon",
+             "start_location": "gate", "anchors": {}},
+            {"id": "b1", "name": "Yuki", "origin": "original",
+             "start_location": "gate", "anchors": {}},
+            {"id": "b2", "name": "Yuki", "origin": "original",
+             "start_location": "mill", "anchors": {}},
+        ],
+    }
+    cleaned = worldkit.normalise(raw, strict=True)
+    kept = [n["name"] for n in cleaned["npcs"]]
+    ok(kept.count("Canute") == 1,
+       f"a canon character written twice is one record, not two ({kept})")
+    ok(kept.count("Yuki") == 2,
+       f"but two people who share a name and not a home both survive ({kept})")
+
+    # And the ids stay distinct on the wire, so nothing downstream collides.
+    ids = [n["id"] for n in cleaned["npcs"]]
+    ok(len(ids) == len(set(ids)), f"every surviving id is unique ({ids})")
+
+
 def test_a_canon_world_is_told_in_chapters():
     section("chapters — a source is arcs, and the last one is not the end")
     from backend import chapters
@@ -1605,8 +1694,10 @@ def test_the_floor_stays_a_floor_when_the_model_speaks():
 
 
 def _all():
-    return (test_a_companion_goes_where_the_player_goes,
+    return (            test_a_companion_goes_where_the_player_goes,
             test_the_player_is_somebody_before_turn_one,
+            test_an_entry_point_is_not_undone_by_the_floor,
+            test_one_person_is_one_record_but_a_namesake_is_two_people,
             test_a_canon_world_is_told_in_chapters,
             test_the_world_grows_into_its_own_canon,
             test_a_town_does_not_wear_a_landmarks_name,

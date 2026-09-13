@@ -282,6 +282,15 @@ def questions(dossier: dict) -> dict:
         })
 
     out["questions"].extend(GENERAL)
+
+    # Every choice is also a prompt. Research offers only what it could name;
+    # a player who wants "the Final Selection, just before dawn" must not be
+    # told that is not an option - a menu you cannot override is a menu
+    # arguing with the player. Free text is offered on every choice, and
+    # brief() passes through whatever was typed.
+    for q in out["questions"]:
+        if q.get("kind") == "choice":
+            q["allow_free"] = True
     return out
 
 
@@ -309,6 +318,21 @@ def brief(answers: dict, dossier: dict) -> str:
         lines.append(f"- ENTRY POINT: the story begins {where}. Seed the world as it stands "
                      f"THEN - who is already dead, what has already happened, what is common "
                      f"knowledge. Do not replay earlier events as if they are still ahead.")
+    elif a.get("entry") == "start":
+        # "The very beginning" is a real constraint, not the absence of one.
+        # Told nothing, a builder seats the SETTLED version of every character:
+        # Demon Slayer opened with four sitting Hashira and Muzan Kibutsuji at
+        # Final Selection, greeting the player by name - and Final Selection is
+        # exactly where nobody has met anybody yet. The opening cast list is the
+        # floor on WHO exists; this is the floor on WHO KNOWS WHOM.
+        lines.append(
+            "- ENTRY POINT: the story begins at the VERY BEGINNING of the source - "
+            "before the protagonist has joined anything, earned any rank, or met "
+            "almost anyone. Seed the world as it is THEN. Characters who in the "
+            "source have not yet appeared here, or have not yet met each other, "
+            "must not be present, must not know the player, and must not be "
+            "treated as allies or enemies they have not yet become. Speak of "
+            "later events and later figures only as rumour, if at all.")
     if a.get("role"):
         lines.append(f"- WHO THEY ARE: {a['role']}")
     if a.get("system") and a["system"] != "none":

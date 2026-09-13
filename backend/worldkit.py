@@ -301,21 +301,39 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
 
     npcs = []
     seen_npc: set[str] = set()
-    seen_name: set[str] = set()
+    # ONE PERSON IS ONE RECORD - but only when they really are one person.
+    # Every other guard in this file is about ids, and ids are unique by
+    # construction, so two entries both called "Canute" - one written by the
+    # builder and one seated by the canon pass - both survived and the narrator
+    # was handed the same character twice, breaking the engine's own R5 law.
+    #
+    # The fix has to key on IDENTITY, not on the name string alone. A plain
+    # name guard also deletes honest namesakes: every district of an 8-district
+    # world that names a local "Person 1" (offline stub) or two unrelated
+    # villages that each have a "Yuki" collapsed into one, and a world-scale
+    # build came back with 6 characters where 48 were generated. Two records
+    # are the SAME person only when they share a name AND plausibly share a
+    # life - same canon origin, or the same home location. Two strangers who
+    # happen to be called the same thing are two characters, and the id
+    # uniqueness above already keeps them apart on the wire.
+    seen_person: dict[str, list[dict]] = {}
+
+    def _same_person(a: dict, b: dict) -> bool:
+        if (a.get("origin") or "") != (b.get("origin") or ""):
+            return False
+        home_a, home_b = a.get("start_location"), b.get("start_location")
+        if home_a and home_b:
+            return home_a == home_b
+        return True
+
     for i, npc in enumerate(raw.get("npcs") or []):
-        # ONE PERSON IS ONE RECORD. Every other guard in this file is about ids,
-        # and ids are unique by construction - so two entries both called
-        # "Canute", one written by the builder and one seated by the canon
-        # pass, both survived, and the narrator was handed the same character
-        # in two places at once. That is not a fidelity detail: it is the
-        # engine's own R5 law broken by the world that declares it. Names are
-        # the identity a player sees, so the first record wins and the rest are
-        # dropped rather than renamed - a duplicate is not a new character.
         name_key = re.sub(r"[^a-z0-9]+", " ", str(npc.get("name") or "").lower()).strip()
-        if name_key and name_key in seen_name:
-            continue
         if name_key:
-            seen_name.add(name_key)
+            prior = seen_person.get(name_key) or []
+            if any(_same_person(npc, seen) for seen in prior):
+                continue
+            prior.append(npc)
+            seen_person[name_key] = prior
         nid = slug(npc.get("id") or npc.get("name") or f"npc_{i}", f"npc_{i}")
         while nid in seen_npc:
             nid = f"{nid}_{i}"
@@ -539,6 +557,12 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         "researched": bool(raw.get("researched")),
         # "canon" (continued from a real setting) or "original".
         "mode": "canon" if raw.get("mode") == "canon" else "original",
+        # WHERE IN THE SOURCE THIS STARTS - "start", an arc id, or "after".
+        # Whitelisted here or it is dropped on the first save and the narrator
+        # goes back to being told only who exists, never who has met whom:
+        # a build that opens at the very beginning greets the player by name
+        # in a scene where nobody has met anybody yet. See narrator.py.
+        "entry_point": str(raw.get("entry_point") or ""),
     }
 
 

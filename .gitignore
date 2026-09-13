@@ -19,3 +19,8 @@ playtest.md
 
 # A zip of the repo, inside the repo.
 StoryLiver.zip
+
+# Investigation scratch: trace scripts, the .bak copies taken before edits,
+# and the transcripts tools/play_scenario.py and tools/canon_audit.py write.
+# All of it is output, none of it is source.
+.probe/
