@@ -78,6 +78,7 @@ def main():
     os.environ["STORYLIVER_RESEARCH"] = "off"
     os.environ["STORYLIVER_SPOOL_DIR"] = args.spool
     os.environ["STORYLIVER_SPOOL_STUB_ROLES"] = args.stub_roles
+    os.environ["STORYLIVER_SPOOL_BY_ACTION"] = "1"
     _tmp = tempfile.mkdtemp(prefix="storyliver-play-")
     os.environ["STORYLIVER_DATA_DIR"] = _tmp
 

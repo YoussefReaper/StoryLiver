@@ -255,8 +255,27 @@ _SPOOL_MISSES = []
 _SPOOL_MISS_ROWS = []
 
 
+_SPOOL_ACTION = re.compile(
+    r"^(?:THE PLAYER ACTS|THE PLAYER TRIED|PLAYER'S INTENDED ACTION):\s*(.+)$",
+    re.M)
+
+
+def spool_action(user: str) -> str:
+    """The player's own words for this call, if the prompt carries them."""
+    m = _SPOOL_ACTION.search(user or "")
+    return (m.group(1).strip() if m else "")
+
+
 def spool_key(role, model, json_mode, system, user) -> str:
     import hashlib
+    if config.SPOOL_BY_ACTION:
+        action = spool_action(user)
+        if action:
+            # The action alone, not the prompt around it. Two calls for the
+            # same action in one turn (the World Master's verdict, then the
+            # passage that plays it out) are different roles, so the role is
+            # still in the key.
+            return hashlib.sha1(f"{role}\x00{action}".encode("utf-8")).hexdigest()[:16]
     h = hashlib.sha1()
     for part in (role, model, "json" if json_mode else "text", system, user):
         h.update((part or "").encode("utf-8"))

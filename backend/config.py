@@ -31,6 +31,16 @@ SPOOL_DIR = os.getenv("STORYLIVER_SPOOL_DIR", "").strip()
 # a player reads, so authoring a transcript does not need them answered too.
 SPOOL_STUB_ROLES = {r.strip() for r in
                     os.getenv("STORYLIVER_SPOOL_STUB_ROLES", "").split(",") if r.strip()}
+# Key spooled answers on the player's action rather than on the whole prompt.
+#
+# Hashing the prompt makes an answer valid for exactly one run: author the
+# World Master's verdict for turn 1 and the narrator's prompt for turn 1
+# changes, and its answer is now attached to a prompt that no longer exists.
+# Every authored answer invalidates the next one, and a transcript converges
+# one turn per pass. Keying on the action attaches an answer to what the
+# player DID, which does not change when the world or a persona does - so a
+# full run can be authored in a single pass.
+SPOOL_BY_ACTION = os.getenv("STORYLIVER_SPOOL_BY_ACTION", "").lower() in ("1", "on", "true")
 REQUEST_TIMEOUT = float(os.getenv("STORYLIVER_LLM_TIMEOUT", "60"))
 MAX_RETRIES = int(os.getenv("STORYLIVER_LLM_RETRIES", "2"))
 

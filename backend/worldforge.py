@@ -1768,8 +1768,17 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # soft-spoken and kind / CONSTRAINTS: is an ordinary mortal person" under
     # the heading "obey these exactly", and the narrator would obey.
     if canon:
-        raw = _apply_canon_personas(
-            raw, found.get("canonical_name") or setting, user_id=user_id)
+        # The SOURCE these cards are looked up under, resolved the same way
+        # `inspired_by` is below: the host setting, never the sentence the
+        # player typed. Passing the raw premise here meant a crossover asked
+        # "SOURCE: I and my girlfriend charlie (from hazbin hotel) in Demon
+        # Slayer verse" for Tanjiro Kamado - the same disease the narrator's
+        # source line already had, in the one call that decides what a canon
+        # character actually is. Research supplies the canonical title when it
+        # answers; the parse supplies the host when it does not.
+        persona_source = (found.get("canonical_name") or parsed.get("host")
+                          or setting)
+        raw = _apply_canon_personas(raw, persona_source, user_id=user_id)
         # And then make the collision real. A crossover's whole interest is
         # what the host world does about the outsider being what they are.
         raw = _crossover_friction(
