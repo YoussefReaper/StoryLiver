@@ -174,6 +174,22 @@ def match(setting: str, canonical: str = "") -> dict | None:
     return None
 
 
+def known(name: str) -> bool:
+    """Is this EXACTLY a franchise the roster can name?
+
+    Stricter than match(), deliberately. match() is fuzzy on purpose - it is
+    asked "which franchise is this build about" and a near miss is a hit. This
+    is asked a different question by research.parse_premise: when one captured
+    name contains another ("Hazbin Hotel in Demon Slayer"), which half is the
+    franchise? A containment test would say yes to both halves and settle
+    nothing. Only an exact alias is evidence here.
+    """
+    n = _norm(name)
+    if not n:
+        return False
+    return any(n == _norm(a) for entry in SEEDS.values() for a in entry["aliases"])
+
+
 def era_options(setting: str, canonical: str = "") -> list:
     """The eras Session Zero can offer for this setting, or [] if it only
     has one. Each entry: {id, label, blurb}. F1 - asked for "the Sengoku

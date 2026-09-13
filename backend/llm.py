@@ -84,6 +84,10 @@ def complete(role, system, user, *, user_id, playthrough_id=None, model=None,
     budget.record(role)
     model = model or config.MODELS.get(role, config.MODELS["narrator"])
 
+    if config.LLM_MODE == "spool" and role not in config.SPOOL_STUB_ROLES:
+        return _spool(role, system, user, model=model, json_mode=json_mode,
+                      user_id=user_id, playthrough_id=playthrough_id, stub=stub)
+
     if not config.live_llm():
         out = stub() if stub else ""
         text = json.dumps(out) if not isinstance(out, str) else out
@@ -227,3 +231,124 @@ def _complete_openai(role, system, user, *, model, user_id, playthrough_id,
 def rng(*parts) -> random.Random:
     """Stable per-context randomness for the offline stub."""
     return random.Random("|".join(str(p) for p in parts))
+
+
+# ---------------------------------------------------------------------------
+# Spool - a recorded playthrough, with no key and no spend
+# ---------------------------------------------------------------------------
+#
+# The offline stub is the right answer for the test suites: it is deterministic
+# and free, and the suites are asserting on the engine, not on prose. It is the
+# wrong answer for anyone who wants to SEE the game - a stub narrator writes
+# "the air tastes of iron" no matter what the prompt said, so a spooled run
+# would prove the loop turns over and nothing else.
+#
+# Spool mode swaps the stub for a directory of real answers. Every call is
+# keyed by a hash of its own prompt, so an answer recorded once is replayed
+# exactly, on any machine, forever. On a miss the request is written out with
+# the full prompt and the stub answer is used so the run still completes - so a
+# playthrough can be authored in passes: run it, read what it asked for, write
+# the answers, run it again. Each pass resolves the prompts the last one
+# settled, and the run converges on a fully-authored transcript.
+
+_SPOOL_MISSES = []
+_SPOOL_MISS_ROWS = []
+
+
+_SPOOL_ACTION = re.compile(
+    r"^(?:THE PLAYER ACTS|THE PLAYER TRIED|PLAYER'S INTENDED ACTION):\s*(.+)$",
+    re.M)
+
+
+def spool_action(user: str) -> str:
+    """The player's own words for this call, if the prompt carries them."""
+    m = _SPOOL_ACTION.search(user or "")
+    return (m.group(1).strip() if m else "")
+
+
+def spool_key(role, model, json_mode, system, user) -> str:
+    import hashlib
+    if config.SPOOL_BY_ACTION:
+        action = spool_action(user)
+        if action:
+            # The action alone, not the prompt around it. Two calls for the
+            # same action in one turn (the World Master's verdict, then the
+            # passage that plays it out) are different roles, so the role is
+            # still in the key.
+            return hashlib.sha1(f"{role}\x00{action}".encode("utf-8")).hexdigest()[:16]
+    h = hashlib.sha1()
+    for part in (role, model, "json" if json_mode else "text", system, user):
+        h.update((part or "").encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+def _spool_answers(root):
+    """Answers live in one bundle so a whole playthrough can be authored in a
+    single file, or one at a time in responses/ when that is easier."""
+    bundle = root / "responses.json"
+    if not bundle.exists():
+        return {}
+    try:
+        data = json.loads(bundle.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
+
+
+def _spool(role, system, user, *, model, json_mode, user_id, playthrough_id, stub):
+    root = config.spool_dir()
+    key = spool_key(role, model, json_mode, system, user)
+    answer = root / "responses" / f"{role}_{key}.txt"
+
+    if answer.exists():
+        text = answer.read_text(encoding="utf-8").strip()
+    else:
+        text = _spool_answers(root).get(key, "")
+
+    if text:
+        _record(user_id, playthrough_id, role, model,
+                _estimate_tokens(system + user), _estimate_tokens(text))
+        return _extract_json(text) if json_mode else text
+
+    # A miss. Write the request down in full so it can be answered, and keep
+    # the run moving on the stub so the rest of the playthrough is reachable.
+    req = root / "requests" / f"{role}_{key}.req.txt"
+    req.parent.mkdir(parents=True, exist_ok=True)
+    req.write_text(
+        f"role: {role}\nmodel: {model}\njson_mode: {json_mode}\n"
+        f"answer file: responses/{role}_{key}.txt\n"
+        f"{'=' * 72}\nSYSTEM\n{'=' * 72}\n{system}\n"
+        f"{'=' * 72}\nUSER\n{'=' * 72}\n{user}\n",
+        encoding="utf-8")
+
+    _SPOOL_MISSES.append(f"{role}_{key}")
+    _SPOOL_MISS_ROWS.append({"key": key, "role": role, "json_mode": json_mode,
+                             "user": user})
+    out = stub() if stub else ""
+    text = json.dumps(out) if not isinstance(out, str) else out
+    _record(user_id, playthrough_id, role, model,
+            _estimate_tokens(system + user), _estimate_tokens(text))
+    return _extract_json(text) if json_mode else text
+
+
+def spool_misses() -> list:
+    """The prompts this run could not answer, in the order they were asked."""
+    return list(_SPOOL_MISSES)
+
+
+def spool_write_misses(path=None) -> str:
+    """Dump everything unanswered to one file, so it can be authored in one
+    pass. Deliberately carries the USER half of each prompt and not the
+    SYSTEM half: the system text is a module constant that never varies per
+    turn, and repeating it per request would triple the size of the file."""
+    root = config.spool_dir()
+    out = path or (root / "misses.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(_SPOOL_MISS_ROWS, indent=1), encoding="utf-8")
+    return str(out)
+
+
+def spool_reset() -> None:
+    _SPOOL_MISSES.clear()
+    _SPOOL_MISS_ROWS.clear()

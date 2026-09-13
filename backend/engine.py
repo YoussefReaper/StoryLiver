@@ -199,6 +199,10 @@ def begin_next_chapter(pt_id: str, *, user_id: str = "") -> dict:
     grown = _expand_on_arrival(pt, worldkit.load(fresh.data), gate,
                                user_id=user_id or pt["user_id"])
     atlas.discover(pt_id, gate, pt["current_turn"], reason="a new chapter")
+    # Travelling on to the next chapter is the longest journey in the game, and
+    # the one a companion must obviously make too. Played live, Charlie stayed
+    # in the ward the story opened in while the player went on alone.
+    memory.move_companions(pt_id, grown, gate, pt["current_turn"])
     return {"moved": True, "aftermath": False, "chapter": after,
             "location": gate, "title": title,
             "places": len(grown.locations), "people": len(grown.npcs)}
@@ -255,6 +259,73 @@ def mode_setup(pt_id, world, mode_id, *, turn=0) -> dict:
             # world instead of showing an empty casefile.
             out["case_error"] = str(exc)
     return out
+
+
+def _player_name(pt, player=memory.SOLO) -> str:
+    """What the world calls this player.
+
+    A room supplies a display name on every turn; a solo world does not, and
+    every witness record fell back to the literal string "A traveller" even
+    when Session Zero had asked for a name and the card was sitting right
+    there. Card first (the player wrote it), then the protagonist line the
+    world was built with, then the honest fallback.
+    """
+    try:
+        row = db.row("SELECT name FROM cards WHERE playthrough_id=? AND player_id=?"
+                     " AND name != '' ORDER BY updated_at DESC LIMIT 1",
+                     (pt["id"], player))
+        if row and row["name"]:
+            return row["name"]
+    except Exception:
+        pass
+    who = str(pt.get("protagonist") or "").strip()
+    if who and not who.lower().startswith("a traveller nobody"):
+        # "Yuki, a courier who reads more than she admits" -> "Yuki"
+        return re.split(r"[,(—-]", who)[0].strip() or who[:40]
+    return "A traveller"
+
+
+def _seed_player_card(pt_id, world, session_id):
+    """Make the card Session Zero already answered.
+
+    `default_protagonist` is one string holding both halves - "Yuki, a courier
+    who reads more than she admits" - because that is how a person writes it.
+    Split on the first comma or dash: the name is what the cast calls you, the
+    rest is the concept. A single word is a name with no concept, which is a
+    legitimate answer and not an error.
+
+    Solo only. In a room every seat writes their own card and an unprompted
+    one standing in a player's slot would be worse than none.
+    """
+    if session_id:
+        return
+    who = str(world.get("default_protagonist") or "").strip()
+    face = str(world.get("default_portrait") or "").strip()
+    if not face and (not who or who.startswith("a traveller nobody")):
+        return                      # nothing was answered; leave the card unmade
+    head, _, tail = who.partition(",")
+    if not tail:
+        head, _, tail = who.partition(" - ")
+    name = head.strip()[:60]
+    from . import identity
+    identity.save(pt_id, {
+        "player_id": memory.SOLO,
+        "name": name,
+        "concept": tail.strip()[:160],
+        "aspects": {},
+        "anomaly": "",
+        "avatar_url": face,
+    }, session_id="", account_id=_account_for(pt_id))
+
+
+def _account_for(pt_id):
+    """The account this story belongs to, if the player has one. A guest gets
+    "" and their card lives with the world rather than in a library."""
+    row = db.row("SELECT user_id FROM playthroughs WHERE id=?", (pt_id,))
+    if not row:
+        return ""
+    acct = db.row("SELECT id FROM accounts WHERE id=?", (row["user_id"],))
+    return acct["id"] if acct else ""
 
 
 def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=None,
@@ -317,6 +388,12 @@ def create_playthrough(user_id, world_id="emberfall", protagonist=None, title=No
     # The source's running order travels with the story, so "which chapter am
     # I in" is answerable without going back to the world every time.
     chapters.set_book(pt_id, world.get("chapters") or [])
+
+    # Session Zero already asked who you are and what you look like. Turning
+    # those two answers into the character card here means a player who filled
+    # the forge in properly does not then have to retype their own name into a
+    # modal before the world shows it back to them.
+    _seed_player_card(pt_id, world, session_id)
 
     # Whatever this mode needs staged before it is playable. Solo modes only:
     # a room stages itself when the host sets the table.
@@ -489,10 +566,17 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
         # deltas so the ledger has something real to point at.
         cause_node = 0
         if relationships.is_harmful(event) or relationships.is_bonding(event):
+            # Says what happened BETWEEN them, not what the player did - the
+            # turn already writes an "action" node with that, and the two
+            # rendered as an exact duplicate pair in the Chronicle. This one
+            # is the only line in the world that names the relational event,
+            # which is the thing a drifting character needs to point at.
+            who = actor_name or _player_name(pt, player)
+            toward = ", ".join(world.npc_name(n) for n in aimed_at[:2])
             cause_node = narrgraph.add(
                 pt["id"], turn,
                 "rupture" if relationships.is_harmful(event) else "bond",
-                f"{actor_name or 'You'}: {action[:80]}",
+                f"{who} {event.replace('_', ' ')} {toward}".strip()[:140],
                 detail=verdict.get("consequence", "")[:200],
                 place_id=pt["current_location"], actor=player, weight=4)
         for npc_id in aimed_at[:3]:
@@ -514,7 +598,14 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
     if severity >= 3 and event not in (None, "spoke_kindly", "listened"):
         fact = awareness.witness(
             pt["id"], world, actor=player, kind=event or "action",
-            summary=f"{actor_name or 'A traveller'}: {action[:120]}",
+            # What the room SAW, not what the player typed. This used to be
+            # the raw input with a name stuck on the front - "A traveller: I
+            # look around and take stock of the room" - and that string is
+            # read back in the three places a player actually looks: the
+            # rumour that reaches the next town, the "what you know" card,
+            # and the Chronicle. Nobody who watched you do something reports
+            # it in your words, in your tense, addressed to you.
+            summary=memory.retell(action[:160], actor_name or _player_name(pt, player))[:180],
             detail=verdict.get("consequence", "")[:200],
             place_id=pt["current_location"], turn=turn, severity=severity,
             present=state["present"], subject=player)
@@ -574,11 +665,14 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
                                    "killed_ally_of", "insulted"):
         seen = authority.patrol_tick(
             pt["id"], world, turn, place_id=pt["current_location"], actor=player,
-            summary=f"{actor_name or 'Someone'}: {action[:100]}", severity=severity)
+            summary=memory.retell(action[:140], actor_name or _player_name(pt, player))[:160],
+            severity=severity)
         for hit in seen["witnessed_by_authority"]:
             out["authority"].append(authority.register_crime(
                 pt["id"], world, player=player, faction_id=hit["faction"],
-                severity=cost_sev, summary=action[:140], turn=turn))
+                severity=cost_sev,
+                summary=memory.retell(action[:140], actor_name or _player_name(pt, player))[:160],
+                turn=turn))
 
     # Institutions forget slowly, but they do forget - otherwise one bad turn
     # is a life sentence, which reads as the world being broken, not strict.
@@ -683,7 +777,9 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
             entries.append(_render(pt_id, pt["current_turn"], "you", action, actor=player,
                                    meta={"name": actor_name or "You"}))
             text = narrator.refusal(pt, world, action, verdict, user_id=user_id)
-            memory.add_event(pt_id, pt["current_turn"], actor_name or "user", action,
+            refused_by = actor_name or _player_name(pt, player)
+            memory.add_event(pt_id, pt["current_turn"], refused_by,
+                             memory.retell(action, refused_by),
                              f"Refused: {verdict['reason']}", rule_ref=verdict.get("rule_ref"),
                              kind="rejection", importance=2, location=pt["current_location"])
             entries.append(_render(pt_id, pt["current_turn"], "refusal", text, actor="world",
@@ -709,7 +805,16 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         new_loc = verdict.get("new_location") or pt["current_location"]
         moved_to = None
         if new_loc != pt["current_location"]:
-            if new_loc in world.connects(pt["current_location"]) and not atlas.blocked(pt_id, new_loc):
+            # A frontier place is the setting's geography you have not built
+            # yet - the road out of town - and you can take it from anywhere in
+            # the town, not only from the one square the build started you in.
+            # Without the road-out clause, "I take the road out to the
+            # Swordsmith Village" was refused whenever the player had wandered
+            # off the hub, and the narration described them leaving anyway.
+            target = world.loc_by_id.get(new_loc)
+            road_out = bool(target and target.get("frontier"))
+            if (new_loc in world.connects(pt["current_location"]) or road_out) \
+                    and not atlas.blocked(pt_id, new_loc):
                 moved_to = new_loc
                 # Arriving at a place the world knew the name of and had not
                 # built is what builds it. A town is a town, not the edge of
@@ -718,6 +823,9 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                 # actually goes there. Never on the way out, never speculative,
                 # and never more than once per place.
                 world = _expand_on_arrival(pt, world, new_loc, user_id=user_id)
+                # Whoever came with the player comes with them. Without this a
+                # companion is left standing in the ward the story started in.
+                memory.move_companions(pt_id, world, new_loc, turn)
             else:
                 new_loc = pt["current_location"]
         # last_seen_at moves with every turn, not just with opening the story:
@@ -732,7 +840,13 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                                meta={"name": actor_name or "You"}))
 
         applied = memory.apply_deltas(pt_id, verdict["relationship_deltas"], turn, player)
-        memory.add_event(pt_id, turn, actor_name or "user", action, verdict["consequence"],
+        # The timeline is shown to the player ("Memory & timeline"), so it is
+        # written the way the world remembers it: a name rather than the
+        # literal string "user", and the act in the third person rather than
+        # the keystrokes that produced it.
+        said = _player_name(pt, player) if not actor_name else actor_name
+        memory.add_event(pt_id, turn, said, memory.retell(action, said),
+                         verdict["consequence"],
                          rule_ref=verdict.get("rule_ref"), kind="action",
                          importance=verdict.get("importance", 3), location=new_loc)
         # A turn taken while SPLIT OFF is private, and the Chronicle reads the
@@ -743,8 +857,12 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         # only this player's chronicle can resolve it.
         away = betrayal.active(pt_id, player)
         action_key = betrayal.private_key(player, turn, new_loc) if away else ""
-        narrgraph.add(pt_id, turn, "action", action[:90], detail=verdict.get("consequence", ""),
-                      place_id=new_loc, actor=actor_name or "you",
+        # The narrative graph is what the Chronicle reads, and the Chronicle is
+        # the world's own account of itself - so the node is the act as the
+        # world would tell it, not the sentence the player typed into a box.
+        narrgraph.add(pt_id, turn, "action", memory.retell(action, said)[:110],
+                      detail=verdict.get("consequence", ""),
+                      place_id=new_loc, actor=said,
                       weight=verdict.get("importance", 2), fact_key=action_key)
 
         # Working against a fated event is an ordinary action that happens to
@@ -759,9 +877,15 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
                              location=new_loc)
 
         state = world_master.build_state(pt, world, player)
-        npc_sim.observe_turn(pt_id, turn, state["present"], action, verdict["consequence"],
+        # What each witness privately remembers, in their own head, about a
+        # person they know the name of. This is injected verbatim into their
+        # prompts, so "I saw the traveller: I look around and take stock of
+        # the room" was teaching every character in the world to refer to the
+        # player as a nameless traveller and to quote them in the wrong tense.
+        npc_sim.observe_turn(pt_id, turn, state["present"], memory.retell(action, said),
+                             verdict["consequence"],
                              verdict.get("importance", 3), player=player,
-                             actor_name=actor_name or "the traveller")
+                             actor_name=said)
         # D10: a present NPC's information-seeking goal is tracked here, once
         # per turn - pending the first time it's on the table with them
         # present, answered the NEXT turn they are still present with the
@@ -790,9 +914,13 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         if mode == mana.FULL and not fired_fate and budget.affordable("npc"):
             actor_id = npc_sim.pick_actor(pt, state, player)
             if actor_id:
+                # Characters call you by your NAME. "The Runner crosses to the
+                # traveller" was the engine's placeholder leaking into the
+                # prose of a world that had been told who you are since
+                # Session Zero.
                 npc_action = npc_sim.maybe_act(pt, world, actor_id, user_id=user_id,
                                                player=player,
-                                               actor_name=actor_name or "the traveller")
+                                               actor_name=actor_name or _player_name(pt, player))
                 if npc_action:
                     try:
                         canon.check_npc_action(pt_id, world, actor_id, npc_action["action"],
@@ -847,6 +975,16 @@ def take_turn(pt_id, action, *, premium=False, player=memory.SOLO, actor_name=No
         present_now = (verdict.get("state") or {}).get("present") or []
         by_name = {world.npc_name(i): i for i in present_now if i in world.by_id}
         blocks = narrator.split_speech(text, list(by_name))
+
+        # Anybody mid-conversation stays for a beat. Whoever the player aimed
+        # this turn at, and whoever answered, is held against the schedule -
+        # otherwise the world walks out on you between your question and your
+        # follow-up, which it did twice in four turns of live play.
+        memory.hold_in_scene(
+            pt_id,
+            set(ticked.get("targets") or []) | {by_name.get(b.get("name", ""))
+                                                for b in blocks if b["kind"] == "speech"},
+            turn)
 
         base_meta = {"premium": use_premium, "mode": mode, "player": player,
                      "actor_name": actor_name}
@@ -1081,6 +1219,10 @@ def snapshot(pt_id, player=memory.SOLO):
         loc = st.get("location", npc["start_location"])
         npcs.append({
             "id": npc["id"], "name": npc["name"], "role": npc["role"],
+            # The face the player gave them, if they gave one. Carried in the
+            # turn state rather than fetched per character, because the
+            # speaker plate needs it at the moment a line lands.
+            "portrait": npc.get("portrait", ""),
             "voice": npc["anchors"]["voice"],
             "goals": npc["anchors"]["goals"], "taboos": npc["anchors"]["taboos"],
             "constraints": npc["anchors"]["constraints"],

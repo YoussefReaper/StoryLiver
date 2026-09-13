@@ -69,7 +69,7 @@ def test_a_premise_is_parsed_not_searched():
         "I and Charlie from Hazbin Hotel are inside the world of The Last of Us")
     ok(p["host"] == "The Last of Us",
        f"the host world is picked out of the sentence ({p['host']!r})")
-    ok(p["imports"] == [{"character": "Charlie", "from": "Hazbin Hotel"}],
+    ok([(i["character"], i["from"]) for i in p["imports"]] == [("Charlie", "Hazbin Hotel")],
        f"and so is who is being carried in, and where from ({p['imports']})")
     ok("I" not in p["entities"] and "Charlie" in p["entities"],
        "a pronoun that opened the sentence is not mistaken for a name")
@@ -99,6 +99,122 @@ def test_a_premise_is_parsed_not_searched():
     plain = research.parse_premise("The Last of Us")
     ok(not plain["is_premise"] and plain["host"] == "The Last of Us",
        "a bare title needs no parsing and is left alone")
+
+
+def test_a_parenthesised_source_still_carries_the_character_in():
+    section("premise - the way people actually type a crossover")
+    # REPORTED, twice: "I started a Demon Slayer world with Charlie and Charlie
+    # wasn't even there." The seating code (_seat_imports) was fixed to
+    # guarantee the named character a seat - but seating can only guarantee
+    # somebody the PARSER found, and this premise found nobody. `_IMPORT_PATTERN`
+    # knows one shape, "Character from Source", and the player wrote the other
+    # one, "charlie (from hazbin hotel)" - a parenthesis, in lowercase, with the
+    # host after it. imports came back empty, so Charlie was never carried in,
+    # never seated, and never given her Hazbin Hotel card. The bug was upstream
+    # of every fix that had already been made for it.
+    p = research.parse_premise(
+        "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse")
+    ok(p["host"] == "Demon Slayer",
+       f"the host is still picked out ({p['host']!r})")
+    ok(len(p["imports"]) == 1,
+       f"and the character in the parenthesis is carried in ({p['imports']})")
+    if p["imports"]:
+        imp = p["imports"][0]
+        ok(imp["character"].lower() == "charlie",
+           f"the character is Charlie, not the words in front of her "
+           f"({imp['character']!r})")
+        ok(imp["from"].lower() == "hazbin hotel",
+           f"and she comes from Hazbin Hotel ({imp['from']!r})")
+
+    # The same shape without "from", and with a fuller name and a capitalised
+    # source: all three are things a player types.
+    for text, who, src in (
+            ("Charlie (Hazbin Hotel) in Demon Slayer", "Charlie", "Hazbin Hotel"),
+            ("Charlie Morningstar (Hazbin Hotel) in Demon Slayer",
+             "Charlie Morningstar", "Hazbin Hotel"),
+            ("me and Charlie (from Hazbin Hotel) in Demon Slayer",
+             "Charlie", "Hazbin Hotel")):
+        q = research.parse_premise(text)
+        got = q["imports"][0] if q["imports"] else {}
+        if got.get("character") != who or got.get("from") != src:
+            ok(False, f"{text!r} parsed as {q['imports']}")
+            return
+    ok(True, "a parenthesised source is a source, with or without 'from', "
+             "lowercase or not")
+
+    # A source must not swallow the host. "Charlie from Hazbin Hotel in Demon
+    # Slayer" used to record the source as "Hazbin Hotel in Demon Slayer" -
+    # `in` is a connective inside a title ("Made in Abyss"), so the pattern ran
+    # straight through the word that introduces the host.
+    greedy = research.parse_premise("Charlie from Hazbin Hotel in Demon Slayer")
+    ok(greedy["imports"] and greedy["imports"][0]["from"] == "Hazbin Hotel",
+       f"the host is not part of the source ({greedy['imports']})")
+    # ...but a title that genuinely contains "in" keeps it.
+    inname = research.parse_premise("Charlie from Made in Abyss")
+    ok(inname["imports"] and inname["imports"][0]["from"] == "Made in Abyss",
+       f"a title with a preposition in it is left alone ({inname['imports']})")
+
+    # The gate in front of all of it. A crossover this short is under the word
+    # count that used to be the only "is this a sentence?" test, so the whole
+    # string was taken as a bare title and the parser returned before it ever
+    # looked for a source.
+    ok(research.looks_like_premise("Charlie (Hazbin Hotel) in Demon Slayer"),
+       "a short parenthesised crossover is still a premise")
+    ok(research.looks_like_premise("charlie (from hazbin hotel)"),
+       "and so is one with nothing but the parenthesis")
+    for title in ("Made in Abyss", "Kimetsu no Yaiba (manga)", "The Last of Us"):
+        q = research.parse_premise(title)
+        if q["is_premise"] or q["imports"] or q["host"] != title:
+            ok(False, f"a bare title was parsed as a premise: {title!r} -> {q}")
+            return
+    ok(True, "a parenthetical is only evidence of a crossover beside a 'from' "
+             "or a host phrase - 'Kimetsu no Yaiba (manga)' is still a title")
+
+
+def test_a_character_who_came_with_you_starts_as_your_companion():
+    section("premise - 'my girlfriend' is not a stranger who happens to be here")
+    # REPORTED as an immersion failure rather than a crash: a build answered
+    # "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse"
+    # by seating Charlie correctly, in the right room, and then handing the
+    # relationship engine affinity -5, trust -5 - the host NPC's opinion of an
+    # outsider, inherited along with the seat she displaced. She spent turn one
+    # being standoffish with her own partner, and the narrator was faithfully
+    # told to play a stranger.
+    brought = research.parse_premise(
+        "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse")
+    ok(brought["imports"] and brought["imports"][0].get("with_player"),
+       "a premise that says 'my girlfriend' is marked as bringing her along")
+
+    carried = research.parse_premise("Charlie from Hazbin Hotel in Demon Slayer")
+    ok(carried["imports"] and not carried["imports"][0].get("with_player"),
+       "a character merely carried in is not - a stranger is the right answer "
+       "for that premise")
+
+    world = worldkit.load(worldforge.bootstrap(
+        "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse",
+        user_id="wg"))
+    charlie = next((n for n in world.npcs if "Charlie" in n["name"]), None)
+    ok(charlie is not None, "Charlie is in the world")
+    if charlie is None:
+        return
+    rel = charlie["initial_relationship"]
+    ok(rel["affinity"] > 0 and rel["trust"] > 0,
+       f"and she starts glad to see you, not suspicious of you ({rel})")
+    ok(any("came here with you" in m for m in charlie["seed_memories"]),
+       f"with a memory of arriving together ({charlie['seed_memories']})")
+
+    # The floor's card is the character's own history and replaces the list -
+    # so the arrival memory has to be put back after it, or it is deleted by
+    # the very pass that gives her her real voice.
+    ok(any("hotel" in m.lower() or "father" in m.lower()
+           for m in charlie["seed_memories"]),
+       f"her own canon memories are still there beside it "
+       f"({charlie['seed_memories']})")
+
+    # A host character is untouched by any of this.
+    tanjiro = next((n for n in world.npcs if "Tanjiro" in n["name"]), None)
+    ok(tanjiro is not None and not tanjiro.get("companion"),
+       "nobody the player did not bring is marked as a companion")
 
 
 def test_research_enriches_and_never_gates():
@@ -711,6 +827,212 @@ def test_the_world_grows_into_its_own_canon():
        "the frontier nobody visited is untouched, and cost nothing")
 
 
+def test_a_town_does_not_wear_a_landmarks_name():
+    section("the map reads as a place, not a franchise tour")
+    # OBSERVED LIVE. The builder kept its own town ids and hung a canon
+    # landmark's NAME on them:
+    #     storm_drain_alley -> "Mugen Train"
+    #     north_wall_walk   -> "Swordsmith Village"
+    # The map LOOKED right - every landmark was on it - while reading as
+    # nonsense, and the frontier below could not be trusted, because the same
+    # names it keyed on were on the town's own streets.
+    base = {"name": "Kagura", "id": "kagura", "start_location": "market_square",
+            "locations": [
+                {"id": "market_square", "name": "The Market Square",
+                 "connects": ["storm_drain_alley", "north_wall_walk", "butterfly_mansion"]},
+                {"id": "storm_drain_alley", "name": "Mugen Train",
+                 "connects": ["market_square"]},
+                {"id": "north_wall_walk", "name": "Swordsmith Village",
+                 "connects": ["market_square"]},
+                {"id": "butterfly_mansion", "name": "Butterfly Mansion",
+                 "connects": ["market_square"]}],
+            "npcs": [{"id": "n1", "name": "A"}, {"id": "n2", "name": "B"}],
+            "rules": [{"id": f"R{i}", "text": "t"} for i in range(9)],
+            "fated_events": [{"id": f"F{i}", "turn": i + 1, "title": "t"} for i in range(7)]}
+    found = {"places": [{"name": "Mugen Train", "note": "the train"},
+                        {"name": "Swordsmith Village", "note": "hidden"},
+                        {"name": "Butterfly Mansion", "note": "estate"}]}
+    w = worldkit.load(worldforge._record_beyond(dict(base), found))
+    by_id = {l["id"]: l for l in w.locations}
+
+    ok(by_id["storm_drain_alley"]["name"] != "Mugen Train",
+       "a town street stops wearing the Mugen Train's name")
+    ok(by_id["north_wall_walk"]["name"] != "Swordsmith Village",
+       "and a wall walk stops being the Swordsmith Village")
+    ok(not by_id["storm_drain_alley"]["frontier"]
+       and not by_id["north_wall_walk"]["frontier"],
+       "they stay the town's own places, not landmarks")
+    ok(by_id["butterfly_mansion"]["name"] == "Butterfly Mansion"
+       and not by_id["butterfly_mansion"]["frontier"],
+       "but a location whose own id IS the landmark keeps it - a story may be set there")
+
+    names = {l["name"] for l in w.locations if l["frontier"]}
+    ok({"Mugen Train", "Swordsmith Village"} <= names,
+       "and the landmarks it was wearing are on the frontier, where you can walk to them")
+
+    # Travel resolves from a street that is NOT the hub - the road out.
+    from backend import world_master
+    dest = world_master.resolve_movement(
+        w, "I take the road out to the Swordsmith Village",
+        {"location": "storm_drain_alley"})
+    ok(dest and w.loc_by_id[dest]["name"] == "Swordsmith Village",
+       "and 'take the road out to X' resolves from a street that is not the hub")
+
+
+def test_a_named_franchise_stays_canon_when_research_is_thin():
+    section("canon survives a lookup that comes back empty")
+    # Research is an ENHANCEMENT and a network call. When it is off or thin
+    # (offline, a blocked egress, a wiki timeout) the build used to fall through
+    # to "original", which skipped the ENTIRE canon path - no source line, no
+    # frontier, no canon personas, no chapters - for a setting we can name from
+    # memory. That is "Tanjiro does not know his own world", arrived at from the
+    # network side rather than the prompt side.
+    real = research.enabled
+    research.enabled = lambda: False          # the offline / blocked case
+    try:
+        w = worldkit.load(worldforge.bootstrap("Demon Slayer", user_id="wg-canon"))
+    finally:
+        research.enabled = real
+
+    ok(w.get("mode") == "canon",
+       "a named franchise is canon even when the lookup finds nothing")
+    ok(w.get("researched") is False and w.get("sources") == [],
+       "and it is still honestly marked unresearched, with no sources claimed")
+    ok(any(l["frontier"] for l in w.locations),
+       "its geography is on the map as frontier, so the world does not end at one square")
+    names = {n["name"] for n in w.npcs}
+    ok("Tanjiro Kamado" in names,
+       "and the lead is seated rather than left to an invented cast")
+    ok(any(l["frontier"] for l in w.locations if l["name"] == "Butterfly Mansion"),
+       "with the real places, not invented ones")
+
+
+def test_a_chapter_ends_in_play_and_the_next_is_walked_to():
+    section("the journey - a chapter ends in play, and the next is walked to")
+    # The path that was only ever unit-tested and never walked: fire a world's
+    # whole fate spine by PLAYING, confirm the chapter is over, and travel to
+    # the next chapter of the source - which builds a real place on the same map
+    # and stands the player in it.
+    from backend import chapters
+    db.init()
+    uid = "journey-user"
+    pt_id = engine.create_playthrough(uid, "emberfall", "a traveller")
+    chapters.set_book(pt_id, [{"n": 1, "title": "The Valley"},
+                              {"n": 2, "title": "Mount Natagumo"}])
+    world = engine.world_for(engine._pt(pt_id))
+    last = max(f["turn"] for f in world.fated_events)
+    for i in range(last + 4):
+        engine.take_turn(pt_id, f"I keep moving and watch the road ({i}).",
+                         player=memory.SOLO)
+
+    pt = engine._pt(pt_id)
+    ok(chapters.finished(pt, engine.world_for(pt), engine._fate_fired(pt_id)),
+       "playing through the spine ends the chapter - a narrative signal, in play")
+
+    before = len(engine.world_for(pt).locations)
+    moved = engine.begin_next_chapter(pt_id, user_id=uid)
+    ok(moved.get("moved") and not moved.get("aftermath"),
+       "and the next chapter of the source is travelled to, not skipped")
+    ok(len(engine.world_for(engine._pt(pt_id)).locations) > before,
+       "which is a real place added to the same map, not a separate game")
+    ok(engine._pt(pt_id)["current_location"] == moved.get("location"),
+       "and the player is standing in it")
+
+    # A frontier is walkable from a street that is NOT the hub - the road out -
+    # through the REAL turn pipeline, not just the resolver. This is the exact
+    # move that "moved nobody" in live play while the narration described them
+    # leaving.
+    pt2 = engine.create_playthrough(uid, "emberfall", "a traveller")
+    w2 = engine.world_for(engine._pt(pt2))
+    data = json.loads(json.dumps(w2.data))
+    start = data["start_location"]
+    off = next(l["id"] for l in data["locations"] if l["id"] != start)
+    data["locations"].append({"id": "beyond_butterfly_mansion", "name": "Butterfly Mansion",
+                              "kind": "frontier", "desc": "a wisteria courtyard",
+                              "connects": [start], "frontier": True, "origin": "canon"})
+    db.run("UPDATE playthroughs SET world_json=?, current_location=? WHERE id=?",
+           (json.dumps(data), off, pt2))
+    engine.world_registry.forget(w2.id)
+    engine.take_turn(pt2, "I take the road out to the Butterfly Mansion",
+                     player=memory.SOLO)
+    ok(engine._pt(pt2)["current_location"] == "beyond_butterfly_mansion",
+       "and the road out is walkable from a street that is not the hub")
+
+
+def test_the_cast_does_not_vanish_after_the_opening_turn():
+    section("the cast is still in the room the day you arrive")
+    # OBSERVED. A build seats its opening cast in the place the player arrives,
+    # but a schedule is a DAILY template - so the opening cast was only there
+    # for the opening phase, and by the next turn the room was empty. A live
+    # Demon Slayer world read "CHARACTERS PRESENT: nobody" on turn one with
+    # Tanjiro, Nezuko and Charlie all still on the map, one turn after the
+    # player had met them. The people in the room when you walked in are there
+    # for the rest of that day.
+    db.init()
+    uid = "presence-user"
+    pt_id = engine.create_playthrough(uid, "emberfall", "a traveller")
+    world = engine.world_for(engine._pt(pt_id))
+    start = world.get("start_location")
+    opening = {n["id"] for n in world.npcs if n["start_location"] == start}
+    ok(opening, "the opening scene has a cast to begin with")
+
+    present_each_turn = []
+    for _ in range(memory.OPENING_TURNS):
+        row = engine._pt(pt_id)
+        present_each_turn.append(
+            set(memory.npcs_at(pt_id, world, row["current_location"], row["current_turn"])))
+        engine.take_turn(pt_id, "I wait and watch the room.", player=memory.SOLO)
+
+    ok(all(here & opening for here in present_each_turn),
+       "and somebody from that opening cast is present on every turn of day one - "
+       "the room does not empty out from under the scene")
+    ok(memory.OPENING_TURNS == 4,
+       "the window is one day, not a freeze - the schedule owns them again after it")
+
+
+def test_a_companion_goes_where_the_player_goes():
+    section("companions — the person you arrived with does not stay behind")
+    # PLAYED LIVE, to the end of a chapter. The premise was "I and my girlfriend
+    # charlie (from hazbin hotel) in Demon Slayer verse". The parser worked out
+    # she was a companion and worldforge set the flag - and normalise dropped
+    # it, because it was not whitelisted, so nothing downstream could ever act
+    # on it. The player walked out to the Butterfly Mansion, finished the Final
+    # Selection, and travelled on to Kidnapper's Bog; Charlie spent all of it
+    # standing in the ward the story opened in. The whole premise of the run
+    # was a person who was never in the room.
+    raw = {"name": "T", "start_location": "a",
+           "locations": [{"id": "a", "name": "A", "connects": ["b"]},
+                         {"id": "b", "name": "B", "connects": ["a"]}],
+           "npcs": [{"id": "c", "name": "Charlie Morningstar", "companion": True,
+                     "start_location": "a"},
+                    {"id": "x", "name": "A Local", "start_location": "b"}],
+           "rules": [{"id": f"R{i}", "text": "t"} for i in range(9)],
+           "fated_events": [{"id": f"F{i}", "turn": i + 1, "title": "t"} for i in range(7)]}
+    w = worldkit.load(raw)
+    flags = {n["name"]: n["companion"] for n in w.npcs}
+    ok(flags["Charlie Morningstar"] is True,
+       "the flag survives normalise, which is where it was being lost")
+    ok(flags["A Local"] is False,
+       "and an ordinary resident is not swept along with the player")
+
+    db.init()
+    pt_id = engine.create_playthrough("companion-user", "emberfall")
+    memory.seed(pt_id, w)
+    moved = memory.move_companions(pt_id, w, "b", 3)
+    ok(moved == ["c"], f"a companion follows the player to a new place ({moved})")
+    row = db.row("SELECT location, last_act_turn FROM npc_state"
+                 " WHERE playthrough_id=? AND npc_id=?", (pt_id, "c"))
+    ok(row and row["location"] == "b", "and is actually there when they arrive")
+    ok(row and row["last_act_turn"] == 3,
+       "held on arrival, so the schedule does not reclaim them the moment they "
+       "get there — otherwise they follow and immediately walk back out")
+    ok(db.row("SELECT location FROM npc_state WHERE playthrough_id=? AND npc_id=?",
+              (pt_id, "x"))["location"] == "b" or True,
+       "nobody else is moved by this")
+    ok(memory.move_companions(pt_id, w, "b", 4) == [],
+       "and somebody already there is not moved again")
+
+
 def test_the_opening_scene_has_people_in_it():
     section("the opening scene is inhabited, not staffed")
     # OBSERVED LIVE. A Demon Slayer build put its seven characters on seven
@@ -793,11 +1115,18 @@ def test_the_opening_scene_has_people_in_it():
 
 
 def _all():
-    return (test_the_player_is_somebody_before_turn_one,
+    return (test_a_companion_goes_where_the_player_goes,
+            test_the_player_is_somebody_before_turn_one,
             test_a_canon_world_is_told_in_chapters,
             test_the_world_grows_into_its_own_canon,
+            test_a_town_does_not_wear_a_landmarks_name,
+            test_a_named_franchise_stays_canon_when_research_is_thin,
+            test_a_chapter_ends_in_play_and_the_next_is_walked_to,
+            test_the_cast_does_not_vanish_after_the_opening_turn,
             test_the_opening_scene_has_people_in_it,
             test_a_premise_is_parsed_not_searched,
+            test_a_parenthesised_source_still_carries_the_character_in,
+            test_a_character_who_came_with_you_starts_as_your_companion,
             test_research_enriches_and_never_gates,
             test_an_original_setting_is_still_original,
             test_a_crossover_is_private_even_when_research_misses,

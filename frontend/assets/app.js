@@ -160,6 +160,10 @@ async function openPlaythrough(id, { sessionId = null, playerId = 'user', role =
   S.lastFeedId = 0; lastRenderedTurn = -1;
   S.ooc = null; S.oocUnread = 0; renderOocBadge();
   S.legacy = null; S.chronUnseen = 0;
+  // Your own face, loaded with the world rather than only when the card modal
+  // opens — the You card and every plate want it on the first paint.
+  S.identityAvatar = '';
+  loadMyCard();
   $('#feed').innerHTML = '';
   renderFeed(feed);
   renderAway();
@@ -299,8 +303,28 @@ function renderTopbar() {
   clock.title = `Turn ${st.turn} · ${w.temperature ?? '?'}°C · light ${w.here?.light ?? w.light}/5`
     + ` · noise ${w.here?.noise ?? w.noise}/5`;
 
+  // The ambient strip. Same live state as the topbar clock, said as four
+  // facts directly above the prose — the hour, the sky, where you are
+  // standing, what you have left — because the weather is part of the scene
+  // and not part of the chrome.
+  const amb = $('#ambient');
+  if (amb) {
+    $('#amTime').textContent = `Day ${st.day} · ${st.phase}`;
+    $('#amSky').textContent = w.weather_word || w.weather || '—';
+    $('#amHere').textContent = st.location_name || '';
+    const ch = st.chapter || {};
+    $('#amChapter').textContent = ch.n ? `chapter ${ch.n}${ch.total ? `/${ch.total}` : ''}` : '';
+  }
+  // With the tab bar out of the way, its badges would go with it. One dot on
+  // the "everything else" key carries all of them.
+  const dot = $('#instDot');
+  if (dot) dot.hidden = !$$('#tableTabs .tab-badge').some((b) => b.textContent.trim());
+
   const m = st.mana;
   const btn = $('#manaBtn');
+  if ($('#amMana')) {
+    $('#amMana').textContent = m.mode === 'ember' ? 'ember' : `mana ${m.balance + m.free_left}`;
+  }
   $('#manaValue').textContent = m.mode === 'ember' ? 'Ember' : `${m.balance + m.free_left}`;
   btn.classList.toggle('is-ember', m.mode === 'ember');
   btn.title = m.mode === 'ember' ? 'Out of Mana — playing in Ember. Nothing is locked.'
@@ -340,7 +364,9 @@ function renderYouCard() {
   const me = (S.session?.players || []).find((p) => p.player_id === S.playerId);
   const name = me?.name || 'You';
   $('#youName').textContent = name;
-  $('#youSigil').textContent = (name[0] || '?').toUpperCase();
+  // Your own face, if you gave one. Same helper as every other portrait slot,
+  // so the monogram fallback is identical to the cast's.
+  $('#youSigil').outerHTML = faceHTML(S.identityAvatar, name, 'you-sigil', 'youSigil');
   $('#youConcept').textContent = st.protagonist || '';
 
   const rep = (S.knowledge?.factions || [])[0];
@@ -441,11 +467,14 @@ function renderSouls() {
   $('#souls').innerHTML = order.map((n) => `
     <button class="soul ${n.present ? 'present' : ''} ${n.alive ? '' : 'dead'}" data-soul="${n.id}">
       <div class="soul-top">
+        ${faceHTML(n.portrait, n.name, 'soul-face')}
+        <span class="soul-id">
+          <span class="soul-name">${esc(n.name)}</span>
+          <span class="soul-role">${esc(n.role || '')}</span>
+        </span>
         ${n.alive ? '<i class="live-dot"></i>' : '<span class="soul-where">&dagger;</span>'}
-        <span class="soul-name">${esc(n.name)}</span>
-        <span class="soul-where">${n.alive ? esc(n.location_name) : 'gone'}</span>
       </div>
-      <div class="soul-role">${esc(n.role || '')}</div>
+      <div class="soul-where soul-at">${n.alive ? esc(n.location_name) : 'gone'}</div>
       <div class="soul-mood">
         <span class="mood-chip mood-${esc((n.disposition || 'stranger').split(' ')[0])}">${esc(n.disposition || 'stranger')}</span>
         ${standingOf(n) ? `<span class="soul-standing">${esc(standingOf(n))}</span>` : ''}
@@ -534,14 +563,47 @@ function renderAtlasDetail() {
       <span>${esc(n.kind)}</span>
     </div>
     ${n.note ? `<p style="margin-top:8px;font-style:italic">${esc(n.note)}</p>` : ''}
+    ${whoIsAt(n)}
     ${reachable && !n.here ? `<button class="btn btn-ghost" data-travel="${esc(n.name)}">Go there</button>` : ''}`;
+}
+
+/* Who you would find there.
+
+   A place on the map was a name, a description and a visit count - which is a
+   gazetteer entry, not somewhere you might go. The thing that decides whether
+   a player walks to the mill is who is standing at it, and the client already
+   knows: every character carries a location. Only the ones you have actually
+   met are named; a place you have merely heard of does not hand you its
+   census. */
+function whoIsAt(place) {
+  // Everything but a place you have never heard named. The Living rail
+  // already tells you where every character is standing, so hiding the same
+  // fact one panel over would make the two surfaces disagree without keeping
+  // anything back.
+  if (place.status === 'hidden') return '';
+  const here = (S.state?.npcs || []).filter((n) => n.alive && n.location === place.id);
+  if (!here.length) {
+    return place.here ? '<div class="ad-who ad-empty">Nobody is here but you.</div>' : '';
+  }
+  return `<div class="ad-who">
+    ${here.slice(0, 8).map((n) => `
+      <button class="ad-face" data-soul="${esc(n.id)}" title="${esc(n.name)} - ${esc(n.role || '')}">
+        ${faceHTML(n.portrait, n.name, 'ad-portrait')}
+        <span>${esc(shortName(n.name))}</span>
+      </button>`).join('')}
+    ${here.length > 8 ? `<span class="ad-strangers">and ${here.length - 8} more</span>` : ''}
+  </div>`;
 }
 
 /* ==================================================================== GRAPH */
 function renderGraph() {
   const g = S.graph; const svg = $('#graphMap');
   if (!g) { svg.innerHTML = ''; return; }
-  const NW = 148, NH = 40, GAPX = 176, LANEY = 66;
+  // Bigger than it was. At 148x40 with a 9.5px label, fitted into a frame a
+  // third the width of the content, every node rendered as an unreadable
+  // chip - which is what the Threads tab looked like for the first twenty
+  // turns of every world.
+  const NW = 196, NH = 54, GAPX = 228, LANEY = 84;
   const nodes = g.nodes.slice(-26);
   const startSeq = nodes.length ? nodes[0].seq : 0;
   const pos = {};
@@ -549,16 +611,26 @@ function renderGraph() {
     pos[n.id] = { x: 40 + (n.seq - startSeq) * GAPX, y: 190 + n.lane * LANEY };
   });
   const futureBase = 40 + (nodes.length ? (nodes[nodes.length - 1].seq - startSeq + 1) : 0) * GAPX;
-  const width = futureBase + (g.futures.length ? g.futures.length * GAPX : 0) + NW + 60;
-  const fullWidth = Math.max(width, 900);
+  // Fit the view to what is actually drawn. A fixed 900x400 box meant a young
+  // story - four nodes in a row - was rendered at a third of the frame and
+  // read as a strip of unreadable chips floating in an empty panel, which is
+  // how the Threads tab looked for the first twenty turns of every world.
+  const laneMax = Math.max(0, ...nodes.map((n) => n.lane || 0),
+                           ...g.futures.map((f) => f.lane || 0));
+  const contentW = futureBase + (g.futures.length ? g.futures.length * GAPX : 0) + NW + 40;
+  const contentH = 190 + laneMax * LANEY + NH + 40;
+  // Capped, not fitted. Framing the WHOLE strip means a long story shrinks
+  // until nothing can be read; this keeps the nodes at a legible size and
+  // lets the player pan, which is what the pan/zoom layer is for.
+  const box = [0, 150, Math.min(Math.max(contentW, 560), 1000),
+               Math.max(contentH - 150, 200)];
   // The old panel widened the viewBox as nodes accumulated and left the far
   // end unreachable. It is a pannable canvas now, so it stays the size of the
   // frame and the player moves around inside it.
   if (window.__viewport) {
-    window.__viewport.attach(svg, [0, 0, fullWidth, 400]);
+    window.__viewport.attach(svg, box);
   } else {
-    svg.setAttribute('viewBox', `0 0 ${fullWidth} 400`);
-    svg.style.minWidth = `${fullWidth}px`;
+    svg.setAttribute('viewBox', box.join(' '));
   }
 
   const parts = [];
@@ -584,16 +656,16 @@ function renderGraph() {
     parts.push(`<g class="g-node tone-${esc(n.tone)} ${n.id === g.here ? 'here' : ''}"
         data-gnode="${n.id}" transform="translate(${p.x},${p.y})" tabindex="0">
       <rect width="${NW}" height="${NH}"/>
-      <text x="11" y="16" style="font-size:9.5px;fill:var(--faint);letter-spacing:.1em">T${n.turn} ${esc(n.kind).toUpperCase()}</text>
-      <text x="11" y="31">${label(n.label, 22)}</text></g>`);
+      <text x="14" y="20" style="font-size:10.5px;fill:var(--faint);letter-spacing:.12em">T${n.turn} ${esc(n.kind).toUpperCase()}</text>
+      <text x="14" y="40" style="font-size:14px">${label(n.label, 26)}</text></g>`);
   }
   for (const f of g.futures) {
     const p = pos[f.id];
     parts.push(`<g class="g-node future tone-fate" data-gfuture="${esc(f.id)}"
         transform="translate(${p.x},${p.y})" tabindex="0">
       <rect width="${NW}" height="${NH}"/>
-      <text x="11" y="16" style="font-size:9.5px;fill:var(--ember-deep);letter-spacing:.1em">T${f.turn} SEALED</text>
-      <text x="11" y="31">${label(f.label, 22)}</text></g>`);
+      <text x="14" y="20" style="font-size:10.5px;fill:var(--ember-deep);letter-spacing:.12em">T${f.turn} SEALED</text>
+      <text x="14" y="40" style="font-size:14px">${label(f.label, 26)}</text></g>`);
   }
   svg.innerHTML = parts.join('');
   $('#graphDetail').innerHTML = '';
@@ -691,7 +763,10 @@ function renderCombat() {
       ${c.board.filter((b) => b.zone === z).map((b) => `
         <div class="fighter ${b.mine ? 'mine' : ''} ${b.ally ? 'ally' : 'foe'} ${b.down ? 'down' : ''}
              ${S.combatTarget === b.id ? 'targeted' : ''}" data-fighter="${esc(b.id)}">
-          <div class="f-name"><b>${esc(b.name)}</b>
+          <div class="f-name">
+            ${faceHTML(b.mine ? S.identityAvatar
+    : (S.state?.npcs?.find((n) => n.id === b.id) || {}).portrait, b.name, 'f-face')}
+            <b>${esc(b.name)}</b>
             ${b.advantage ? `<span class="f-adv ${b.advantage > 0 ? 'up' : 'down'}">${b.advantage > 0 ? '+' : ''}${b.advantage}</span>` : ''}</div>
           <div class="f-hp"><i style="width:${clamp(b.hp / b.max_hp * 100, 0, 100)}%"></i></div>
           ${(b.status || []).length ? `<div class="f-status">${b.status.map((s) => `<span>${esc(s)}</span>`).join('')}</div>` : ''}
@@ -768,9 +843,13 @@ function entryHTML(e, meta) {
     case 'opening':
       return `<article class="entry entry-opening"><div class="prose">${paras(e.text)}</div></article>`;
     case 'you': {
+      // An indent against one lit rule, and nothing else. The label is kept
+      // for a room — where whose turn it is genuinely matters — and hidden in
+      // solo play, where "YOU" over every second entry is the screen telling
+      // a player something they already know.
       const mine = !S.sessionId || e.actor === S.playerId;
       return `<div class="entry entry-you"><div class="you-line">
-        <b>${esc(mine ? 'You' : (meta.name || 'A player'))}</b>${esc(e.text)}</div></div>`;
+        <b class="${mine ? 'is-you' : ''}">${esc(mine ? 'You' : (meta.name || 'A player'))}</b>${esc(e.text)}</div></div>`;
     }
     case 'speech': {
       // A character's spoken line is its own entry, so it gets the plate: who
@@ -778,25 +857,36 @@ function entryHTML(e, meta) {
       // now, and the line itself in the reading serif.
       const sp = meta.speaker || {};
       return `<article class="entry entry-speech">${
-        speakerPlate({ npc: sp.npc, name: sp.name, action: e.text, said: true })}</article>`;
+        speakerPlate({ npc: sp.npc, name: sp.name, action: e.text, said: true }, meta)}</article>`;
     }
     case 'safety':
       return `<article class="entry entry-safety"><div class="safety-slab">${esc(e.text)}</div></article>`;
     case 'refusal':
+      // Refusal is never an error. It used to be a crimson rule with a
+      // no-entry glyph on it, which is the visual language of a form
+      // rejecting your input; this is the world declining, in the world's own
+      // voice, behind the quietest hairline on the screen.
       return `<article class="entry entry-refusal"><div class="refusal-wrap">
-        <div class="refusal-head"><svg viewBox="0 0 16 16" class="ico"><circle cx="8" cy="8" r="6"/><path d="M4.2 11.8 11.8 4.2"/></svg>
-          The world refuses</div>
+        <div class="refusal-head">the world declines</div>
         <div class="prose">${paras(e.text)}</div>
         ${S.prefs.power && meta.reason
     ? `<div class="refusal-reason">${esc(meta.reason)}</div>` : ''}
       </div></article>`;
     case 'fate':
+      // Word that reached you is not the same class of thing as something you
+      // watched happen, and the design separates them before you read a word:
+      // a broken rule for the report you cannot verify, a solid one for the
+      // thing that happened in front of you.
+      if (meta.as_news) {
+        return `<article class="entry entry-hearsay"><div class="hearsay-wrap">
+          <div class="feed-label">word reaches you &middot; secondhand</div>
+          <div class="prose">${paras(e.text.replace(/^Word reaches you:\s*/i, ''))}</div>
+        </div></article>`;
+      }
       return `<article class="entry entry-fate"><div class="fate-slab">
         ${meta.title ? `<div class="fate-title">${esc(meta.title)}</div>` : ''}
         <div class="fate-body">${paras(e.text)}</div>
-        <div class="fate-seal">${meta.as_news
-    ? 'It happened somewhere you were not. Nothing could have stopped it.'
-    : 'Written before you arrived. Nothing could have stopped it.'}</div></div></article>`;
+        <div class="fate-seal">Nothing could have stopped it.</div></div></article>`;
     case 'contest':
       return `<article class="entry entry-contest"><div class="contest-slab">
         <div class="contest-head"><svg viewBox="0 0 16 16" class="ico"><path d="M3 13 13 3M6 3H3v3M10 13h3v-3"/></svg>Contested</div>
@@ -829,22 +919,27 @@ function entryHTML(e, meta) {
         ${w.reply ? `<div class="whisper-reply">${esc(w.reply)}</div>` : ''}</div></article>`;
     }
     default: {
-      const tags = [];
-      // `${name} acted on their own` was the engine applauding itself: a chip
-      // announcing that a SYSTEM had fired, when the interesting thing was a
-      // person deciding. The act is attributed data — npc, name, action — so
-      // it gets a stage instead of a label. See speakerPlate().
-      if (meta.director_beat) tags.push(`<span class="tag tag-beat">
-        <svg viewBox="0 0 16 16" class="ico"><path d="M8 1.6 9.9 5.7l4.5.5-3.4 3 1 4.4L8 11.4l-4 2.2 1-4.4-3.4-3 4.5-.5z"/></svg>
-        Something shifted here</span>`);
-      if (meta.discovered) tags.push(`<span class="tag tag-world">Found ${esc(meta.discovered.name)}</span>`);
-      if (meta.unseen) tags.push(`<span class="tag tag-unseen">Nobody saw that</span>`);
-      for (const r of (meta.reputation || [])) {
-        tags.push(`<span class="tag tag-rep">${esc(r.name)} ${r.delta > 0 ? '+' : ''}${Math.round(r.delta)}</span>`);
+      // The world moving on its own is a SENTENCE over a hairline, not a
+      // pill. `Something shifted here`, `Found the mill road` and
+      // `Nobody saw that` were three chips of identical weight sitting above
+      // the prose, competing with it for the first glance; as notes they sit
+      // under it, carry the actual clause the director wrote, and only the
+      // label is coloured.
+      const notes = [];
+      if (meta.director_beat) {
+        notes.push(worldNote('shifted', meta.director_beat.beat
+          || 'Something moved here that you did not move.'));
       }
+      if (meta.discovered) notes.push(worldNote('found', meta.discovered.name));
+      if (meta.unseen) notes.push(worldNote('', 'Nobody saw that. It stays here until someone talks.'));
       for (const h of (meta.hunts_ordered || [])) {
-        tags.push(`<span class="tag tag-rep">${esc(h.faction_name)} sent someone</span>`);
+        notes.push(worldNote('contested', `${h.faction_name} has sent someone after you.`));
       }
+      for (const r of (meta.reputation || [])) {
+        notes.push(worldNote('', `${r.name} ${r.delta > 0 ? 'thinks better' : 'thinks less'} of you than they did.`));
+      }
+
+      const tags = [];
       if (meta.premium) tags.push('<span class="tag tag-premium">Deep prose</span>');
       else if (meta.mode === 'ember') tags.push('<span class="tag tag-ember">Ember</span>');
 
@@ -853,10 +948,11 @@ function entryHTML(e, meta) {
       const byline = (S.sessionId && meta.actor_name)
         ? `<div class="byline"><i></i>${esc(meta.actor_name)}&rsquo;s turn</div>` : '';
       return `<article class="entry entry-narration">${byline}
-        ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}
         <div class="prose">${paras(e.text)}</div>
-        ${speakerPlate(meta.npc_initiated)}
-        ${rel.length ? `<div class="deltas">${rel.join('')}</div>` : ''}</article>`;
+        ${speakerPlate(meta.npc_initiated, meta)}
+        ${notes.length ? `<div class="world-notes">${notes.join('')}</div>` : ''}
+        ${rel.length ? `<div class="deltas">${rel.join('')}</div>` : ''}
+        ${tags.length ? `<div class="tags">${tags.join('')}</div>` : ''}</article>`;
     }
   }
 }
@@ -946,8 +1042,12 @@ function applyDirection() {
     const el = $(sel);
     if (el) el.setAttribute('dir', rtl ? 'rtl' : 'ltr');
   }
+  // `auto` in both directions, not `rtl`. The browser takes the direction
+  // from the first strong character, so an Arabic turn types right-to-left
+  // and the English placeholder still reads left-to-right - forcing `rtl`
+  // rendered "What do you do?" as "?What do you do".
   const ta = $('#actionInput');
-  if (ta) ta.setAttribute('dir', rtl ? 'rtl' : 'auto');
+  if (ta) ta.setAttribute('dir', 'auto');
 }
 
 /* The speaker plate — the design system's signature component.
@@ -959,26 +1059,120 @@ function applyDirection() {
    they hold in this world, how they currently stand toward you, and the act
    itself set in the reading serif.
 
-   Portraits are sigils, not generated art: the world builder does not ship
-   images and inventing faces for real characters would be worse than a
-   monogram. The hatched ground is the design's own placeholder treatment. */
-function speakerPlate(who) {
+   Portraits are the player's own art or a monogram — never generated. The
+   world builder ships no images and inventing a face for a real character
+   would be worse than a initials on a hatched ground, which is the design's
+   own placeholder and is meant to look deliberate. Bring your own art in the
+   world editor (the People section) and it lands here. */
+/* One line over a hairline: the world moved, and here is the clause that says
+   how. `kind` colours the label only — "shifted" in the signal teal,
+   "contested" in the amber, anything else in plain ink. */
+function worldNote(kind, text) {
+  if (!text) return '';
+  const cls = kind === 'shifted' || kind === 'found' ? ' is-shift'
+    : kind === 'contested' ? ' is-contest' : '';
+  const label = kind === 'found' ? 'found' : kind;
+  return `<div class="world-note${cls}">
+    ${label ? `<span class="feed-label">${esc(label)}</span>` : ''}
+    <span class="wn-text">${esc(text)}</span></div>`;
+}
+
+/* A face, everywhere a face appears: the speaker plate, the Living rail, the
+   character sheet, your own card, the world editor's cast list.
+
+   One function so a portrait cannot be a picture in one place and initials in
+   another, and so the no-art case is designed once. The fallback is the
+   monogram on the hatched ground from the design system — it is the common
+   case (a built world ships no images at all) and it has to look like a
+   choice rather than a missing file.
+
+   The `/media/` test mirrors backend/worldkit._portrait. The server already
+   refuses anything else, but state can arrive from a cache, a share link or
+   an older save, and an <img src> is exactly the wrong place to find out. */
+const MEDIA_PATH = /^\/media\/[0-9a-f]{32}\.(?:png|jpg|gif|webp)$/;
+
+/* What to call somebody in a button.
+
+   `name.split(' ')[0]` turned every title into the same chip: a world with
+   The Warden, The Runner and The Keeper in the room offered three buttons all
+   reading "Talk to The", and a player could not tell which was which. A title
+   IS the name, so keep it whole; a personal name shortens to the given name,
+   which is what you would actually say. */
+const ARTICLES = /^(the|a|an|le|la|el)\s+/i;
+
+function shortName(name) {
+  const full = String(name || '').trim();
+  if (!full) return 'them';
+  if (full.length <= 18) return full;            // "The Warden", "Ilsabet Marr"
+  const bare = full.replace(ARTICLES, '');
+  const first = bare.split(/[\s,]+/)[0] || bare;
+  return ARTICLES.test(full) ? `the ${first}` : first;
+}
+
+function initialsOf(name) {
+  return String(name || '?').split(/\s+/).filter(Boolean)
+    .map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+}
+
+function faceHTML(portrait, name, cls = 'face', id = '') {
+  const src = MEDIA_PATH.test(String(portrait || '')) ? String(portrait) : '';
+  const at = `${id ? ` id="${esc(id)}"` : ''} aria-hidden="true"`;
+  const initials = esc(initialsOf(name));
+  if (src) {
+    // The monogram travels with the picture. A free-tier host hands the app a
+    // fresh empty filesystem on every redeploy, so an uploaded face can be
+    // gone while the path to it is still in the world - and the worst
+    // possible version of that is a browser's broken-image glyph inside a
+    // circle. The fallback below swaps it back to the initials.
+    return `<span${at} class="${cls} has-art" data-initials="${initials}">`
+      + `<img src="${esc(src)}" alt=""></span>`;
+  }
+  return `<span${at} class="${cls}">${initials}</span>`;
+}
+
+/* A portrait that will not load becomes its monogram.
+
+   `error` does not bubble, so this listens in the CAPTURE phase - one
+   listener for every face in the app, including ones rendered later. */
+document.addEventListener('error', (ev) => {
+  const img = ev.target;
+  if (!img || img.tagName !== 'IMG') return;
+  const slot = img.parentElement;
+  if (!slot || !slot.classList.contains('has-art')) return;
+  slot.classList.remove('has-art');
+  slot.textContent = slot.dataset.initials || '?';
+}, true);
+
+function speakerPlate(who, meta) {
   if (!who || !who.name) return '';
   const npc = S.state?.npcs?.find((n) => n.id === who.npc) || {};
   const mood = (npc.disposition || '').trim();
   const role = (npc.role || '').trim();
-  const initials = who.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
-  // A spoken line is set as speech; an act they took is set as narration.
+  // Outline chip = steady. Filled chip = this is the turn it changed. The
+  // difference is the only animation of state the screen has, and it only
+  // fires when something real moved.
+  const moved = (meta?.relationship_changes || []).some((d) => d.npc === who.npc)
+    || (meta?.relationship_events || []).some((r) => r.npc === who.npc);
+  // A SPOKEN line is the plate's whole point: it is the line the scene turns
+  // on, and it appears nowhere else.
+  //
+  // An ACT is different. The narrator is handed the same sentence and told to
+  // play it out, so the passage above already contains it — printing it again
+  // underneath made every unprompted move read twice, verbatim in the offline
+  // narrator and as a near-paraphrase with a live one. The plate still earns
+  // its place by answering the question the prose cannot: WHO chose that, what
+  // do they look like, and where do they stand with you now.
   const line = who.said
     ? `<q class="plate-line plate-said">${esc(who.action || '')}</q>`
-    : `<span class="plate-line">${esc(who.action || '')}</span>`;
-  return `<aside class="plate${who.said ? ' plate-speaking' : ''}" data-soul="${esc(who.npc || '')}">
-    <span class="plate-face" aria-hidden="true">${esc(initials)}</span>
+    : `<span class="plate-moved mono">moved first &mdash; nobody asked them to</span>`;
+  return `<aside class="plate${who.said ? ' plate-speaking' : ''}" data-soul="${esc(who.npc || '')}"
+      ${who.said ? '' : `title="${esc(who.action || '')}"`}>
+    ${faceHTML(npc.portrait, who.name, 'plate-face')}
     <span class="plate-body">
       <span class="plate-who">
         <b class="plate-name">${esc(who.name)}</b>
         ${role ? `<span class="plate-role mono">${esc(role)}</span>` : ''}
-        ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>` : ''}
+        ${mood ? `<span class="mood-chip mood-${esc(mood.split(' ')[0])}${moved ? ' moved' : ''}">${esc(mood)}</span>` : ''}
       </span>
       ${line}
     </span>
@@ -1089,7 +1283,15 @@ async function submitAction(text) {
     if (fired.reveal) showTraitorReveal(fired.reveal);
     if (r.ending) showEnding(r.ending);
   } catch (err) {
-    toast(`The world stalled: ${err.message}`, 'err');
+    // Give the player their words back. The composer clears on submit, so a
+    // dropped connection or a stalled turn used to eat a sentence somebody
+    // had just spent a minute writing - and the only way to find that out
+    // was to look at an empty box.
+    const ta = $('#actionInput');
+    if (ta && !ta.value.trim()) { ta.value = text; autosize(ta); }
+    toast(err.message === 'Failed to fetch'
+      ? 'Lost the connection. Your turn is still in the box — try it again.'
+      : `The world stalled: ${err.message}`, 'err');
   } finally {
     if (!overSocket) { S.busy = false; thinking(false); }
     $('#actionInput').focus();
@@ -1290,8 +1492,26 @@ const head = (title, sub) => `<div class="modal-head"><div style="flex:1">
   <h2>${title}</h2>${sub ? `<p>${sub}</p>` : ''}</div>${closeX}</div>`;
 
 /* ---------------------------------------------------------- view switch */
+/* Summoned, not resident. A rail is a drawer over the column now, and it is
+   dismissed by the scrim, by Escape, or by summoning the other one. */
+function openRail(side) {
+  const app = $('#app');
+  const want = side && !app.classList.contains(`pane-${side}`);
+  app.classList.remove('pane-left', 'pane-right');
+  if (want) app.classList.add(`pane-${side}`);
+  const scrim = $('#railScrim');
+  if (scrim) scrim.hidden = !want;
+  $$('#mobileTabs button').forEach((b) => b.classList.toggle(
+    'on', b.dataset.pane === (want ? side : 'read')));
+}
+
 function setView(view) {
   S.view = view;
+  // Story is the whole screen. Everything else keeps the tab bar, because
+  // that is the way back out of it.
+  const app = $('#app');
+  if (app) { app.dataset.solo = view === 'story' ? '1' : '0'; app.dataset.view = view; }
+  if (view !== 'story') openRail(null);
   $$('#tableTabs button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('on', v.dataset.pane === view));
   if (view === 'atlas') renderAtlas();
@@ -1505,6 +1725,21 @@ async function adoptCard(cardId) {
   toast('They are here. Change anything you like — this world gets its own copy.');
 }
 
+/* Your card, in the background. Only the parts the shell paints — the face,
+   the name — so the You card is right on the first frame instead of after a
+   player thinks to open a modal. Failures are silent on purpose: a missing
+   card is the ordinary state of a brand new world, not an error. */
+async function loadMyCard() {
+  try {
+    const cards = await api(`/playthroughs/${S.ptId}/cards`);
+    const mine = (cards.cards || []).find((c) => c.player_id === S.playerId);
+    if (!mine) return;
+    S.cardId = mine.id;
+    if (mine.identity) S.identityDraft = mine.identity;
+    if (mine.avatar_url) { S.identityAvatar = mine.avatar_url; renderYouCard(); }
+  } catch { /* a world with no card yet is the normal case */ }
+}
+
 async function showCard() {
   const cards = await api(`/playthroughs/${S.ptId}/cards`);
   const mine = (cards.cards || []).find((c) => c.player_id === S.playerId);
@@ -1533,6 +1768,22 @@ async function showCard() {
           here never rewrites the one in your library, or the one in any other
           story they are standing in.</p>
       </div>` : ''}
+      <!-- Your face. It was only reachable from "Who they are", three menus
+           in, which meant the card everyone opens first was the one place you
+           could not put a picture. Nothing here is generated: this is your
+           own art or a monogram, and the monogram is a real design. -->
+      <div class="card-face">
+        ${faceHTML(S.identityAvatar, mine?.name || '', 'card-portrait')}
+        <div class="card-face-side">
+          <div class="card-face-title">Your art</div>
+          <p class="fineprint">You upload it — nothing in StoryLiver draws a face.
+            It appears wherever you do.</p>
+          <div class="row">
+            <button class="btn btn-ghost sm" data-card-art>${S.identityAvatar ? 'Change' : 'Add a picture'}</button>
+            ${S.identityAvatar ? '<button class="btn btn-ghost sm" data-card-art-clear>Remove</button>' : ''}
+          </div>
+        </div>
+      </div>
       <label class="big-field"><span>Name</span><input id="cdName" maxlength="40" value="${esc(mine?.name || '')}"></label>
       <label class="big-field"><span>Concept</span><input id="cdConcept" maxlength="120" value="${esc(mine?.concept || '')}" placeholder="a courier who stopped running"></label>
       <label class="big-field"><span>Voice</span><textarea id="cdVoice" rows="2" placeholder="How you speak.">${esc(a.voice || '')}</textarea></label>
@@ -1618,6 +1869,14 @@ async function showSoul(npcId) {
   const latest = n.reflections.length ? n.reflections[n.reflections.length - 1] : null;
   d.innerHTML = `
     <div class="drawer-head"><div class="dh-top">
+      <!-- The moment a player wants somebody to have a picture is the moment
+           they meet them, not at build time with the editor two menus away
+           and pointed at the world rather than at this story. -->
+      <button class="dh-face-btn" data-npc-art="${esc(npcId)}"
+              title="${live.portrait ? 'Change their picture' : 'Give them a face — your own art'}">
+        ${faceHTML(live.portrait, n.name, 'dh-face')}
+        <span class="dh-face-hint">${live.portrait ? 'change' : '+ face'}</span>
+      </button>
       <div style="flex:1"><h2>${esc(n.name)}${n.alive ? '' : ' &dagger;'}</h2>
         <div class="dh-role">${esc(n.role)}
           <span class="mood-chip mood-${esc((live.disposition || 'stranger').split(' ')[0])}">${esc(live.disposition || 'stranger')}</span>
@@ -1658,19 +1917,46 @@ async function showSoul(npcId) {
 async function showTimeline() {
   if (!S.ptId) return;
   showModal(head('Memory &amp; Timeline', 'Loading…'));
-  const { events } = await api(`/playthroughs/${S.ptId}/arc`);
+  // /arc is the STORY arc - which chapter of the source this is - and returns
+  // no `events` at all, so this screen has been throwing on `events.length`
+  // for every player who opened it. The append-only record is /timeline.
+  const { events } = await api(`/playthroughs/${S.ptId}/timeline`);
   const keys = [['action', 'var(--vellum-dim)'], ['fate', 'var(--ember)'], ['rejection', 'var(--crimson)'],
                 ['npc', 'var(--verdigris)'], ['beat', 'var(--rose)'], ['contest', 'var(--ember-soft)']];
+  // Two hundred turns in, this is the only place that holds everything and it
+  // had no way to find anything. "What did the Warden tell me about the mill"
+  // is the question a long campaign generates constantly, and the answer was
+  // scrolling. Filtering is local: the whole record is already here.
+  S.timelineEvents = events;
   showModal(`${head('Memory &amp; Timeline', `${events.length} events, append-only. The actual memory — not a transcript.`)}
     <div class="modal-body">
+      <label class="tl-find">
+        <svg viewBox="0 0 16 16" class="ico"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
+        <input id="tlFind" placeholder="Find a name, a place, a thing that happened…" autocomplete="off">
+      </label>
       <div class="tl-legend">${keys.map(([k, c]) => `<span class="tl-key"><i style="background:${c}"></i>${k}</span>`).join('')}</div>
-      <div class="tl">${events.slice().reverse().map((e) => `
-        <div class="tl-row k-${esc(e.kind)}"><span class="tl-turn">T${e.turn}</span>
-          <span class="tl-actor">${esc(e.actor)}</span>
-          <span class="tl-text"><b>${esc(e.action)}</b>
-            ${e.consequence ? `<span class="cons"> &mdash; ${esc(e.consequence)}</span>` : ''}
-            ${e.rule_ref ? `<span class="rule-chip">${esc(e.rule_ref)}</span>` : ''}</span></div>`).join('')}</div>
+      <div class="tl" id="tlList">${timelineRows(events)}</div>
     </div>`);
+  const find = $('#tlFind');
+  if (find) {
+    find.addEventListener('input', () => {
+      const q = find.value.trim().toLowerCase();
+      const hits = !q ? events : events.filter((e) =>
+        `${e.actor} ${e.action} ${e.consequence || ''} ${e.kind}`.toLowerCase().includes(q));
+      $('#tlList').innerHTML = hits.length ? timelineRows(hits)
+        : `<div class="empty">Nothing in this story matches “${esc(find.value.trim())}”.</div>`;
+    });
+    find.focus();
+  }
+}
+
+function timelineRows(events) {
+  return events.slice().reverse().map((e) => `
+    <div class="tl-row k-${esc(e.kind)}"><span class="tl-turn">T${e.turn}</span>
+      <span class="tl-actor">${esc(e.actor)}</span>
+      <span class="tl-text"><b>${esc(e.action)}</b>
+        ${e.consequence ? `<span class="cons"> &mdash; ${esc(e.consequence)}</span>` : ''}
+        ${e.rule_ref ? `<span class="rule-chip">${esc(e.rule_ref)}</span>` : ''}</span></div>`).join('');
 }
 
 async function showPricing() {
@@ -1852,13 +2138,21 @@ function showRoomCode(code) {
 async function showLibrary() {
   const saves = await api('/playthroughs');
   const list = saves.playthroughs || [];
+  // A row is a story you were standing in, so it leads with the person you
+  // were standing as. It used to be six identical lines of world name and a
+  // turn count, with nothing to tell one run of the same world from another.
   showModal(`${head('Your stories', `${list.length} in progress.`)}
     <div class="modal-body">${list.length ? `<div class="world-list">${list.map((p) => `
-      <div class="world-row"><button class="wr-main" data-load="${p.id}" style="text-align:left;background:none">
-        <div class="wr-name">${esc(p.world_name || p.title)} &mdash; day ${p.day}</div>
-        <div class="wr-sub">turn ${p.current_turn} &middot; ${esc(p.location_name)} &middot; ${p.mana_balance} Mana${p.session_id ? ' &middot; in a room' : ''}</div>
+      <div class="world-row"><button class="wr-main" data-load="${p.id}">
+        ${faceHTML(p.avatar_url, p.you || p.world_name || '?', 'wr-face')}
+        <span class="wr-text">
+          <span class="wr-name">${esc(p.world_name || p.title)}</span>
+          <span class="wr-sub">${p.you ? `${esc(p.you)} &middot; ` : ''}day ${p.day} &middot;
+            ${esc(p.location_name)}${p.session_id ? ' &middot; in a room' : ''}</span>
+        </span>
+        <span class="wr-turn mono">t${p.current_turn}</span>
       </button><div class="wr-actions"><button data-del="${p.id}">Delete</button></div></div>`).join('')}</div>`
-      : '<div class="empty">Nothing yet.</div>'}</div>`);
+      : `<div class="empty">Nothing yet. Build a world and it will be waiting here.</div>`}</div>`);
 }
 
 async function showForge() {
@@ -1983,68 +2277,157 @@ function openEditor(world, worldId, notice) {
   S.forge = { world: JSON.parse(JSON.stringify(world)), id: worldId };
   const w = S.forge.world;
   const locOpts = w.locations.map((l) => l.id);
-  const section = (key, title, count, body) => `
-    <div class="fe-section" data-fe="${key}"><button type="button" class="fe-head" data-fe-toggle="${key}">
-      <span class="chev">&#9656;</span><h4>${title}</h4><span class="fe-n">${count}</span></button>
+  const section = (key, title, count, body, open = false) => `
+    <div class="fe-section${open ? ' open' : ''}" data-fe="${key}">
+      <button type="button" class="fe-head" data-fe-toggle="${key}">
+        <span class="chev">&#9656;</span><h4>${title}</h4><span class="fe-n">${count}</span></button>
       <div class="fe-body">${body}</div></div>`;
   const sel = (name, value) => `<select data-f="${name}">${locOpts.map((l) =>
     `<option value="${esc(l)}"${l === value ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
 
+  // Every item is a summary row you can SEE, and the fields open underneath.
+  // A ten-person cast was previously ten stacks of six textareas — roughly
+  // four thousand pixels of form in which the world's actual cast was
+  // invisible. You cannot edit a world you cannot read.
   const places = w.locations.map((l, i) => `
     <div class="fe-item" data-kind="locations" data-i="${i}">
-      <div class="fe-row"><label>Name</label><input data-f="name" value="${feText(l.name)}"></div>
-      <div class="fe-row"><label>Description</label><textarea data-f="desc" rows="2">${feText(l.desc)}</textarea></div>
-      <div class="fe-row"><label>Connects to</label><input data-f="connects" value="${feText((l.connects || []).join(', '))}"></div>
-      <button class="fe-del" data-del-item>Remove</button></div>`).join('')
+      <button type="button" class="fe-item-head" data-item-toggle>
+        <span class="chev">&#9656;</span>
+        <b>${esc(l.name || 'unnamed place')}</b>
+        <span class="fe-sub">${esc(l.kind || 'place')}${l.frontier ? ' · not yet built' : ''}</span>
+      </button>
+      <div class="fe-item-body">
+        <div class="fe-row"><label>Name</label><input data-f="name" value="${feText(l.name)}"></div>
+        <div class="fe-row"><label>Description</label><textarea data-f="desc" rows="2">${feText(l.desc)}</textarea></div>
+        <div class="fe-row"><label>Connects to</label><input data-f="connects" value="${feText((l.connects || []).join(', '))}"></div>
+        <button class="fe-del" data-del-item>Remove this place</button>
+      </div></div>`).join('')
     + '<button class="fe-add" data-add="locations">+ Add a place</button>';
+  // A character reads as a person here, not as a row: their face first, then
+  // the fields. The portrait is the player's own art — there is no generator
+  // behind this button and there is not going to be one — and it is what the
+  // speaker plate shows the moment they say anything.
+  // A cast list that reads as a cast: a face, a name, what they are here.
+  // The portrait is the player's own art — there is no generator behind that
+  // button and there is not going to be one — and it is what the speaker
+  // plate shows the moment they say anything.
   const people = w.npcs.map((n, i) => `
-    <div class="fe-item" data-kind="npcs" data-i="${i}">
-      <div class="fe-row"><label>Name</label><input data-f="name" value="${feText(n.name)}"></div>
-      <div class="fe-row"><label>Role</label><input data-f="role" value="${feText(n.role)}"></div>
-      <div class="fe-row"><label>Voice</label><textarea data-f="anchors.voice" rows="2">${feText(n.anchors.voice)}</textarea></div>
-      <div class="fe-row"><label>Constraints</label><textarea data-f="anchors.constraints" rows="2">${feLines(n.anchors.constraints)}</textarea></div>
-      <div class="fe-row"><label>Wants</label><textarea data-f="anchors.goals" rows="2">${feLines(n.anchors.goals)}</textarea></div>
-      <div class="fe-row"><label>Never</label><textarea data-f="anchors.taboos" rows="2">${feLines(n.anchors.taboos)}</textarea></div>
-      <div class="fe-row"><label>Starts at</label>${sel('start_location', n.start_location)}</div>
-      <button class="fe-del" data-del-item>Remove</button></div>`).join('')
+    <div class="fe-item fe-person" data-kind="npcs" data-i="${i}">
+      <button type="button" class="fe-item-head" data-item-toggle>
+        <span class="chev">&#9656;</span>
+        ${faceHTML(n.portrait, n.name, 'fe-portrait')}
+        <span class="fe-who">
+          <b>${esc(n.name || 'unnamed')}</b>
+          <span class="fe-sub">${esc(n.role || '')}${n.companion ? ' · with you' : ''}${
+  n.hidden_start ? ' · not in the opening' : ''}</span>
+        </span>
+      </button>
+      <div class="fe-item-body">
+        <input type="hidden" data-f="portrait" value="${feText(n.portrait)}">
+        <div class="fe-row"><label>Their art</label>
+          <div class="fe-face-actions">
+            <button type="button" class="btn btn-ghost sm" data-portrait-pick="${i}">
+              ${n.portrait ? 'Change their picture' : 'Add their picture'}</button>
+            ${n.portrait ? `<button type="button" class="btn btn-ghost sm" data-portrait-clear="${i}">Remove</button>` : ''}
+            <span class="fe-hint">you upload it — nothing here is generated</span>
+          </div></div>
+        <div class="fe-row"><label>Name</label><input data-f="name" value="${feText(n.name)}"></div>
+        <div class="fe-row"><label>Role</label><input data-f="role" value="${feText(n.role)}"></div>
+        <div class="fe-row"><label>Voice</label><textarea data-f="anchors.voice" rows="2">${feText(n.anchors.voice)}</textarea></div>
+        <div class="fe-row"><label>Constraints</label><textarea data-f="anchors.constraints" rows="2">${feLines(n.anchors.constraints)}</textarea></div>
+        <div class="fe-row"><label>Wants</label><textarea data-f="anchors.goals" rows="2">${feLines(n.anchors.goals)}</textarea></div>
+        <div class="fe-row"><label>Never</label><textarea data-f="anchors.taboos" rows="2">${feLines(n.anchors.taboos)}</textarea></div>
+        <div class="fe-row"><label>Starts at</label>${sel('start_location', n.start_location)}</div>
+        <button class="fe-del" data-del-item>Remove this character</button>
+      </div></div>`).join('')
     + '<button class="fe-add" data-add="npcs">+ Add a character</button>';
   const laws = w.rules.map((r, i) => `
     <div class="fe-item" data-kind="rules" data-i="${i}">
-      <div class="fe-row"><label>The law</label><textarea data-f="text" rows="2">${feText(r.text)}</textarea></div>
-      <div class="fe-row"><label>Catch words</label><input data-f="check.pattern" value="${feText(r.check && r.check.pattern)}" placeholder="regex — blank for semantic-only"></div>
-      <div class="fe-row"><label>Refusal</label><input data-f="check.reason" value="${feText(r.check && r.check.reason)}"></div>
-      <button class="fe-del" data-del-item>Remove</button></div>`).join('')
+      <button type="button" class="fe-item-head" data-item-toggle>
+        <span class="chev">&#9656;</span>
+        <b class="fe-law">${esc(r.text || 'a new law')}</b>
+      </button>
+      <div class="fe-item-body">
+        <div class="fe-row"><label>The law</label><textarea data-f="text" rows="2">${feText(r.text)}</textarea></div>
+        <div class="fe-row"><label>Catch words</label><input data-f="check.pattern" value="${feText(r.check && r.check.pattern)}" placeholder="regex — blank for semantic-only"></div>
+        <div class="fe-row"><label>Refusal</label><input data-f="check.reason" value="${feText(r.check && r.check.reason)}"></div>
+        <button class="fe-del" data-del-item>Remove this law</button>
+      </div></div>`).join('')
     + '<button class="fe-add" data-add="rules">+ Add a law</button>';
   const fate = w.fated_events.map((f, i) => `
     <div class="fe-item" data-kind="fated_events" data-i="${i}">
-      <div class="fe-row"><label>Turn</label><input data-f="turn" type="number" min="1" value="${feText(f.turn)}"></div>
-      <div class="fe-row"><label>Title</label><input data-f="title" value="${feText(f.title)}"></div>
-      <div class="fe-row"><label>What happens</label><textarea data-f="desc" rows="2">${feText(f.desc)}</textarea></div>
-      <div class="fe-row"><label>Where</label>${sel('location', f.location)}</div>
-      <div class="fe-row"><label>Kills</label><select data-f="kills"><option value="">nobody</option>
-        ${w.npcs.map((n) => `<option value="${esc(n.id)}"${n.id === f.kills ? ' selected' : ''}>${esc(n.name)}</option>`).join('')}</select></div>
-      <button class="fe-del" data-del-item>Remove</button></div>`).join('')
+      <button type="button" class="fe-item-head" data-item-toggle>
+        <span class="chev">&#9656;</span>
+        <span class="fe-who"><b>${esc(f.title || 'something happens')}</b>
+          <span class="fe-sub">${esc(w.locations.find((l) => l.id === f.location)?.name || '')}</span></span>
+      </button>
+      <div class="fe-item-body">
+        <div class="fe-row"><label>Turn</label><input data-f="turn" type="number" min="1" value="${feText(f.turn)}"></div>
+        <div class="fe-row"><label>Title</label><input data-f="title" value="${feText(f.title)}"></div>
+        <div class="fe-row"><label>What happens</label><textarea data-f="desc" rows="2">${feText(f.desc)}</textarea></div>
+        <div class="fe-row"><label>Where</label>${sel('location', f.location)}</div>
+        <div class="fe-row"><label>Kills</label><select data-f="kills"><option value="">nobody</option>
+          ${w.npcs.map((n) => `<option value="${esc(n.id)}"${n.id === f.kills ? ' selected' : ''}>${esc(n.name)}</option>`).join('')}</select></div>
+        <button class="fe-del" data-del-item>Remove this event</button>
+      </div></div>`).join('')
     + '<button class="fe-add" data-add="fated_events">+ Add a fated event</button>';
 
-  showModal(`${head('World Forge', `Editing &ldquo;${esc(w.name)}&rdquo;`)}
-    <div class="modal-body">
+  // "Save & play" is what a player who just built a world actually wants, so
+  // it is the primary button and it is pinned. It used to be the ghost button
+  // at the bottom of four thousand pixels of form.
+  showModal(`${head(esc(w.name || 'Your world'),
+    'Built. Everything here is yours to change before you play.')}
+    <div class="modal-body has-dock">
       ${notice ? `<div class="notice"><svg viewBox="0 0 16 16" class="ico"><path d="M8 5.5v3.6M8 11.4v.1"/><circle cx="8" cy="8" r="6.4"/></svg><div>${esc(notice)}</div></div>` : ''}
+      <div class="fe-glance">
+        <span><b>${w.locations.length}</b> places</span>
+        <span><b>${w.npcs.length}</b> people</span>
+        <span><b>${w.rules.length}</b> laws</span>
+        <span><b>${w.fated_events.length}</b> things already decided</span>
+      </div>
+      <!-- The cast opens first. It is the part of a built world a player
+           actually wants to look at, and it used to sit below five hundred
+           pixels of premise textarea that nobody edits. -->
       <div class="forge-editor">
-        <div class="fe-section open"><div class="fe-body" style="display:block;padding-top:14px">
-          <div class="fe-row"><label>Name</label><input id="wName" value="${feText(w.name)}"></div>
+        ${section('npcs', 'The cast', `${w.npcs.length}`, people, true)}
+        ${section('locations', 'Places', `${w.locations.length}`, places)}
+        ${section('rules', 'Laws the World Master enforces', `${w.rules.length} &middot; 9 min`, laws)}
+        ${section('fated_events', 'Already decided', `${w.fated_events.length} &middot; 7 required`, fate)}
+        ${section('world', 'The world itself', 'name, premise, opening', `
+          <div class="fe-row" style="margin-top:12px"><label>Name</label><input id="wName" value="${feText(w.name)}"></div>
           <div class="fe-row" style="margin-top:8px"><label>Tagline</label><input id="wTagline" value="${feText(w.tagline)}"></div>
           <div class="fe-row" style="margin-top:8px"><label>Premise</label><textarea id="wPremise" rows="4">${feText(w.premise)}</textarea></div>
           <div class="fe-row" style="margin-top:8px"><label>Opening</label><textarea id="wOpening" rows="4">${feText(w.opening)}</textarea></div>
           <div class="fe-row" style="margin-top:8px"><label>Starts at</label>
-            <select id="wStart">${locOpts.map((l) => `<option value="${esc(l)}"${l === w.start_location ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
-        </div></div>
-        ${section('locations', 'Places', `${w.locations.length}`, places)}
-        ${section('npcs', 'People', `${w.npcs.length}`, people)}
-        ${section('rules', 'Laws the World Master enforces', `${w.rules.length} &middot; 9 min`, laws)}
-        ${section('fated_events', 'Fate', `${w.fated_events.length} &middot; 7 required`, fate)}
+            <select id="wStart">${locOpts.map((l) => `<option value="${esc(l)}"${l === w.start_location ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          </div>`)}
       </div>
-      <div class="forge-actions"><button class="btn btn-primary" id="forgeSave">Save world</button>
-        <button class="btn btn-ghost" id="forgePlay">Save &amp; play</button></div></div>`);
+    </div>
+    <div class="modal-dock">
+      <button class="btn btn-ghost" id="forgeSave">Save for later</button>
+      <button class="btn btn-primary" id="forgePlay">Save &amp; play</button>
+    </div>`);
+}
+
+/* Swap one cast member's face in place. Re-rendering the whole editor would
+   throw away every other edit in progress, which is what makes this worth a
+   function rather than a re-render. */
+function setItemPortrait(item, url) {
+  if (!item) return;
+  const hidden = item.querySelector('[data-f="portrait"]');
+  if (hidden) hidden.value = url;
+  const slot = item.querySelector('.fe-portrait');
+  const name = item.querySelector('[data-f="name"]')?.value || '';
+  if (slot) slot.outerHTML = faceHTML(url, name, 'fe-portrait');
+  const pick = item.querySelector('[data-portrait-pick]');
+  if (pick) pick.textContent = url ? 'Change art' : 'Add their art';
+  const clear = item.querySelector('[data-portrait-clear]');
+  if (url && !clear && pick) {
+    pick.insertAdjacentHTML('afterend',
+      `<button type="button" class="tiny-btn" data-portrait-clear="1">Remove</button>`);
+  } else if (!url && clear) {
+    clear.remove();
+  }
 }
 
 function collectEditor() {
@@ -2104,47 +2487,67 @@ function showMenu() {
     list: '<path d="M3 3v10M3 4.5h7M3 8h9M3 11.5h6"/>',
     gear: '<circle cx="8" cy="8" r="2.6"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>',
     trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9"/>',
+    // "Who you are here" asked for `eye` and this map did not have one, so
+    // that row has been rendering an empty <svg> since it was added.
+    eye: '<circle cx="8" cy="8" r="2.2"/><path d="M1.4 8S4 3.4 8 3.4 14.6 8 14.6 8 12 12.6 8 12.6 1.4 8 1.4 8z"/>',
   };
   const item = (k, ico, t, s, danger) => `<button class="menu-item ${danger ? 'danger' : ''}" data-menu="${k}">
     <svg viewBox="0 0 16 16" class="ico">${I[ico]}</svg>
     <span class="mi-main"><span class="mi-t">${t}</span><span class="mi-s">${s}</span></span></button>`;
   const sessionsOnly = (k, ico, t, sub) => (S.sessionId ? item(k, ico, t, sub) : '');
+  // Thirty-one entries in one flat column is a list nobody reads: a player
+  // looking for their own character card had to scan past leaderboards, the
+  // export button and a boss designer to find it. Grouped by the question
+  // being asked - who am I, what has happened, what kind of world is this,
+  // and the housekeeping - it becomes something you can aim at.
+  const group = (title, body) => `<div class="menu-group">
+    <div class="menu-group-head">${title}</div>${body}</div>`;
   showModal(`${head('Story menu', `${esc(S.state.title)} &middot; turn ${S.state.turn}`)}
     <div class="modal-body"><div class="menu-list">
-      ${item('timeline', 'list', 'Memory &amp; timeline', 'The append-only structured record')}
-      ${item('safety', 'shield', 'Session Zero', 'Lines, veils, and the X-card')}
-      ${item('card', 'book', 'Your character card', 'Name, voice, drive, flaw, anomaly')}
-      ${item('streak', 'flame', 'Campaign streak', 'What you have built, with nothing nagging you')}
-      ${item('cost', 'chart', 'Running cost', 'What this story has actually cost')}
-      ${item('ethics', 'shield', 'Your data is yours', 'No training, no guilt hooks, export any time')}
-      ${item('modes', 'scale', 'World modes', 'Canon, tone, stakes, pacing, difficulty')}
-      ${item('spectrum', 'scale', 'Canon spectrum', 'Strict lore, loose physics — and how hard it lands')}
-      ${item('chronicle', 'list', 'The Chronicle', 'What the world has become, as far as you know it')}
-      ${item('power', 'shield', 'Your power', 'Skills, who answers you, who owns your name')}
-      ${item('found', 'forge', 'Found an organisation', 'Command through people instead of alone')}
-      ${item('standing', 'flame', 'Your standing', 'Scores, season rank, trophies, and who remembers you')}
-      ${item('board', 'chart', 'Leaderboards', 'Global, and today&rsquo;s shared world')}
-      ${item('case', 'list', 'The casefile', 'What you can actually show')}
-      ${item('arc', 'list', 'Timeline &amp; premise', 'Where you begin, and any alternate universe')}
-      ${item('identity', 'book', 'Who they are', 'The card that keeps a character sounding like themselves')}
-      ${item('boss', 'flame', 'Design a boss', 'A fight that has to be worked out, not out-damaged')}
-      ${item('report', 'shield', 'Report this world', 'Worlds here are written by players')}
-      ${item('explain', 'book', 'What is StoryLiver?', 'What this actually is, and what it does not do')}
-      ${item('profile', 'gear', S.account ? 'Your profile' : 'Sign in', S.account
-          ? 'Mana, runs, and the towns that remember you'
-          : 'Keep your Mana and reputation across devices')}
-      ${item('run', 'flame', `Run ${S.state.run_no || 1}`, 'Where this run stands, and what carries forward')}
-      ${item('skip', 'down', 'Skip ahead', 'Training or travel, with real consequences')}
-      ${sessionsOnly('party', 'shield', 'The table', 'Invite, remove, and what the world forgets')}
-      ${item('settings', 'gear', 'How it looks', 'Theme, density, power mode')}
-      ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
-      ${item('forge', 'forge', 'World Forge', 'Build a world, or name a setting')}
-      ${item('brief', 'eye', 'Who you are', 'Your role, where you are, and why')}
-      ${item('rules', 'scale', 'The rules of this world', 'What the World Master enforces')}
-      ${item('canonlog', 'shield', 'Where the world pushed back', 'Every time a rule stopped something')}
-      ${item('au', 'book', 'Change one thing', 'An alternate premise this world diverges on')}
-      ${item('switch', 'book', 'Your stories', 'Return to the threshold')}
-      ${item('delete', 'trash', 'Delete this story', 'Permanent. There is no undo.', true)}
+      ${group('You', `
+        ${item('card', 'book', 'Your character card', 'Name, face, voice, drive, flaw')}
+        ${item('identity', 'book', 'Who they are', 'The card that keeps a character sounding like themselves')}
+        ${item('brief', 'eye', 'Who you are here', 'Your role, where you are, and why')}
+        ${item('power', 'shield', 'Your power', 'Skills, who answers you, who owns your name')}
+        ${item('standing', 'flame', 'Your standing', 'Scores, season rank, trophies, and who remembers you')}
+        ${item('profile', 'gear', S.account ? 'Your profile' : 'Sign in', S.account
+    ? 'Mana, runs, and the towns that remember you'
+    : 'Keep your Mana and reputation across devices')}`)}
+
+      ${group('What has happened', `
+        ${item('chronicle', 'list', 'The Chronicle', 'What the world has become, as far as you know it')}
+        ${item('timeline', 'list', 'Memory &amp; timeline', 'The append-only structured record')}
+        ${item('case', 'list', 'The casefile', 'What you can actually show')}
+        ${item('canonlog', 'shield', 'Where the world pushed back', 'Every time a rule stopped something')}
+        ${item('run', 'flame', `Run ${S.state.run_no || 1}`, 'Where this run stands, and what carries forward')}
+        ${item('streak', 'flame', 'Campaign streak', 'What you have built, with nothing nagging you')}`)}
+
+      ${group('This world', `
+        ${item('rules', 'scale', 'The rules of this world', 'What the World Master enforces')}
+        ${item('modes', 'scale', 'World modes', 'Canon, tone, stakes, pacing, difficulty')}
+        ${item('spectrum', 'scale', 'Canon spectrum', 'Strict lore, loose physics — and how hard it lands')}
+        ${item('arc', 'list', 'Timeline &amp; premise', 'Where you begin, and any alternate universe')}
+        ${item('au', 'book', 'Change one thing', 'An alternate premise this world diverges on')}
+        ${item('forge', 'forge', 'World Forge', 'Build a world, or name a setting')}`)}
+
+      ${group('Play', `
+        ${item('skip', 'down', 'Skip ahead', 'Training or travel, with real consequences')}
+        ${item('found', 'forge', 'Found an organisation', 'Command through people instead of alone')}
+        ${item('boss', 'flame', 'Design a boss', 'A fight that has to be worked out, not out-damaged')}
+        ${item('board', 'chart', 'Leaderboards', 'Global, and today&rsquo;s shared world')}
+        ${sessionsOnly('party', 'shield', 'The table', 'Invite, remove, and what the world forgets')}
+        ${item('safety', 'shield', 'Lines and veils', 'What this story will not do, and the X-card')}`)}
+
+      ${group('Practical', `
+        ${item('settings', 'gear', 'How it looks', 'Theme, density, power mode')}
+        ${item('cost', 'chart', 'Running cost', 'What this story has actually cost')}
+        ${item('read', 'book', 'Read it back', 'Your story as one page — keep it, print it, send it')}
+        ${item('export', 'down', 'Export everything', 'Full JSON — every layer, every memory')}
+        ${item('ethics', 'shield', 'Your data is yours', 'No training, no guilt hooks, export any time')}
+        ${item('explain', 'book', 'What is StoryLiver?', 'What this actually is, and what it does not do')}
+        ${item('report', 'shield', 'Report this world', 'Worlds here are written by players')}
+        ${item('switch', 'book', 'Your stories', 'Return to the threshold')}
+        ${item('delete', 'trash', 'Delete this story', 'Permanent. There is no undo.', true)}`)}
     </div></div>`);
 }
 
@@ -2342,6 +2745,8 @@ window.__appBridge = {
   closeOverlays: () => closeOverlays(),
   showModal: (html) => showModal(html),
   head: (t, s) => head(t, s),
+  // The picker and the upload live here because the shell owns the transport.
+  askForArt: () => askForArt(),
   onWorldBuilt: async (payload) => {
     const world = payload.world || payload;
     S.forgeWorld = world;
@@ -2379,17 +2784,53 @@ function startWhisper(kind, id, name) {
 function stopWhisper() {
   S.whisperTo = null;
   $('#whisperBar').hidden = true;
-  $('#actionInput').placeholder = 'What do you do? Write it plainly — or press / for commands.';
+  $('#actionInput').placeholder = 'What do you do?';
+}
+
+/* Read the last TURN, not the last paragraph.
+
+   It used to read only the newest narration block, so a turn whose whole
+   point was a line somebody said - the plate, the thing the scene turns on -
+   was read aloud with the line missing. A passage is narration plus whoever
+   spoke in it, in the order it happened, with the speaker named the way a
+   person reading to you would name them. */
+function lastPassage() {
+  const feed = $('#feed');
+  if (!feed) return '';
+  const kids = [...feed.children];
+  // Everything since the most recent turn rule is one turn.
+  let start = 0;
+  for (let i = kids.length - 1; i >= 0; i -= 1) {
+    if (kids[i].classList.contains('turn-rule')) { start = i + 1; break; }
+  }
+  const bits = [];
+  for (const el of kids.slice(start)) {
+    if (el.classList.contains('entry-you')) continue;   // your own line, not the world's
+    const said = el.querySelector('.plate-said');
+    if (said) {
+      const who = el.querySelector('.plate-name')?.textContent.trim();
+      bits.push(`${who ? `${who} says. ` : ''}${said.textContent.trim()}`);
+      continue;
+    }
+    const prose = el.querySelector('.prose, .fate-body, .whisper-said, .reveal-line');
+    if (prose) bits.push(prose.textContent.trim());
+  }
+  // Nothing in this turn yet (the feed opens mid-passage): fall back to the
+  // newest readable block anywhere.
+  if (!bits.length) {
+    const nodes = $$('.entry-narration .prose, .entry-fate .fate-body, .entry-opening .prose');
+    if (nodes.length) bits.push(nodes[nodes.length - 1].textContent.trim());
+  }
+  return bits.join('\n\n');
 }
 
 function speakLast() {
-  const nodes = $$('.entry-narration .prose, .entry-fate .fate-body, .entry-opening .prose');
-  const last = nodes[nodes.length - 1];
-  if (!last) return toast('Nothing to read yet.');
+  const passage = lastPassage();
+  if (!passage) return toast('Nothing to read yet.');
   if (!('speechSynthesis' in window)) return toast('This browser cannot read aloud.', 'warn');
   const btn = $('#voiceBtn');
   if (speechSynthesis.speaking) { speechSynthesis.cancel(); btn.classList.remove('on'); return; }
-  const u = new SpeechSynthesisUtterance(last.textContent.trim());
+  const u = new SpeechSynthesisUtterance(passage);
   u.rate = 0.94; u.pitch = 0.95;
   u.onend = () => btn.classList.remove('on');
   btn.classList.add('on');
@@ -2403,7 +2844,7 @@ function renderQuickRow() {
   for (const e of (st.exits || []).slice(0, 3)) {
     if (!e.blocked) quick.push([`Go to ${e.name}`, `I make my way to ${e.name}.`]);
   }
-  for (const n of here) quick.push([`Talk to ${n.name.split(' ')[0]}`, `I ask ${n.name} what they make of all this.`]);
+  for (const n of here) quick.push([`Talk to ${shortName(n.name)}`, `I ask ${n.name} what they make of all this.`]);
   quick.push(['Look around', 'I stop and take stock of the room.']);
   $('#quickRow').innerHTML = quick.slice(0, 5).map(([label, action]) =>
     `<button type="button" class="quick" data-quick="${esc(action)}">${esc(label)}</button>`).join('')
@@ -2597,11 +3038,34 @@ function wire() {
 
   $('#mobileTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-pane]'); if (!b) return;
-    $$('#mobileTabs button').forEach((x) => x.classList.toggle('on', x === b));
-    const app = $('#app');
-    app.classList.remove('pane-left', 'pane-right');
-    if (b.dataset.pane !== 'read') app.classList.add(`pane-${b.dataset.pane}`);
+    openRail(b.dataset.pane === 'read' ? null : b.dataset.pane);
   });
+
+  // The instruments: four letters at the end of the composer, and the same
+  // four keys. Nothing here stays open — you look, and the prose comes back.
+  $('#instruments').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-instrument]'); if (!b) return;
+    summon(b.dataset.instrument);
+  });
+  $('#railScrim').addEventListener('click', () => openRail(null));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if ($('#app').hidden) return;
+    const t = e.target;
+    // Never steal a letter from someone who is typing a turn.
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (e.key === 'Escape') return openRail(null);
+    const key = { m: 'atlas', w: 'right', s: 'left', h: 'chronicle' }[e.key.toLowerCase()];
+    if (key) { e.preventDefault(); summon(key); }
+  });
+}
+
+function summon(what) {
+  if (what === 'left' || what === 'right') return openRail(what);
+  if (what === 'more') { $('#app').dataset.solo = '0'; return; }
+  openRail(null);
+  setView(what);
 }
 
 async function onGlobalClick(e) {
@@ -2726,6 +3190,30 @@ async function onGlobalClick(e) {
     await roster(true); await showProfile();
     return toast('Out of your library. Any story they are already in keeps them.');
   }
+  if (t.closest('[data-card-art]')) {
+    const url = await askForArt();
+    if (!url) return;
+    S.identityAvatar = url;
+    const slot = $('.card-portrait');
+    if (slot) slot.outerHTML = faceHTML(url, $('#cdName')?.value || '', 'card-portrait');
+    const btn = t.closest('[data-card-art]');
+    btn.textContent = 'Change';
+    if (!$('[data-card-art-clear]')) {
+      btn.insertAdjacentHTML('afterend',
+        '<button class="btn btn-ghost sm" data-card-art-clear>Remove</button>');
+    }
+    return toast('Your art, uploaded. Nothing here was generated.');
+  }
+  if (t.closest('[data-card-art-clear]')) {
+    // null, not '' — the save reads null as "clear it" and '' as "unchanged".
+    S.identityAvatar = null;
+    const slot = $('.card-portrait');
+    if (slot) slot.outerHTML = faceHTML('', $('#cdName')?.value || '', 'card-portrait');
+    const pickBtn = $('[data-card-art]');
+    if (pickBtn) pickBtn.textContent = 'Add a picture';
+    t.closest('[data-card-art-clear]').remove();
+    return;
+  }
   if (t.closest('[data-card-roll]')) {
     const r = await api(`/playthroughs/${S.ptId}/card-roll?player=${encodeURIComponent(S.playerId)}`
       + `&name=${encodeURIComponent($('#cdName').value)}`);
@@ -2744,6 +3232,8 @@ async function onGlobalClick(e) {
                  flaw: $('#cdFlaw').value.trim() },
       autofill: !!t.closest('[data-card-autofill]'),
       card_id: cardSave?.dataset.cardSave || null,
+      // "-" is the explicit clear; blank means this screen is not changing it.
+      avatar_url: S.identityAvatar === null ? '-' : (S.identityAvatar || ''),
     };
     try {
       const card = await api(`/playthroughs/${S.ptId}/cards`, { method: 'POST', body });
@@ -2776,6 +3266,8 @@ async function onGlobalClick(e) {
   if (modeOpt) { $$('.mode-opt').forEach((m) => m.classList.toggle('on', m === modeOpt)); return; }
   const feToggle = t.closest('[data-fe-toggle]');
   if (feToggle) { feToggle.closest('.fe-section').classList.toggle('open'); return; }
+  const itemToggle = t.closest('[data-item-toggle]');
+  if (itemToggle) { itemToggle.closest('.fe-item').classList.toggle('open'); return; }
   const addItem = t.closest('[data-add]');
   if (addItem) {
     const kind = addItem.dataset.add, w = collectEditor();
@@ -2860,6 +3352,12 @@ async function onGlobalClick(e) {
     explain: () => showExplainer(true), profile: showProfile,
   };
   if (routes[k]) return routes[k]();
+  if (k === 'read') {
+    // The prose, not the state. Opens as a page rather than downloading,
+    // because the first thing anyone wants to do with it is read it.
+    window.open(`/api/playthroughs/${S.ptId}/story.html?user_id=${encodeURIComponent(S.userId)}`, '_blank');
+    closeOverlays(); return toast('Your story, in one page. Print it or save it — it is self-contained.');
+  }
   if (k === 'export') {
     window.open(`/api/playthroughs/${S.ptId}/export?user_id=${encodeURIComponent(S.userId)}`, '_blank');
     closeOverlays(); return toast('Exported. Your world state is yours.');
@@ -3729,13 +4227,16 @@ function renderPower() {
   o.doctrine_name ? ` · ${esc(o.doctrine_name)}` : ''}</div></div>
           <button class="btn btn-ghost sm" data-infiltrate="${esc(o.id)}">Place someone inside</button>
         </div>`).join('')
-    : '<p class="fineprint">Nobody else has built anything yet. When a seat is contested and lost, the losers tend to.</p>'}
+    : `<p class="fineprint">Nobody else has built anything yet. When a seat is
+        contested and lost, whoever lost it tends to go and found something of
+        their own — and then you have a rival with a name and a memory.</p>`}
     </section>
     <section>
       <div class="power-head"><h3>Who owns your name</h3><span class="ph-n">${p.standing.length} watching</span></div>
       ${p.standing.length ? p.standing.map((f) => `<div class="stand-row">
           <b>${esc(f.name)}</b>
-          <span>${f.standing > 0 ? '+' : ''}${f.standing}${f.member ? ' · yours' : ''}</span>
+          <span>${esc(f.tier_blurb || '')}${f.member ? ' · yours' : ''}${
+  S.prefs.power ? ` · ${f.standing > 0 ? '+' : ''}${f.standing}` : ''}</span>
           <span class="stand-tier" data-tier="${esc(f.tier)}" title="${esc(f.tier_blurb)}">${esc(f.tier)}</span>
         </div>`).join('')
     : '<p class="fineprint">No institution has an opinion about you yet. That is worth something.</p>'}
@@ -4773,13 +5274,20 @@ function showBriefing() {
   const world = st.world || {};
   showModal(`${head('Before you begin', '')}
     <div class="modal-body">
-      <div class="brief-who">
-        <div class="brief-label">You are</div>
-        <div class="brief-line">${esc(st.protagonist || 'a traveller, unnamed here')}</div>
-      </div>
-      <div class="brief-who">
-        <div class="brief-label">Right now, you are at</div>
-        <div class="brief-line">${esc(st.location_name || 'the threshold')}</div>
+      <!-- The one screen in the product whose entire job is "who are you",
+           and it had no face on it. -->
+      <div class="brief-head">
+        ${faceHTML(S.identityAvatar, st.protagonist || '', 'brief-face')}
+        <div class="brief-head-side">
+          <div class="brief-who">
+            <div class="brief-label">You are</div>
+            <div class="brief-line">${esc(st.protagonist || 'a traveller, unnamed here')}</div>
+          </div>
+          <div class="brief-who">
+            <div class="brief-label">Right now, you are at</div>
+            <div class="brief-line">${esc(st.location_name || 'the threshold')}</div>
+          </div>
+        </div>
       </div>
       ${world.tagline ? `<div class="brief-tag">${esc(world.tagline)}</div>` : ''}
       ${world.premise ? `<p class="brief-premise">${esc(world.premise)}</p>` : ''}
@@ -4811,10 +5319,13 @@ function showChapterEnd() {
     <div class="modal-body">
       <p class="ch-note">The people here remember what you did. They will still
         be here, and they will still remember, whenever you come back.</p>
-      <div class="ch-next">
+      ${c.next ? `<div class="ch-next">
         <span class="eyebrow">Next in the story</span>
-        <b>${esc(c.next || '')}</b>
-      </div>
+        <b>${esc(c.next)}</b>
+      </div>` : `<div class="sealed-slab">
+        <div class="feed-label">sealed &middot; not yet reached</div>
+        <div class="sealed-bars"><i style="width:86%"></i><i style="width:71%"></i><i style="width:44%"></i></div>
+      </div>`}
       <div class="ch-actions">
         <button class="btn btn-ghost" data-close>Stay a while</button>
         <button class="btn btn-primary" id="chapterGo">
@@ -4830,6 +5341,13 @@ async function goNextChapter() {
   if (btn) btn.disabled = true;
   try {
     const r = await api(`/playthroughs/${S.ptId}/chapter`, { method: 'POST' });
+    // The engine refuses to travel on from a chapter that has not finished,
+    // and says why. Without this branch that refusal was rendered as
+    // "undefined — undefined places, undefined people."
+    if (!r.moved) {
+      if (btn) btn.disabled = false;
+      return toast(r.note || 'There is still something here to finish.', 'warn');
+    }
     closeOverlays();
     if (r.aftermath) {
       toast('The source has run out. What happens now is yours.');
@@ -4921,12 +5439,14 @@ async function showIdentity(cardId) {
   const id = S.identityDraft || {};
   showModal(`${head('Who they are', 'Re-sent to the model on every single call — never summarised, so it cannot drift.')}
     <div class="modal-body">
-      <label class="field"><span>Their art (you upload it — nothing here is generated)</span>
+      <!-- The same face component as everywhere else. This slot used to be a
+           solid amber disc with a "+" in it, which is the only portrait in the
+           app that did not look like the others. -->
+      <label class="field"><span>Their art <small class="hint">you upload it — nothing here is generated</small></span>
         <div class="row">
-          <div class="seat-avatar lg" id="idn-avatar">${S.identityAvatar
-            ? `<img src="${esc(S.identityAvatar)}" alt="" />` : '<span>+</span>'}</div>
+          ${faceHTML(S.identityAvatar, $('#cdName')?.value || '', 'card-portrait', 'idn-avatar')}
           <input type="file" id="idn-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
-          <button class="btn btn-ghost" id="idn-pick">Choose an image</button>
+          <button class="btn btn-ghost" id="idn-pick">${S.identityAvatar ? 'Change' : 'Choose an image'}</button>
         </div></label>
 
       ${IDENTITY_FIELDS.map(([k, label, hint, kind]) => `
@@ -5007,6 +5527,35 @@ async function saveIdentity(cardId) {
     closeOverlays();
     toast('Saved. They will sound like themselves.');
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/* Ask for a picture, once, from anywhere.
+
+   Every portrait slot in the app used to need its own <input type="file"> in
+   the markup plus its own branch in the global change handler, which is why
+   only one of them — the identity panel, three menus deep — ever got one. A
+   detached input means any button that wants art is two lines:
+
+       const url = await askForArt(); if (url) …
+
+   Nothing here generates an image. The picker is the only way a face enters
+   this product, deliberately. */
+function askForArt() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      resolve(file ? await uploadImage(file) : null);
+    }, { once: true });
+    // A cancelled picker fires no event in most browsers; resolve on the
+    // window regaining focus so an awaited call can never hang forever.
+    window.addEventListener('focus', () => {
+      setTimeout(() => resolve(null), 700);
+    }, { once: true });
+    input.click();
+  });
 }
 
 async function uploadImage(file) {
@@ -5120,6 +5669,37 @@ document.addEventListener('click', async (ev) => {
     return;
   }
   if (pick('#idn-pick')) return document.getElementById('idn-file')?.click();
+
+  // The cast list's art. Writes through the hidden [data-f="portrait"] field
+  // so collectEditor() picks it up with everything else rather than needing
+  // its own save path.
+  const pPick = pick('[data-portrait-pick]');
+  if (pPick) {
+    const item = pPick.closest('.fe-item');
+    const url = await askForArt();
+    if (url && item) { setItemPortrait(item, url); toast('Their art, uploaded. Nothing was generated.'); }
+    return;
+  }
+  const pClear = pick('[data-portrait-clear]');
+  if (pClear) { setItemPortrait(pClear.closest('.fe-item'), ''); return; }
+
+  // A face for somebody you have just met. Writes to THIS story's pinned copy
+  // of the world, so it never rewrites the world for anyone else.
+  const npcArt = pick('[data-npc-art]');
+  if (npcArt) {
+    const id = npcArt.dataset.npcArt;
+    const url = await askForArt();
+    if (!url) return;
+    try {
+      await api(`/playthroughs/${S.ptId}/npc/${id}/portrait`,
+                { method: 'POST', body: { portrait: url } });
+    } catch (e) { return toast(e.message, 'err'); }
+    const who = S.state?.npcs?.find((x) => x.id === id);
+    if (who) who.portrait = url;
+    renderSouls();
+    showSoul(id);
+    return toast('Their face, from your own art. Only in this story.');
+  }
   if (pick('#idn-add-line')) {
     const wrap = document.getElementById('idn-lines');
     const i = wrap.children.length;
@@ -5145,7 +5725,7 @@ document.addEventListener('change', async (ev) => {
     if (url) {
       S.identityAvatar = url;
       const slot = document.getElementById('idn-avatar');
-      if (slot) slot.innerHTML = `<img src="${url}" alt="" />`;
+      if (slot) slot.outerHTML = faceHTML(url, '', 'card-portrait', 'idn-avatar');
       toast('Your art, uploaded. Nothing here was generated.');
     }
   }
@@ -5413,21 +5993,30 @@ function renderAwareness() {
   // know anything?" at a glance. Two rows of identical unlabelled pips answered
   // neither - the bars are labelled, fear only appears when there IS fear, and
   // the disposition sits on the name line where the eye already is.
-  const faces = (a.faces || []).filter((f) => f.alive).map((f) => `
-    <div class="face"${tip('faces')}>
-      <div class="face-top">
-        <span class="face-name">${esc(f.name)}</span>
-        <span class="face-disp">${esc(f.disposition)}</span>
+  // State shows as behaviour. Two rows of unlabelled trust/fear pips per
+  // person told a player what a NUMBER did; the mood chip is the same
+  // derivation said as a word, and "knows two things about you" is the fact
+  // that actually changes how you play the next turn. The raw pips still
+  // exist for anyone who wants them — behind power mode, which is what that
+  // mode is for.
+  const live = S.state?.npcs || [];
+  const faces = (a.faces || []).filter((f) => f.alive).map((f) => {
+    const n = live.find((x) => x.id === f.id || x.name === f.name) || {};
+    const mood = (n.disposition || f.disposition || 'stranger').trim();
+    return `<div class="aw-face"${tip('faces')}>
+      ${faceHTML(n.portrait, f.name, 'aw-portrait')}
+      <div class="aw-face-body">
+        <div class="aw-face-top">
+          <span class="face-name">${esc(f.name)}</span>
+          <span class="mood-chip mood-${esc(mood.split(' ')[0])}">${esc(mood)}</span>
+        </div>
+        ${f.knows_about_you ? `<div class="face-knows">knows ${f.knows_about_you}
+          thing${f.knows_about_you === 1 ? '' : 's'} about you</div>` : ''}
+        ${S.prefs.power ? `<div class="face-bar"><em>trust</em>${pips(f.trust_pips, 'trust')}</div>
+          ${f.fear_pips > 0 ? `<div class="face-bar"><em>fear</em>${pips(f.fear_pips, 'fear')}</div>` : ''}` : ''}
       </div>
-      <div class="face-bar">
-        <em>trust</em>${pips(f.trust_pips, 'trust')}
-      </div>
-      ${f.fear_pips > 0 ? `<div class="face-bar">
-        <em>fear</em>${pips(f.fear_pips, 'fear')}
-      </div>` : ''}
-      ${f.knows_about_you ? `<div class="face-knows">knows ${f.knows_about_you}
-        thing${f.knows_about_you === 1 ? '' : 's'} about you</div>` : ''}
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   host.innerHTML = `
     <div class="aw-head">

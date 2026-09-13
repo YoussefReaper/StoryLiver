@@ -203,6 +203,21 @@ def questions(dossier: dict) -> dict:
             "placeholder": "Yuki, a courier who reads more than she admits",
         },
         {
+            # A face, asked for where a player is already describing themselves
+            # rather than three menus deep in a modal nobody opens. The client
+            # renders this as an upload button; the answer is a /media path
+            # from the player's OWN file. Nothing here generates a likeness -
+            # see backend/uploads.py for why that is a design constraint and
+            # not a gap.
+            "id": "portrait",
+            "q": "What do you look like?",
+            "why": "Optional, and it is your own picture — nothing here draws a "
+                   "face. Add one and it stands next to your name everywhere "
+                   "you appear. Skip it and you get a monogram, which is a "
+                   "perfectly good answer.",
+            "kind": "art",
+        },
+        {
             "id": "origin",
             "q": "Where did you come from?",
             "why": "Where somebody is from decides who trusts them on sight. It is "

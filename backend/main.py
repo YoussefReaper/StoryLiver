@@ -20,8 +20,8 @@ from . import (aftermath, arcs, atlas, auth, authority, awareness, awayworld, be
                death, engine, fastforward, identity, llm, mana, memory, modes,
                narrgraph,
                party, payments, persona, precommit, relationships, rt, runs, sessions,
-               narrator, sharecard, streaks, trust, voice, world_master, worldforge,
-               worldkit, worldstate)
+               narrator, sharecard, streaks, transcript, trust, voice, world_master,
+               worldforge, worldkit, worldstate)
 from . import worlds as world_registry
 
 FRONTEND = config.ROOT / "frontend"
@@ -208,6 +208,9 @@ class CardDraft(BaseModel):
     anomaly: str = ""
     autofill: bool = False
     card_id: str | None = None
+    # A /media path from this player's own upload. Blank means "unchanged";
+    # a literal "-" clears it. See identity.save().
+    avatar_url: str = Field(default="", max_length=200)
 
 
 class CardVote(BaseModel):
@@ -360,6 +363,13 @@ def list_playthroughs(user_id: str = Query(min_length=4)):
             r["world_name"] = world.name
         except (KeyError, worldkit.WorldError):
             r["location_name"], r["day"], r["world_name"] = "?", 1, r["world_id"]
+        # Who you were in that story. The library is the screen a returning
+        # player meets first, and it listed six rows of world names with no
+        # indication of which character was standing in which one.
+        card = db.row("SELECT name, avatar_url FROM cards WHERE playthrough_id=?"
+                      " ORDER BY updated_at DESC LIMIT 1", (r["id"],))
+        r["you"] = (card["name"] if card else "") or ""
+        r["avatar_url"] = (card["avatar_url"] if card else "") or ""
         r.pop("world_json", None)
     return {"playthroughs": rows, "mana": mana.status(user_id),
             "streak": streaks.status(user_id),
@@ -482,6 +492,22 @@ def export(pt_id: str, user_id: str = Query(default="")):
     name = f"storyliver-{pt['world_id']}-{pt_id}.json"
     return Response(payload, media_type="application/json",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/playthroughs/{pt_id}/story.html")
+def story_page(pt_id: str, user_id: str = Query(default="")):
+    """The story, as something a person can read.
+
+    /export is the STATE - every layer, every memory, every scalar - and it is
+    the right thing to offer and nobody has ever read one. This is the prose,
+    in order, in one self-contained file the player can keep, print or send.
+    """
+    pt = _own(pt_id, user_id)
+    page = transcript.render(pt_id, user_id=user_id)
+    name = f"storyliver-{pt['world_id']}-{pt_id}.html"
+    return Response(page, media_type="text/html; charset=utf-8",
+                    headers={"Content-Disposition": f'inline; filename="{name}"',
+                             "Cache-Control": "no-store"})
 
 
 @app.post("/api/playthroughs/{pt_id}/purchase")
@@ -1153,7 +1179,8 @@ def save_card(pt_id: str, body: CardDraft, request: Request, user_id: str = Quer
     pt = _own(pt_id, user_id)
     world = engine.world_for(pt)
     draft = {"player_id": body.player_id, "name": body.name, "concept": body.concept,
-             "aspects": body.aspects, "anomaly": body.anomaly}
+             "aspects": body.aspects, "anomaly": body.anomaly,
+             "avatar_url": body.avatar_url}
     if body.autofill:
         with budget.turn(f"card:{pt_id}", limit=1):
             draft = identity.autofill(world, draft, user_id=body.user_id, pt_id=pt_id)
@@ -1188,6 +1215,39 @@ def vote_card(pt_id: str, card_id: str, body: CardVote, user_id: str = Query(def
             db.run("UPDATE playthroughs SET world_json=? WHERE id=?", (json.dumps(data), pt_id))
     _publish(pt["session_id"], {"type": "card", "event": "vote", "card": card})
     return card
+
+
+class NpcPortrait(BaseModel):
+    # A /media path this server issued, or "" to take the picture off again.
+    portrait: str = Field(default="", max_length=200)
+
+
+@app.post("/api/playthroughs/{pt_id}/npc/{npc_id}/portrait")
+def set_npc_portrait(pt_id: str, npc_id: str, body: NpcPortrait,
+                     user_id: str = Query(default="")):
+    """Give somebody you have just met a face.
+
+    The world editor can do this, but only before you play - and the moment a
+    player actually wants a character to have a picture is the moment they
+    meet them, twenty turns in, with the editor two menus away and pointed at
+    the WORLD rather than at this story. This writes to the playthrough's own
+    pinned copy, so it changes this run and nothing else: the same world
+    played again, or by somebody else, is untouched.
+    """
+    pt = _own(pt_id, user_id)
+    world = engine.world_for(pt)
+    data = json.loads(json.dumps(world.data))       # never mutate the cached world
+    hit = next((n for n in data.get("npcs", []) if n.get("id") == npc_id), None)
+    if not hit:
+        raise HTTPException(404, "no such character")
+    hit["portrait"] = body.portrait
+    # Back through normalise so the path is validated exactly as it is on a
+    # build - a remote URL is refused here for the same reason it is there.
+    clean = worldkit.normalise(data, strict=False)
+    db.run("UPDATE playthroughs SET world_json=? WHERE id=?",
+           (json.dumps(clean), pt_id))
+    saved = next((n for n in clean["npcs"] if n["id"] == npc_id), {})
+    return {"npc": npc_id, "portrait": saved.get("portrait", "")}
 
 
 @app.get("/api/playthroughs/{pt_id}/card-roll")

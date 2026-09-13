@@ -18,7 +18,8 @@ from typing import Any, Optional
 from . import arcs, llm, memory, persona
 
 MOVE_VERB = re.compile(
-    r"\b(go|walk|head|move|travel|leave for|return|climb|cross|make my way|set off|step|enter)\b")
+    r"\b(go|walk|head|move|travel|leave for|leave|return|climb|cross|make my way|"
+    r"set off|set out|step|enter|ride|journey|venture|depart|take the road)\b")
 
 ADDRESS_VERB = re.compile(
     r"\b(ask|tell|say to|speak to|talk to|show|give|hand|grab|hit|strike|kiss|follow|warn|threaten|"
@@ -69,17 +70,31 @@ def resolve_movement(world, action: str, state: dict) -> Optional[str]:
     text = action.lower()
     if not MOVE_VERB.search(text):
         return None
-    best: tuple[int, str] | None = None
-    for lid in world.connects(state["location"]):
-        loc = world.loc_by_id[lid]
+
+    def score(lid):
+        loc = world.loc_by_id.get(lid)
+        if not loc:
+            return 0
         words = [w for w in re.findall(r"[a-z]+", loc["name"].lower())
                  if w not in ("the", "of", "a", "an")]
         hit = [w for w in words if w in text]
         if hit or lid.replace("_", " ") in text:
-            score = max((len(w) for w in hit), default=1)
-            if best is None or score > best[0]:
-                best = (score, lid)
-    return best[1] if best else None
+            return max((len(w) for w in hit), default=1)
+        return 0
+
+    # Neighbours AND the frontier - the setting's geography you have not built
+    # yet, which a road leaves town to reach from anywhere in it - scored
+    # TOGETHER, so a specific destination ("the Butterfly Mansion") beats a
+    # generic word it happens to share with a nearer place ("the Reach Road").
+    # Scored separately, "I take the road out to the Butterfly Mansion" from
+    # the village green resolved to the Reach Road and the player never left.
+    frontier = [l["id"] for l in world.locations if l.get("frontier")]
+    best, best_score = None, 0
+    for lid in world.connects(state["location"]) + frontier:
+        s = score(lid)
+        if s > best_score:
+            best, best_score = lid, s
+    return best
 
 
 def _named_npcs(world, text: str) -> list[dict]:
@@ -200,9 +215,31 @@ def fate_block(world, turn: int) -> str:
 def _stub(action, state):
     r = llm.rng(state["turn"], action)
     focus = state["present"][:2]
+    # The player writes in the first person and the consequence is narrated in
+    # the second, so gluing them together produced "You I take Charlie's hand
+    # and look around" - handed to the narrator under "WHAT ACTUALLY RESULTS
+    # (narrate this, do not change it)". Only reachable when the World Master
+    # call fails, which is exactly when nobody is reading the prompt closely.
+    did = re.sub(r"^\s*(?:i|i'll|i'm|i've|i'd)\b[\s,]*", "", action.strip(),
+                 flags=re.I)
+    # Stripping the LEADING pronoun is not enough: a reported clause carries a
+    # second one, and "You say I am looking for work" is the same bug one
+    # clause further in. Everything after the first verb is about the same
+    # person, so it converts to the second person too.
+    for pattern, repl in (
+        (r"\bI am\b", "you are"), (r"\bI'm\b", "you are"),
+        (r"\bI have\b", "you have"), (r"\bI've\b", "you have"),
+        (r"\bI will\b", "you will"), (r"\bI'll\b", "you will"),
+        (r"\bI\b", "you"), (r"\bmyself\b", "yourself"),
+        (r"\bmy\b", "your"), (r"\bmine\b", "yours"), (r"\bme\b", "you"),
+    ):
+        did = re.sub(pattern, repl, did)
+    did = did.strip().rstrip(".")
+    if not did:
+        did = action.strip().rstrip(".")
     return {
         "valid": True, "reason": "", "rule_ref": None,
-        "consequence": f"You {action.strip().rstrip('.')[:110]}. It lands the way such things land here.",
+        "consequence": f"You {did[:110]}. It lands the way such things land here.",
         "importance": r.choice([2, 3, 3, 4]),
         "relationship_deltas": ([{"npc": focus[0], "affinity": r.choice([-4, 0, 3, 5]),
                                   "trust": r.choice([-3, 0, 2, 4]), "fear": 0, "obligation": 0,
@@ -232,8 +269,23 @@ def validate(pt, world, action, *, user_id, player=memory.SOLO, party=None):
             for p in party) + "\n"
 
     events = memory.retrieve_events(pt["id"], state["turn"], action, k=8)
+    # The World Master is the arbiter of what is VALID, so it has to know what
+    # world it is judging. It was told "WORLD: Greyfall" and nothing else - so a
+    # Demon Slayer world was adjudicated as a generic village, and an action as
+    # ordinary there as breathing technique or a Blood Demon Art had no reason
+    # to be allowed. The narrator has been told the source for a while; this is
+    # the other half of the seam.
+    source = (world.get("inspired_by") or world.get("source_prompt") or "").strip()
+    source_line = ""
+    if source and world.get("mode") == "canon":
+        source_line = (
+            f"THE SOURCE: this world continues {source}. You know this setting. Judge an "
+            f"action by what is actually possible THERE - its techniques, its powers and "
+            f"their limits, its factions, what its people would and would not do - not by "
+            f"what would be possible in a generic village. Something ordinary in {source} "
+            f"is ordinary here. Only RULES below can make it invalid.\n")
     prompt = f"""WORLD: {world.name} - {world.get('tagline', '')}
-RULES:
+{source_line}RULES:
 {chr(10).join('  ' + r['id'] + ': ' + r['text'] for r in world.rules)}
 
 FATE:

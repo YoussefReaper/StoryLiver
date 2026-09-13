@@ -301,11 +301,69 @@ def test_mongo_failure_never_blocks_boot():
     _with_enabled(run)
 
 
+def test_uploaded_art_survives_a_wiped_disk():
+    section("the art — portraits are files, and the free tier eats files")
+    # Every portrait in the product is a file the PLAYER uploaded; the
+    # database snapshot carries the PATH to it and not the bytes. On a host
+    # with no persistent disk that meant a restored story came back with
+    # every face pointing at a file that no longer existed.
+    def run(fake):
+        media = Path(config.DATA_DIR) / "media"
+        media.mkdir(parents=True, exist_ok=True)
+        name = ("a" * 32) + ".png"
+        (media / name).write_bytes(bytes([0x89]) + b"PNG-stand-in-for-a-portrait")
+        db.init()
+
+        out = durable.backup()
+        ok(out["backed_up"], "the database still goes up first")
+        ok(out["media"]["stored"], "and the uploaded art goes with it")
+
+        # A wiped container: no database file, no media directory.
+        shutil.rmtree(media, ignore_errors=True)
+        db.close_thread()               # release Windows' handle before moving
+        old_path = Path(config.DB_PATH)
+        moved = old_path.with_suffix(".moved")
+        old_path.rename(moved)
+        try:
+            back = durable.restore_if_needed()
+            ok(back["restored"], "a fresh container restores the database")
+            ok(back["media"]["restored"] == 1, "and the faces come back with it")
+            ok((media / name).exists(), "as the same content-addressed file")
+            ok((media / name).read_bytes().startswith(bytes([0x89])),
+               "byte for byte — nothing re-encodes a person's own art")
+        finally:
+            Path(config.DB_PATH).unlink(missing_ok=True)
+            moved.rename(old_path)
+
+    _with_enabled(run)
+
+
+def test_an_archive_cannot_escape_its_directory():
+    section("a zip is untrusted input, even one we wrote")
+    import io as _io
+    import zipfile
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("../../escaped.png", b"nope")
+        z.writestr("sub/dir/deep.png", b"nope")
+        z.writestr(("b" * 32) + ".png", b"fine")
+    media = Path(config.DATA_DIR) / "media"
+    shutil.rmtree(media, ignore_errors=True)
+    written = durable.restore_media(buf.getvalue())
+    ok(written == 1, f"only the well-formed name is written ({written})")
+    ok((media / (("b" * 32) + ".png")).exists(), "and it is the one that lands")
+    ok(not (Path(config.DATA_DIR) / "escaped.png").exists()
+       and not (Path(config.DATA_DIR).parent / "escaped.png").exists(),
+       "a traversal entry is refused rather than normalised")
+
+
 def _all():
     return (test_disabled_by_default, test_snapshot_is_consistent,
             test_snapshot_requires_a_database, test_backup_round_trip,
             test_rotation_and_upload_before_delete,
-            test_mongo_failure_never_blocks_boot)
+            test_mongo_failure_never_blocks_boot,
+            test_uploaded_art_survives_a_wiped_disk,
+            test_an_archive_cannot_escape_its_directory)
 
 
 def main():

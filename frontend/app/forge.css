@@ -130,3 +130,28 @@
   .steps { grid-template-columns: repeat(2, 1fr); }
   .pick-row { grid-template-columns: 1fr; }
 }
+
+/* Your face, asked for in Session Zero. Same monogram-on-hatch fallback as
+   every other portrait slot: a built world ships no art, so the placeholder
+   is the common case and has to look deliberate. */
+.zero-art { display: flex; align-items: center; gap: 16px; }
+.zero-face {
+  flex: none; width: 76px; height: 76px; border-radius: 50%;
+  display: grid; place-items: center; overflow: hidden; position: relative;
+  font-family: var(--display); font-size: 28px;
+  color: rgba(240,169,76,.72);
+  background: radial-gradient(120% 90% at 32% 24%, #3A3346, #221F2C 74%);
+  box-shadow: inset 0 0 0 1px rgba(240,169,76,.22);
+}
+.zero-face::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(120deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+}
+.zero-face.has-art::after { display: none; }
+.zero-face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+[data-theme="parchment"] .zero-face {
+  color: var(--ember-deep);
+  background: radial-gradient(120% 90% at 32% 24%, #EFE6D9, #E2D6C4 76%);
+  box-shadow: inset 0 0 0 1px rgba(34,29,40,.12);
+}
+.zero-art-side { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -521,6 +521,45 @@ def test_the_chapter_list_is_not_starved_by_the_request_budget():
        "and it still looks in the categories a wiki actually files arcs under")
 
 
+def test_the_small_details_a_fan_would_notice():
+    section("canon — the conditional details, and their condition")
+    from backend import persona
+    # Charlie's horns are not a standing feature: they are hidden in her hair
+    # and come out when she turns lethal. A card that says "has horns" is worse
+    # than saying nothing, because it puts them on show in every scene - and
+    # getting exactly this wrong is what makes a fan stop believing the world.
+    ok("mannerisms" in worldforge.CANON_PERSONA_SYSTEM,
+       "the persona card asks for the small details at all")
+    spec = worldforge.CANON_PERSONA_SYSTEM
+    ok("only come out when" in spec and "horns" in spec,
+       "with the horns example spelled out, condition and all")
+    ok('"Charlie has horns" is wrong' in spec,
+       "and the wrong version named as wrong, not merely left unmentioned")
+    ok("normally hidden, absent or sheathed" in spec,
+       "at least one must be physical and conditional, not only behavioural")
+
+    card = {"characters": [{"name": "Charlie", "voice": "bright",
+                            "mannerisms": ["Her horns stay hidden in her hair until she "
+                                           "turns lethal", "She clasps her hands when "
+                                           "explaining"]}]}
+    real, worldforge._resilient = worldforge._resilient, lambda *a, **k: card
+    try:
+        out = worldforge._apply_canon_personas(
+            {"npcs": [{"id": "c", "name": "Charlie", "origin": "canon"}]},
+            "Hazbin Hotel", user_id="u_test")
+    finally:
+        worldforge._resilient = real
+    tells = out["npcs"][0]["anchors"]["mannerisms"]
+    ok(any("horns" in t for t in tells), "and they reach the character's card")
+
+    block = persona.identity_block({**out["npcs"][0]["anchors"], "name": "Charlie",
+                                    "role": "princess"})
+    ok("horns" in block, "and the narrator's identity block")
+    ok("only when their condition is met" in block,
+       "labelled as conditional, so a tell is not printed as a standing "
+       "description in every scene — which is the failure, not the fix")
+
+
 def test_a_spoken_line_becomes_a_plate_the_way_people_are_named():
     section("plates — three reasons the signature element never fired in play")
     from backend import narrator
@@ -742,6 +781,64 @@ def test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal():
     untouched = {"npcs": [{"id": "n1", "name": "Someone", "origin": "original"}]}
     ok(worldforge._seat_unused_canon(dict(untouched), {})["npcs"][0]["name"] == "Someone",
        "an ungrounded build is left exactly as the model wrote it")
+
+
+def test_a_canon_character_has_a_floor_beneath_the_model():
+    section("canon fidelity — the floor when the model says nothing")
+    # _apply_canon_personas asks the MODEL for each card, which is the right
+    # primary path. This is the floor under it. When that call is offline, or
+    # the model does not know a character, the character used to keep whatever
+    # the builder invented from a one-line roster note - which is how a build
+    # handed the narrator "Nezuko Kamado / VOICE: soft-spoken and kind /
+    # CONSTRAINTS: is an ordinary mortal person" for a character who is mute,
+    # is a demon, and rides in a box.
+    import backend.worldforge as wf
+
+    raw = {"npcs": [
+        {"id": "n1", "name": "Nezuko Kamado", "role": "a quiet village girl",
+         "origin": "canon",
+         "anchors": {"voice": "Soft-spoken and kind.",
+                     "constraints": ["Is an ordinary mortal person."]}},
+        {"id": "n2", "name": "Inosuke Hashibira", "origin": "canon",
+         "anchors": {"voice": "Plain, direct, unhurried.",
+                     "constraints": ["Is an ordinary mortal person."]}},
+        {"id": "n3", "name": "A Stall Keeper", "origin": "original",
+         "anchors": {"voice": "Sells rope.", "constraints": ["Is an ordinary mortal person."]}},
+    ]}
+    real, wf._resilient = wf._resilient, lambda *a, **k: {"characters": []}
+    try:
+        out = wf._apply_canon_personas(raw, "Demon Slayer", user_id="u_floor")
+    finally:
+        wf._resilient = real
+
+    nez = out["npcs"][0]["anchors"]
+    ok("not speak" in nez["voice"].lower() or "never speaks" in nez["voice"].lower(),
+       "a mute demon is not described as soft-spoken when the model is silent")
+    ok(any("demon" in c.lower() for c in nez["constraints"]),
+       "and what she actually is replaces 'an ordinary mortal person'")
+    ok(out["npcs"][0]["seed_memories"],
+       "and she arrives carrying something of her own")
+
+    ino = out["npcs"][1]["anchors"]
+    ok("third person" in ino["voice"].lower(),
+       "Inosuke speaks in the third person, from the floor")
+    ok(any("mask" in c.lower() for c in ino["constraints"]),
+       "and wears the boar mask rather than being an ordinary mortal")
+
+    ok(out["npcs"][2]["anchors"]["voice"] == "Sells rope.",
+       "an invented background resident is untouched — the floor covers real people only")
+
+    # The model still wins where it speaks: the floor is a floor, not a ceiling.
+    real, wf._resilient = wf._resilient, lambda *a, **k: {"characters": [
+        {"name": "Nezuko Kamado", "voice": "A newer, better line."}]}
+    try:
+        out2 = wf._apply_canon_personas(
+            {"npcs": [{"id": "n1", "name": "Nezuko Kamado", "origin": "canon",
+                       "anchors": {}}]}, "Demon Slayer", user_id="u_floor2")
+    finally:
+        wf._resilient = real
+    ok(out2["npcs"][0]["anchors"]["voice"] == "A newer, better line.",
+       "and a model card overrides the floor field by field")
 
 
 def test_character_list_furniture():
@@ -984,10 +1081,24 @@ def test_two_modes():
     ok(w2["mode"] in ("original", "canon"),
        "an unknown mode falls back to a valid one rather than erroring")
 
-    # In mock mode nothing resolves, so auto correctly lands on original.
+    # In mock mode nothing resolves over the network - but a setting the
+    # curated roster knows by name is canon from the TABLE, not from the
+    # lookup. Research is an enhancement; losing it must not silently demote a
+    # named franchise to "original" and drop its whole canon path (source line,
+    # frontier, canon personas, chapters) for a setting we can name from memory.
     w3 = worldforge.bootstrap("Naruto", user_id="mode-auto", mode="auto")
-    ok(w3["mode"] == "original",
-       "AUTO with nothing found is original — an original world is the other "
+    ok(w3["mode"] == "canon",
+       "AUTO with a named franchise is canon even when the lookup finds nothing - "
+       "the seed table knows it, and research is an enhancement, never the gate")
+    ok(w3.get("researched") is False and not w3.get("sources"),
+       "and it is still honestly marked unresearched, with no sources claimed")
+
+    # A setting nothing knows still stays original - the seed is not a crutch
+    # for every possible name, only the handful it actually has on record.
+    w4 = worldforge.bootstrap("a wholly original setting nobody wrote",
+                              user_id="mode-auto2", mode="auto")
+    ok(w4["mode"] == "original",
+       "while a setting nothing knows stays original — an original world is a "
        "mode, not a failed canon one")
 
 
@@ -999,9 +1110,11 @@ def _all():
             test_canon_is_dealt_across_districts_not_raced_for,
             test_unused_canon_is_seated_not_merely_labelled,
             test_a_canon_character_is_not_handed_over_as_an_ordinary_mortal,
+            test_a_canon_character_has_a_floor_beneath_the_model,
             test_the_character_the_player_named_actually_turns_up,
             test_an_empty_room_is_told_it_is_empty,
             test_a_spoken_line_becomes_a_plate_the_way_people_are_named,
+            test_the_small_details_a_fan_would_notice,
             test_the_chapter_list_is_not_starved_by_the_request_budget,
             test_chapters_survive_a_wiki_that_never_answers,
             test_a_wiki_is_asked_what_categories_it_has,

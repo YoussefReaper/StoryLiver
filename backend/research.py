@@ -232,11 +232,19 @@ def _get_json(url: str, params: dict, budget: _Budget, *, timeout=None,
 def _api(host: str, params: dict, budget: _Budget, *, quick=False) -> dict:
     """One MediaWiki Action API call, with the etiquette parameters set."""
     base = {"format": "json", "formatversion": "2", "maxlag": "5"}
+    # A "quick" probe is cheap and expected to fail OFTEN - it is guessing
+    # subdomains - but one of those guesses decides whether the entire Fandom
+    # half of research happens at all. At attempts=1 and a 3s ceiling it was
+    # losing that one on a COLD run: fresh DNS, fresh TLS, no pooled
+    # connection. Reproduced exactly - a build against a warm cache came back
+    # with the wiki, 18 places and 12 arcs, and the same build against an empty
+    # one came back with none of it, every time. The wiki itself answers in
+    # under 300ms once anything is warm.
     return _get_json(f"https://{host}/w/api.php" if "wikipedia" in host
                      else f"https://{host}/api.php",
                      {**base, **params}, budget,
-                     attempts=1 if quick else 3,
-                     timeout=3.0 if quick else None)
+                     attempts=2 if quick else 3,
+                     timeout=8.0 if quick else None)
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +807,37 @@ _HOST_PATTERNS = (
 # "X from Y" - a character carried in from somewhere else.
 _IMPORT_PATTERN = rf"{_PROPER}\s+from\s+{_PROPER}"
 
+# "charlie (from hazbin hotel)" - the same statement, typed the way most
+# people actually type it. `_IMPORT_PATTERN` knows one shape and the player
+# wrote the other one, so the character the premise is ABOUT was never carried
+# in at all: no seat, no persona, no friction line. The parenthesis is the
+# strongest signal in a premise that a source is being named, and it survives
+# lowercase typing, which capitalisation-based matching cannot.
+_PAREN_SOURCE = re.compile(r"\(\s*(?:from\s+)?([^()\[\]]{2,60}?)\s*\)", re.I)
+
+# Words that are capitalised for being the first word of a title rather than
+# for being a name - kept lowercase when a typed-all-lowercase franchise is
+# given back its capitals.
+_SMALL_WORDS = {
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into",
+    "nor", "of", "on", "or", "the", "to", "vs", "with",
+}
+
+# Did the player bring this character, or merely ask for them?
+#
+# "I and my girlfriend charlie (from hazbin hotel)" and "Charlie from Hazbin
+# Hotel" name the same character, and they are not the same premise: in the
+# first she arrived WITH the player, in the second she is a stranger who
+# happens to be in the story. The build treated both as the second - so a
+# character the player called their girlfriend was seated correctly, in the
+# right room, with a relationship of -5 affinity and -5 trust, i.e. she
+# disliked her own partner on turn one. Nothing downstream could recover from
+# that, because the relationship engine was faithfully simulating a stranger.
+_COMPANION_MARKERS = re.compile(
+    r"\b(?:my|our)\s+(?:girlfriend|boyfriend|wife|husband|partner|fianc[eé]e?|"
+    r"best\s+friend|friend|brother|sister|son|daughter|companion|buddy|gf|bf)\b"
+    r"|\b(?:i|me)\s+and\b|\bwe\b|\bwith\s+me\b|\btogether\b", re.I)
+
 # Words that begin a sentence and are capitalised for that reason alone.
 _NOT_PROPER = {
     "i", "we", "my", "me", "you", "the", "a", "an", "and", "but", "so", "then",
@@ -835,9 +874,21 @@ def looks_like_premise(text: str) -> bool:
     if len(words) > 6:
         return True
     low = " " + t.lower() + " "
-    return any(m in low for m in (" i ", " we ", " my ", " me ", " am ", " are ",
-                                  " is ", " from ", " inside ", " within ",
-                                  " world of ", " universe of ", " set in "))
+    if any(m in low for m in (" i ", " we ", " my ", " me ", " am ", " are ",
+                              " is ", " from ", " inside ", " within ",
+                              " world of ", " universe of ", " set in ")):
+        return True
+    # "charlie (from hazbin hotel)" and "Charlie (Hazbin Hotel) in Demon
+    # Slayer" are a crossover being described, not a work being named - and
+    # both are under the word count, so the rules above missed them and the
+    # parser returned early with the whole sentence as the "title". A bare
+    # parenthetical is not evidence on its own ("Kimetsu no Yaiba (manga)"),
+    # so it counts only with an explicit "from" or a host phrase beside it.
+    if re.search(r"\(\s*from\s+", t, re.I):
+        return True
+    if re.search(r"[(\[]", t) and any(re.search(p, t) for p in _HOST_PATTERNS):
+        return True
+    return False
 
 
 def _clean_entity(raw: str) -> str:
@@ -852,6 +903,47 @@ def _clean_entity(raw: str) -> str:
     while parts and parts[0].lower() in _LEAD_STRIP:
         parts.pop(0)
     name = " ".join(parts)
+    if not name or name.lower() in _NOT_PROPER or len(name) < 3:
+        return ""
+    return name
+
+
+def _titleish(raw: str) -> str:
+    """Give a typed-all-lowercase name its capitals back.
+
+    "hazbin hotel" is how the player typed it and "Hazbin Hotel" is what the
+    franchise is called. Idempotent on an already-correct name, and it leaves
+    small words alone except at the ends, so "The Last of Us" survives
+    unchanged rather than becoming "The Last Of Us"."""
+    words = [w for w in re.split(r"\s+", (raw or "").strip()) if w]
+    out = []
+    for i, w in enumerate(words):
+        if 0 < i < len(words) - 1 and w.lower() in _SMALL_WORDS:
+            out.append(w.lower())
+        else:
+            out.append(w[:1].upper() + w[1:])
+    return " ".join(out)
+
+
+def _name_before(text: str, pos: int) -> str:
+    """The character named immediately before a parenthesis.
+
+    The word touching the bracket is the reliable half, and it is the only
+    half when the player typed in lowercase: "my girlfriend charlie (from
+    hazbin hotel)" has no capitals to go on and "girlfriend" is not part of
+    anybody's name. Capitalised words directly in front ARE part of it, so
+    "Charlie Morningstar (Hazbin Hotel)" is one person and not a surname.
+    """
+    toks = re.findall(r"[A-Za-z][\w'\-]*", text[:pos])
+    if not toks:
+        return ""
+    keep = [toks[-1]]
+    for t in reversed(toks[:-1]):
+        if t[:1].isupper() and t.lower() not in _NOT_PROPER:
+            keep.insert(0, t)
+        else:
+            break
+    name = " ".join(keep)
     if not name or name.lower() in _NOT_PROPER or len(name) < 3:
         return ""
     return name
@@ -894,6 +986,21 @@ def parse_premise(text: str) -> dict:
         if character and source:
             out["imports"].append({"character": character, "from": source})
 
+    # The parenthesised shape, which is how a crossover is usually typed:
+    # "charlie (from hazbin hotel)", "Charlie (Hazbin Hotel)". Checked BEFORE
+    # the host patterns so the parenthesised name is never mistaken for the
+    # world the story is set in.
+    for m in _PAREN_SOURCE.finditer(raw):
+        character = _titleish(_name_before(raw, m.start()))
+        source = _titleish(_clean_entity(m.group(1)))
+        if not character or not source:
+            continue
+        character = remember(character)
+        source = remember(source)
+        if any(_norm(i["character"]) == _norm(character) for i in out["imports"]):
+            continue
+        out["imports"].append({"character": character, "from": source})
+
     for pattern in _HOST_PATTERNS:
         m = re.search(pattern, raw)
         if m:
@@ -903,10 +1010,33 @@ def parse_premise(text: str) -> dict:
                 out["host_is_proper"] = True
                 break
 
+    # A source that ran straight through the word introducing the host. `in`
+    # is a connective inside a title ("Made in Abyss"), so "Charlie from
+    # Hazbin Hotel in Demon Slayer" captured the whole run as the source and
+    # the host ended up inside it. Trim it back only when the leftover half is
+    # itself a franchise the roster can name - otherwise "Made in Abyss" would
+    # be cut down to "Made", which is a worse answer than the bug.
+    host = (out.get("host") or "").strip()
+    if host:
+        for imp in out["imports"]:
+            src = imp.get("from") or ""
+            m = re.match(
+                rf"^(.*?)\s+(?:in|inside|within|into)\s+{re.escape(host)}$", src, re.I)
+            trimmed = (m.group(1).strip() if m else "")
+            if trimmed and canon_seed.known(trimmed) and not canon_seed.known(src):
+                imp["from"] = trimmed
+
     # Everything else that reads as a proper name, so nothing the player typed
     # is silently dropped.
     for m in re.finditer(_PROPER, raw):
         remember(m.group(1))
+
+    # Did the player bring them, or just ask for them? Recorded per import
+    # because the build needs to know: the first is a relationship that already
+    # exists, the second is a stranger. See _COMPANION_MARKERS.
+    came_with = bool(_COMPANION_MARKERS.search(raw))
+    for imp in out["imports"]:
+        imp["with_player"] = came_with
 
     out["entities"] = seen
     if not out["host"] and seen:
@@ -1275,15 +1405,16 @@ def grounding_brief(d: dict, *, need_npcs: int = 0, need_locs: int = 0) -> str:
         "HOW TO USE THAT LIST - this is a hard rule, not a preference:",
         f"1. PEOPLE: every one of those {n_chars} real characters must be used before you "
         "invent a single new person. Spell them exactly as written above.",
-        f"2. PLACES: the {n_places} real places are the setting's MAP, and you are building "
-        "ONE location on it. Use a real place name ONLY for a location that genuinely IS "
-        "that place. Never hang a famous name on an ordinary room to get it used - a "
-        "tavern called Yoshiwara, a clinic called Mount Kumotori and a village square "
-        "called Eternal Paradise Faith are three lies in a row, and a reader who knows "
-        "the setting sees all of them at once. Real places you do not use are EXPECTED "
-        "and cost nothing: they stay on the map as somewhere the player can travel to "
-        "later. An ordinary street in this place should be named the way its own people "
-        "would name it.",
+        f"2. PLACES: the {n_places} real places are the setting's WHOLE MAP, and you are "
+        "building ONE settlement on it. Build only what a person can walk between in an "
+        "evening: the streets, rooms and thresholds of this one place. A landmark that "
+        "is a journey away in the source does NOT belong inside it - a town containing "
+        "the Mugen Train, the Butterfly Mansion and the Ubuyashiki Estate at once is a "
+        "map of the whole series folded into one square. Those stay where they are; the "
+        "player travels to them later, and leaving them out costs nothing. Never hang a "
+        "famous name on an ordinary room to get it used either - a tavern called "
+        "Yoshiwara and a clinic called Mount Kumotori are lies a reader spots instantly. "
+        "Name the streets here the way the people who live here would.",
         "3. Never rename, re-spell, translate or 'improve' a real name, and never invent "
         "a relative, student, rival or successor of a real character.",
     ]

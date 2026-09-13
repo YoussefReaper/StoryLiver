@@ -30,6 +30,7 @@ Each test here maps to a documented cause, not a guess:
 
 Run:  python -m tests.test_depth
 """
+import json
 import os
 import shutil
 import tempfile
@@ -262,7 +263,10 @@ def test_session_zero():
     # with an opinion, and the builder used to invent all of it. `cast_mix` is
     # the one that IS canon-only: how much invented cast to put around the real
     # one is a question about nothing when every character is invented anyway.
-    ok(ids == ["name", "origin", "known", "ties", "role", "power", "limit"],
+    # `portrait` sits with `name` deliberately: a face is part of saying who
+    # you are, and asking for it here is the only place in the product a
+    # player is offered one before they have already started playing.
+    ok(ids == ["name", "portrait", "origin", "known", "ties", "role", "power", "limit"],
        f"an original world is asked who they are as well as what they can do ({ids})")
     ok("cast_mix" not in ids,
        "but not how to balance a canon cast it does not have")
@@ -389,9 +393,116 @@ def test_state_shows_as_behaviour_not_as_scalars():
        "and the engine no longer congratulates itself when an NPC acts unprompted")
 
 
+# ------------------------------------------------------- what the room saw
+def test_the_world_retells_rather_than_quoting_you():
+    section("a witness reports what they saw, not what you typed")
+    # Every witness record used to be the raw input with a name on the front:
+    # "A traveller: I look around and take stock of the room". That string is
+    # read back in the rumour that reaches the next town, the "what you know"
+    # card, and the Chronicle - three places a player looks - and in all three
+    # it addressed the reader in the reader's own words and tense.
+    cases = [
+        ("I look around and take stock of the room.", "Ilsabet",
+         "Ilsabet looked around and took stock of the room."),
+        ("I ask her who lit them.", "Yuki", "Yuki asked her who lit them."),
+        ("I go to the mill road.", "Yuki", "Yuki went to the mill road."),
+        ("I kneel and press my thumb into the stub.", "Yuki",
+         "Yuki knelt and pressed their thumb into the stub."),
+        ("I don't move.", "Yuki", "Yuki did not move."),
+        ("I hide myself behind the crates.", "Yuki",
+         "Yuki hid themselves behind the crates."),
+        # Reported speech: the embedded clause shifts tense with the
+        # reporting verb, or you get "said they am looking for work".
+        ("I say I am looking for work.", "Yuki",
+         "Yuki said they were looking for work."),
+        ("I say I will come back.", "Yuki", "Yuki said they would come back."),
+        ("I tell them I have the money.", "Yuki",
+         "Yuki told them they had the money."),
+        # An interrogative after "and" is not a second verb to conjugate.
+        ("I ask about the lamps, and who lights them.", "Yuki",
+         "Yuki asked about the lamps, and who lights them."),
+    ]
+    for action, who, want in cases:
+        got = memory.retell(action, who)
+        ok(got == want, f"{action!r} -> {got!r}")
+
+    ok("I " not in f" {memory.retell('I wait in the dark.', 'Yuki')} ",
+       "and the first person is gone entirely, which is the whole point")
+
+    # A noun after "and" is not a second verb: "the door" must stay "the door".
+    ok(memory.retell("I open the chest and the door behind it.", "Yuki")
+       == "Yuki opened the chest and the door behind it.",
+       "a noun phrase after 'and' is left alone rather than conjugated")
+
+    # Not first person at all - a rumour that came from somewhere else, or a
+    # player who writes in the third person. Left exactly as it is.
+    third = "The Warden crosses the square."
+    ok(memory.retell(third, "Yuki") == third,
+       "something already in the third person is not touched")
+    ok(memory.retell("", "Yuki") == "", "and an empty action stays empty")
+
+    # Stress, not just a consonant: "stop" doubles, "open" does not.
+    ok(memory._past("stop") == "stopped" and memory._past("open") == "opened",
+       "consonant doubling follows the stressed syllable (stopped / opened)")
+
+
+def test_a_face_is_a_first_class_field():
+    section("portraits - the player's own art, carried by the world")
+    from backend import worldkit as _wk
+    base = worldforge.blank("Facetown")
+    base["npcs"][0]["portrait"] = "/media/" + ("a" * 32) + ".png"
+    # Anything that is not a path this server issued is refused rather than
+    # stored: a world dict is untrusted input and an <img src> is the wrong
+    # place to discover that.
+    base["npcs"][1]["portrait"] = "https://tracker.example/pixel.png"
+    w = _wk.normalise(base)
+    ok(w["npcs"][0]["portrait"].startswith("/media/"),
+       "an uploaded portrait survives normalise instead of being dropped")
+    ok(w["npcs"][1]["portrait"] == "",
+       "and a remote URL is refused - no off-site image can ride in on a world")
+
+    # The player's own face rides on the world so it survives a save and a
+    # reload, and becomes their card when the playthrough is created.
+    base["default_portrait"] = "/media/" + ("b" * 32) + ".jpg"
+    base["default_protagonist"] = "Ilsabet Marr, a reader"
+    w2 = _wk.normalise(base)
+    ok(w2["default_portrait"].endswith(".jpg"), "and so does the player's own")
+
+    db.init()
+    pt = engine.create_playthrough("face-user", world_json=json.dumps(w2))
+    from backend import identity
+    cards = identity.for_playthrough(pt)
+    ok(len(cards) == 1, "Session Zero's answers become a card without retyping")
+    ok(cards[0]["name"] == "Ilsabet Marr" and cards[0]["concept"] == "a reader",
+       f"name and concept split on the comma ({cards[0]['name']!r} / {cards[0]['concept']!r})")
+    ok(cards[0]["avatar_url"] == w2["default_portrait"],
+       "and the face they chose is on it")
+
+    # Mid-play, from the character sheet: a face for somebody you have just
+    # met, written to THIS story's pinned copy of the world rather than to the
+    # world itself - so playing the same world again is untouched.
+    db.init()
+    art = "/media/" + ("c" * 32) + ".png"
+    w3 = _wk.normalise(worldforge.blank("Facetown2"))
+    pt2 = engine.create_playthrough("face-user-2", world_json=json.dumps(w3))
+    target = w3["npcs"][0]["id"]
+    data = json.loads(json.dumps(engine.world_for(engine._pt(pt2)).data))
+    next(n for n in data["npcs"] if n["id"] == target)["portrait"] = art
+    db.run("UPDATE playthroughs SET world_json=? WHERE id=?",
+           (json.dumps(_wk.normalise(data, strict=False)), pt2))
+    live = engine.world_for(engine._pt(pt2))
+    ok(next(n for n in live.npcs if n["id"] == target)["portrait"] == art,
+       "a face given mid-play survives on the playthrough's own copy")
+    ok(all(not n.get("portrait") for n in _wk.normalise(worldforge.blank("Facetown2"))["npcs"]),
+       "and the world it was built from is untouched")
+
+
+
 def _all():
     return (test_the_world_keeps_its_own_hours,
             test_state_shows_as_behaviour_not_as_scalars,
+            test_the_world_retells_rather_than_quoting_you,
+            test_a_face_is_a_first_class_field,
             test_callbacks, test_banter, test_npc_initiative,
             test_npc_stops_reasking_answered_questions,
             test_witnessed_trauma_can_trigger_an_out_of_turn_reaction,

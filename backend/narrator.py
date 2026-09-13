@@ -184,16 +184,30 @@ def _openings(pt_id, n=8):
 
 
 def _stub(world, pt, action, verdict, extra):
+    """The offline narrator. No key, no spend - used by the whole test suite.
+
+    It is not trying to be good prose, but it must not read as a TEMPLATE
+    WITH A HOLE IN IT: an empty room produced "no one takes that in without
+    hurrying", which is the stub showing the player its own placeholder. An
+    empty room gets a sentence about the room instead.
+    """
     r = llm.rng(pt["current_turn"], action)
     loc = world.loc_by_id[pt["current_location"]]
     who = verdict["state"]["present"]
-    name = world.npc_name(who[0]) if who else "no one"
     weather = r.choice(["Rain ticks on the shutters.", "The air tastes of iron.",
                         "Somewhere a dog will not stop.", "The light is going copper."])
+    if who:
+        reaction = (f"{world.npc_name(who[0])} takes that in without hurrying, "
+                    "and gives you back exactly as much as it was worth.")
+    else:
+        reaction = r.choice([
+            "Nobody is here to see it, which is its own kind of answer.",
+            "The room keeps it. There is no one in it to carry it anywhere.",
+            "It goes unwitnessed, and the quiet afterwards is longer than you expected.",
+        ])
     return (f"{weather} {loc['name']} holds the sound of you the way a room holds a stranger. "
             f"{verdict.get('consequence') or action.strip()} "
-            f"{name} takes that in without hurrying, and gives you back exactly as much as it was worth. "
-            f"{extra or ''}").strip()
+            f"{reaction} {extra or ''}").strip()
 
 
 def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
@@ -318,10 +332,8 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
         parts.append(
             f"WHAT ACTUALLY RESULTS (narrate this, do not change it): "
             f"{verdict['consequence']}\n"
-            f"This is raw material, never text. Do not restate or summarise it - play it "
-            f"out. If it says somebody answers, tells, explains or agrees, the passage "
-            f"must contain the words they actually say, not a sentence reporting that "
-            f"they said something.")
+            f"Raw material, never text: play it out, do not restate it. If somebody "
+            f"answers or explains, the passage contains what they SAY.")
     # The world moved on its own this turn. Given as fact, like every other
     # consequence: the narrator reports it and never decides it.
     if verdict.get("legacy_line"):

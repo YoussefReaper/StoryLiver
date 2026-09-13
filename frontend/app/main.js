@@ -59,8 +59,18 @@ ready(() => {
 
   // One listener for the rebuilt panels. Delegated, because every panel here
   // re-renders its own subtree and bound handlers would not survive it.
-  document.addEventListener('click', (ev) => {
+  document.addEventListener('click', async (ev) => {
     try {
+      // Uploading is the shell's job — it owns the transport, the size
+      // limits and the toast. The forge only says which answer to fill.
+      const pick = ev.target.closest?.('[data-zero-art]');
+      if (pick && b.askForArt) {
+        const url = await b.askForArt();
+        if (url) forge.setArt(pick.dataset.zeroArt, url);
+        return;
+      }
+      const clear = ev.target.closest?.('[data-zero-art-clear]');
+      if (clear) { forge.setArt(clear.dataset.zeroArtClear, ''); return; }
       forge.handle(ev.target);
     } catch (err) {
       b.toast(err.message || 'That did not work.', 'err');

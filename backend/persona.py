@@ -88,7 +88,13 @@ def identity_block(card: dict, *, beat: str = "") -> str:
         out += f"  CONCEPT: {c['concept']}\n"
     if c["voice"]:
         out += f"  VOICE: {c['voice']}\n"
-    out += _bullets("MANNERISMS", c["mannerisms"], 5)
+    # Many of these are CONDITIONAL - "her horns only come out when she turns
+    # lethal, otherwise they are hidden in her hair" - and a narrator that
+    # treats them as a standing description puts the horns on show in every
+    # scene, which is the opposite of the detail being right. Honour the
+    # condition or leave the detail alone.
+    out += _bullets("MANNERISMS (only when their condition is met)",
+                    c["mannerisms"], 5)
     out += _bullets("VALUES", c["values"], 5)
     out += _bullets("FLAWS", c["flaws"], 5)
     out += _bullets("CONSTRAINTS", c["constraints"])

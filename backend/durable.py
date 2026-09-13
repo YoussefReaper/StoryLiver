@@ -43,7 +43,12 @@ from pathlib import Path
 from . import config
 
 FILENAME = "storyliver.db"
+MEDIA_FILENAME = "storyliver-media.zip"
 KEEP_SNAPSHOTS = 3          # a little history, still trivial on a 512MB free tier
+# The art a player uploaded is not in the database - it is files on the same
+# disk the free tier throws away. A 40MB ceiling keeps the archive inside
+# GridFS's comfortable range and is far more than a handful of avatars.
+MEDIA_MAX_BYTES = 40 * 1024 * 1024
 
 _client = None
 _fs = None
@@ -118,6 +123,68 @@ def snapshot_bytes() -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# The uploaded art - files, not rows, on the same disk the free tier wipes
+# ---------------------------------------------------------------------------
+#
+# Every portrait in the product is a file the PLAYER uploaded (nothing here
+# generates one - see uploads.py), stored under data/media and referenced from
+# the world by path. The database snapshot above carries the paths and not the
+# bytes, so on a host with no persistent disk a restored story came back with
+# every face pointing at a file that no longer existed. The client degrades
+# that to a monogram rather than a broken image, but the right answer is for
+# the art to still be there.
+
+def media_archive() -> bytes:
+    """Every uploaded file, as one zip. Empty bytes when there is nothing."""
+    import io
+    import zipfile
+
+    media = Path(config.DATA_DIR) / "media"
+    if not media.is_dir():
+        return b""
+    files = sorted(f for f in media.iterdir() if f.is_file())
+    if not files:
+        return b""
+    buf = io.BytesIO()
+    total = 0
+    # Stored, not deflated: these are already-compressed image formats, so
+    # deflate costs CPU on every backup and saves almost nothing.
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for f in files:
+            size = f.stat().st_size
+            if total + size > MEDIA_MAX_BYTES:
+                break
+            z.write(f, arcname=f.name)
+            total += size
+    return buf.getvalue()
+
+
+def restore_media(data: bytes) -> int:
+    """Unpack an archive into data/media. Existing files are left alone - a
+    content hash is the filename, so a file that is already there is already
+    the right one."""
+    import io
+    import zipfile
+
+    media = Path(config.DATA_DIR) / "media"
+    media.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for name in z.namelist():
+            # Never trust a path out of an archive. uploads.store() only ever
+            # produces a bare "<32 hex>.<ext>", so anything with a separator
+            # in it did not come from us.
+            if "/" in name or "\\" in name or name.startswith("."):
+                continue
+            target = media / name
+            if target.exists():
+                continue
+            target.write_bytes(z.read(name))
+            written += 1
+    return written
+
+
+# ---------------------------------------------------------------------------
 # Backup - push the current state up
 # ---------------------------------------------------------------------------
 
@@ -137,18 +204,32 @@ def backup() -> dict:
         new_id = fs.put(data, filename=FILENAME,
                         uploaded_at=datetime.now(timezone.utc).isoformat(),
                         bytes=len(data))
-        _rotate(fs, keep=KEEP_SNAPSHOTS)
+        _rotate(fs, FILENAME, keep=KEEP_SNAPSHOTS)
     except Exception as e:                     # a Mongo hiccup must never crash the app
         return {"backed_up": False, "reason": f"{type(e).__name__}: {e}"}
 
-    return {"backed_up": True, "id": str(new_id), "bytes": len(data)}
+    # The art, separately and non-fatally: a failure to store the pictures
+    # must never cost the database snapshot that has already succeeded.
+    media = {"stored": False}
+    try:
+        blob = media_archive()
+        if blob:
+            fs.put(blob, filename=MEDIA_FILENAME,
+                   uploaded_at=datetime.now(timezone.utc).isoformat(),
+                   bytes=len(blob))
+            _rotate(fs, MEDIA_FILENAME, keep=1)   # only the newest is useful
+            media = {"stored": True, "bytes": len(blob)}
+    except Exception as e:
+        media = {"stored": False, "reason": f"{type(e).__name__}: {e}"}
+
+    return {"backed_up": True, "id": str(new_id), "bytes": len(data), "media": media}
 
 
-def _rotate(fs, *, keep: int):
-    """Keep only the most recent `keep` snapshots. Old ones are deleted only
-    after the new one is safely stored, and one at a time, so a delete
-    failure midway still leaves the newest copies intact."""
-    files = list(fs.find({"filename": FILENAME}).sort("uploadDate", -1))
+def _rotate(fs, filename: str, *, keep: int):
+    """Keep only the most recent `keep` snapshots of one filename. Old ones are
+    deleted only after the new one is safely stored, and one at a time, so a
+    delete failure midway still leaves the newest copies intact."""
+    files = list(fs.find({"filename": filename}).sort("uploadDate", -1))
     for old in files[keep:]:
         fs.delete(old._id)
 
@@ -191,7 +272,19 @@ def restore_if_needed() -> dict:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     data = latest.read()
     Path(config.DB_PATH).write_bytes(data)
-    return {"restored": True, "bytes": len(data),
+
+    # And the art the players uploaded, which lives on the same wiped disk.
+    # Non-fatal: a story with monograms where the faces were is a far better
+    # outcome than an app that refuses to boot.
+    media = {"restored": 0}
+    try:
+        blob = fs.find_one({"filename": MEDIA_FILENAME}, sort=[("uploadDate", -1)])
+        if blob:
+            media = {"restored": restore_media(blob.read())}
+    except Exception as e:
+        media = {"restored": 0, "reason": f"{type(e).__name__}: {e}"}
+
+    return {"restored": True, "bytes": len(data), "media": media,
             "uploaded_at": getattr(latest, "uploaded_at", "")}
 
 

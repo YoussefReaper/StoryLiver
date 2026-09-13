@@ -59,8 +59,12 @@ def observe_turn(pt_id, turn, present, action_text, consequence, importance=3,
     """Everyone in the room remembers what they saw - about this player
     specifically. Cheap, no model call."""
     for npc_id in present:
+        # `action_text` already arrives as the act in the third person (see
+        # memory.retell), so this reads "I saw Ilsabet Marr go back inside
+        # and buy a drink" rather than gluing a name onto the player's own
+        # first-person sentence.
         memory.npc_observe(pt_id, npc_id, turn,
-                           f"I saw {actor_name}: {action_text}. Result: {consequence}",
+                           f"I saw this: {action_text} Result: {consequence}",
                            importance=importance, player=player)
 
 

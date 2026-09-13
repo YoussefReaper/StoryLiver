@@ -18,7 +18,7 @@ import json
 import re
 import uuid
 
-from . import arcs, canon_seed, config, db, llm, research, sessionzero, worldkit
+from . import arcs, canon_lore, canon_seed, config, db, llm, research, sessionzero, worldkit
 from . import worlds as world_registry
 
 # Settings that read as an existing IP get the personal-only treatment. This is
@@ -260,6 +260,30 @@ def _fold(name: str) -> str:
     that instruction is actually asking to be checked against, not a fuzzy
     one that would risk crediting an unrelated invented name as canon."""
     return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+
+
+_NAME_STOP = {"the", "of", "a", "an", "and", "at", "in", "on", "to", "by"}
+
+
+def _name_fits_id(loc_id: str, name: str) -> bool:
+    """Does this location's own id belong to the name it is wearing?
+
+    The test for whether a location is ENTITLED to a canon landmark's name. A
+    location whose id is "butterfly_mansion" and whose name is "Butterfly
+    Mansion" IS that place, and a story may legitimately be set there. A
+    location whose id is "storm_drain_alley" and whose name is "Mugen Train" is
+    a town street wearing a landmark's name, which is the failure this exists
+    to catch - the map reads right and the geography underneath is nonsense."""
+    idt = {w for w in re.findall(r"[a-z0-9]+", _fold(loc_id)) if w not in _NAME_STOP}
+    nt = {w for w in re.findall(r"[a-z0-9]+", _fold(name)) if w not in _NAME_STOP}
+    return bool(idt and nt and idt & nt)
+
+
+def _humanise(slug_text: str) -> str:
+    """A location's own id, given back as a readable name, for when the name it
+    arrived with belonged to somewhere else."""
+    words = [w for w in re.split(r"[^a-z0-9]+", (slug_text or "").lower()) if w]
+    return " ".join(w.capitalize() for w in words) or "Somewhere"
 
 
 def _strip_ip_name(name: str, setting: str) -> str:
@@ -590,6 +614,14 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
     return raw
 
 
+# What a character who came WITH the player remembers about arriving. Module
+# level because two passes touch seed_memories - seating writes it, and the
+# persona pass rewrites the list from the model's card - and the companion's
+# own memory has to survive the second one.
+COMPANION_MEMORY = ("I came here with you. Whatever this place turns out to be, "
+                    "we are in it together.")
+
+
 def _seat_imports(raw: dict, imports: list) -> dict:
     """Guarantee a carried-in character actually exists in the world.
 
@@ -629,6 +661,29 @@ def _seat_imports(raw: dict, imports: list) -> dict:
                 return n
         return None
 
+    def seat_relationship(rec: dict, imp: dict):
+        """A carried-in character who came WITH the player already knows them.
+
+        Seating was only ever about existing: a seat, a name, a source, a room
+        to stand in. The relationship was left to whatever the builder had put
+        there - and for a displaced seat that is the host NPC's own opinion of
+        an outsider, so a build answered "I and my girlfriend Charlie" by
+        handing the relationship engine affinity -5, trust -5. The princess of
+        Hell spent turn one being standoffish with her own partner, and no
+        amount of good prose downstream can make that read as a relationship.
+
+        Only for an import the premise actually describes as coming with the
+        player: "Charlie from Hazbin Hotel" is a character carried in, and a
+        stranger is the right answer for her."""
+        if not imp.get("with_player"):
+            return
+        rec["initial_relationship"] = {"affinity": 45.0, "trust": 45.0,
+                                       "fear": 0.0, "obligation": 15.0}
+        rec["companion"] = True
+        seeds = [s for s in (rec.get("seed_memories") or [])]
+        seeds.insert(0, COMPANION_MEMORY)
+        rec["seed_memories"] = seeds[:6]
+
     for imp in wanted:
         name = imp["character"].strip()
         existing = already_here(name)
@@ -641,6 +696,7 @@ def _seat_imports(raw: dict, imports: list) -> dict:
             existing["from_source"] = (imp.get("from") or "").strip()
             existing["start_location"] = (raw.get("start_location")
                                           or existing.get("start_location") or "")
+            seat_relationship(existing, imp)
             continue
         if seats:
             rec = npcs[seats.pop()]
@@ -665,6 +721,7 @@ def _seat_imports(raw: dict, imports: list) -> dict:
         rec["from_source"] = (imp.get("from") or "").strip()
         rec["anchors"] = {"name": name, "role": rec.get("role", "")}
         rec.pop("seed_memories", None)
+        seat_relationship(rec, imp)
     return raw
 
 
@@ -685,6 +742,20 @@ Write what is TRUE OF THEM IN THE SOURCE, not a plot summary:
   goals       - what they are actually after.
   taboos      - what they would never do, however hard a scene pushes.
   memories    - two or three things they carry, written in their own first person.
+  mannerisms  - THE SMALL THINGS A FAN WOULD NOTICE, and WHEN they happen. Not
+                a description of them: the specific physical and behavioural
+                details that only show under a condition, and the condition.
+                "Charlie's horns are hidden in her hair and only come out when
+                she turns lethal" is right; "Charlie has horns" is wrong and is
+                worse than nothing, because it puts them on show in every
+                scene. START with a PHYSICAL one: something about their body
+                or appearance that is normally hidden, absent or sheathed and
+                appears only under a named condition - horns, eyes, claws,
+                markings, a change of form, a scar that darkens. Say what
+                triggers it AND what is true the rest of the time. Then
+                behaviour: hands, what they always carry and how, what changes
+                when they are frightened or lying or off guard. Three or four,
+                each specific enough that a fan would notice it being wrong.
   public      - true if a stranger could plausibly run into them in an ordinary
                 public place at the start of a story. FALSE for anyone who hides
                 what they are, rules from a distance, is imprisoned, sealed,
@@ -698,7 +769,7 @@ replace. If you genuinely do not know a character, omit them entirely rather
 than inventing a generic card.
 
 JSON only:
-{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"public":true}]}
+{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"mannerisms":[],"public":true}]}
 """
 
 
@@ -779,8 +850,44 @@ def _record_beyond(raw: dict, found: dict, *, keep: int = 6) -> dict:
     locs = raw.get("locations") or []
     if not locs:
         return raw
+    # The builder is told to build ONE settlement and leave the setting's
+    # landmarks on the map around it. It obeys most of the time and sometimes
+    # does the opposite in a subtler way than the old failure: it keeps its own
+    # town ids and hangs a canon landmark's NAME on them - a live build came
+    # back with
+    #     storm_drain_alley -> "Mugen Train"
+    #     north_wall_walk   -> "Swordsmith Village"
+    #     river_steps       -> "Ubuyashiki Estate"
+    # The map then LOOKS right (every landmark is on it) while reading as
+    # nonsense - a storm drain called the Mugen Train, a village whose streets
+    # are the Ubuyashiki Estate - and the frontier below could never be trusted,
+    # because the same names it keyed on were on the town's own streets. A
+    # prompt is a request; this is the wall.
+    #
+    # A location keeps a landmark's name only when its own id belongs to that
+    # landmark (id "butterfly_mansion" named "Butterfly Mansion" is the real
+    # place, and a story may legitimately be set there). Everything else gets
+    # its own name back from its id, and the landmark it was wearing goes out to
+    # the frontier below, which is where a landmark you can walk to belongs.
+    canon_names = {_fold(p["name"]) for p in places}
+    for l in locs:
+        if _fold(l.get("name", "")) not in canon_names:
+            continue
+        if _name_fits_id(l.get("id", ""), l.get("name", "")):
+            continue
+        l["name"] = _humanise(l.get("id") or l.get("name", ""))
+
     used = {_fold(l.get("name", "")) for l in locs}
-    hub = locs[0]["id"]
+    # Wired to where the player actually STANDS, not to locations[0]. They are
+    # different: a live world put the frontier on the hub while the player
+    # started in the market square, so "I take the road out to the Swordsmith
+    # Village" moved nobody - the destination was on the map and not reachable
+    # from the only place anyone was. The narration even said "the square
+    # behind you keeps its watchful noise as you leave it", while the player
+    # stayed exactly where they were.
+    ids = {l.get("id") for l in locs}
+    start = raw.get("start_location")
+    hub = start if start in ids else locs[0]["id"]
     added = 0
     for p in places:
         if added >= keep:
@@ -983,6 +1090,37 @@ def _crossover_friction(raw: dict, imports: list, host: str, *, user_id: str) ->
 
     if notes:
         raw["friction"] = " | ".join(notes)[:600]
+    else:
+        # The reactions above are a model call, and a model call fails: a rate
+        # limit, a timeout, a key that stopped working. When it did, `notes`
+        # stayed empty, `friction` stayed unset, and the narrator - which
+        # carries friction into EVERY turn's prompt as "WHAT THIS WORLD MAKES
+        # OF THE OUTSIDER" - was simply never told there was an outsider. The
+        # crossover became a normal story with an extra person in it, which is
+        # the whole premise gone, silently, at build time.
+        #
+        # The floor below invents nothing: it states what the character IS
+        # (their own card, already looked up) and that this world has no frame
+        # for it. Working out the reaction is the narrator's job and it is good
+        # at that; being told there is a reaction to have is this file's job.
+        floor = []
+        for imp in wanted:
+            rec = by_name.get(_fold(imp["character"]))
+            if not rec:
+                continue
+            anchors = rec.get("anchors") or {}
+            nature = [x for x in ([rec.get("role")] + list(anchors.get("constraints") or []))
+                      if str(x or "").strip()]
+            if not nature:
+                continue
+            floor.append(
+                f"{rec['name']} is {str(nature[0]).strip().rstrip('.').lower()}. "
+                + (f"{str(nature[1]).strip().rstrip('.')}. " if len(nature) > 1 else "")
+                + f"{host} has no frame for that. It is not hidden and it does not "
+                  f"stop being true, and everyone here reads it through the only "
+                  f"thing they know - and none of them will agree.")
+        if floor:
+            raw["friction"] = " | ".join(floor)[:600]
     return raw
 
 
@@ -1035,27 +1173,43 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
     def _clean(vals, cap):
         return [str(v).strip()[:cap] for v in (vals or []) if str(v).strip()]
 
-    by = {_fold(c.get("name", "")): c for c in (out.get("characters") or [])
-          if isinstance(c, dict)}
-    for npc in canon:
-        card = by.get(_fold(npc["name"]))
-        if not card:
-            continue
-        anchors = dict(npc.get("anchors") or {})
+    def _apply_card(npc, anchors, card):
+        """Write one card's fields onto a character's anchors, and return them.
+
+        Used twice per character, in order: the curated floor first (what the
+        source says, no model call), then the model's card over it. Field by
+        field, so the model only fills what it actually answered and the floor
+        covers the rest."""
         if str(card.get("voice") or "").strip():
             anchors["voice"] = str(card["voice"]).strip()[:220]
         for key in ("constraints", "goals", "taboos"):
             vals = _clean(card.get(key), 180)[:4]
             if vals:
                 anchors[key] = vals
+        # The small conditional details - horns that only show when she turns
+        # lethal, a mask that never comes off, the hand that goes to a hilt.
+        # persona.identity_block already carries mannerisms to the narrator, so
+        # this reaches the prose without any new plumbing.
+        tells = _clean(card.get("mannerisms"), 200)[:4]
+        if tells:
+            anchors["mannerisms"] = tells
         anchors["name"] = npc["name"]
         if str(card.get("role") or "").strip():
             npc["role"] = str(card["role"]).strip()[:120]
         anchors["role"] = npc.get("role") or anchors.get("role") or "villager"
-        npc["anchors"] = anchors
         mem = _clean(card.get("memories"), 240)[:4]
         if mem:
             npc["seed_memories"] = mem
+        # The one memory that is about THIS run rather than about the
+        # character. The card above is the character's own history and
+        # replacing the list with it is right - but a companion's memory of
+        # arriving with the player is not part of their canon, so it has to be
+        # put back after the rewrite or the persona pass silently deletes the
+        # only thing tying her to the person she came with.
+        if npc.get("companion"):
+            seeds = [s for s in (npc.get("seed_memories") or [])]
+            seeds.insert(0, COMPANION_MEMORY)
+            npc["seed_memories"] = seeds[:6]
         # Who should NOT be standing in the opening square. A live build put
         # Muzan Kibutsuji - a character whose entire existence is concealment -
         # in a public town square on turn one, because the rule that guarantees
@@ -1065,6 +1219,25 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         # answers it instead.
         if card.get("public") is False:
             npc["hidden_start"] = True
+        return anchors
+
+    by = {_fold(c.get("name", "")): c for c in (out.get("characters") or [])
+          if isinstance(c, dict)}
+    for npc in canon:
+        anchors = dict(npc.get("anchors") or {})
+        # THE FLOOR FIRST. What the source says, with no model call. This is
+        # what stops a build handing the narrator "Nezuko Kamado / VOICE:
+        # soft-spoken and kind / CONSTRAINTS: is an ordinary mortal person" for
+        # a character who is mute, is a demon, and rides in a box - whether the
+        # model is offline, or simply does not know the character. The model
+        # card below then overrides it field by field.
+        floor = canon_lore.card(npc["name"])
+        if floor:
+            anchors = _apply_card(npc, anchors, floor)
+        said = by.get(_fold(npc["name"]))
+        if said:
+            anchors = _apply_card(npc, anchors, said)
+        npc["anchors"] = anchors
     return raw
 
 
@@ -1344,6 +1517,23 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         if era_places:
             found = {**found, "places": era_places}
 
+    # A setting the curated roster knows by name keeps its real cast whether or
+    # not the lookup ran. Research is an ENHANCEMENT, and when it is off (a wiki
+    # timeout, a blocked egress, offline) it used to come back with an empty
+    # cast - and an empty cast is exactly what the builder fills with invented
+    # people (Kaname, Aiko: never in Demon Slayer). Merged HERE, before the
+    # grounding brief is written, so the builder is TOLD the real cast and the
+    # seating pass below can put back anyone it still skipped.
+    if mode != "original":
+        seeded = canon_seed.fallback_cast(
+            setting, found.get("canonical_name") or "", era=era)
+        if seeded and len(found.get("characters") or []) < 4:
+            have = {_fold(c.get("name", "")) for c in (found.get("characters") or [])}
+            merged_cast = list(found.get("characters") or []) + [
+                c for c in seeded if _fold(c["name"]) not in have]
+            found = {**found, "characters": canon_seed.pin_protagonists(
+                setting, found.get("canonical_name") or "", merged_cast, era=era)}
+
     # The scale is needed BEFORE the grounding brief is written: how many
     # people this build is about to ask for is exactly what decides whether
     # the roster covers it or the model is being handed a shortfall.
@@ -1365,7 +1555,16 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # and the keyword list remain the only signals for it - which is the
     # behaviour that was there before and is still the right one.
     named_properties = bool(parsed.get("imports") or parsed.get("host_is_proper"))
-    canon = bool(found.get("found")) or (mode != "original" and named_properties)
+    # A setting the curated roster knows by name is canon whether or not the
+    # lookup ran. Research is an ENHANCEMENT, and when it is off (offline, a
+    # blocked egress, a wiki timeout) every named franchise used to fall through
+    # to "original" - which skipped the entire canon path for a setting we can
+    # name from memory: no source line, no frontier, no canon personas, no
+    # chapters. That is the "Tanjiro does not know his own world" failure
+    # arrived at from the network side rather than the prompt side.
+    seeded_canon = mode != "original" and bool(
+        canon_seed.match(setting, found.get("canonical_name") or ""))
+    canon = bool(found.get("found")) or seeded_canon or (mode != "original" and named_properties)
     # PRIVATE BY DEFAULT is not a judgement about the player - they own this
     # world, play it, and export it. It only means a world that continues
     # someone else's setting is not PUBLICLY LISTED on a shared service, which
@@ -1449,10 +1648,24 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         ]
         structure = _stitch(plan, districts, filled)
 
+    # The laws are HARD constraints the engine enforces before any prose, so
+    # they have to fit the setting they are enforcing. Written from the world's
+    # own name and cast alone, a Demon Slayer world got laws like "there is no
+    # magic here. No spell, vision, or supernatural power is available to
+    # anyone" - which forbids the breathing techniques and Blood Demon Arts the
+    # whole setting runs on, and the World Master then rejects canon actions on
+    # the strength of them.
+    laws_source = (found.get("canonical_name") or "").strip()
+    if not laws_source and parsed.get("host_is_proper"):
+        laws_source = (parsed.get("host") or "").strip()
+    laws_setting = f"\nSETTING: {laws_source or setting}\n"
     laws_brief = (
-        f"WORLD: {structure.get('name')}\n"
+        f"WORLD: {structure.get('name')}{laws_setting}"
         f"PLACES: {', '.join(l.get('id', '') for l in structure.get('locations', []))}\n"
         f"PEOPLE: {', '.join(n.get('id', '') for n in structure.get('npcs', []))}\n\n"
+        "The laws are what is TRUE in this setting - its own physics, powers and "
+        "prohibitions - not a generic village's. A law that forbids something the "
+        "setting runs on is a law that breaks the world.\n"
         "Write the laws and the fate. JSON only."
     )
     laws = _resilient(
@@ -1474,6 +1687,13 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # create_playthrough falls back to default_protagonist and Session Zero's
     # answer never reached it. Being called by your own name is most of what
     # separates playing a character from steering a camera.
+    # Their own picture, if they brought one. normalise() refuses anything
+    # that is not a path this server issued, so a hand-edited world cannot
+    # smuggle a remote image in here.
+    face = str((answers or {}).get("portrait") or "").strip()
+    if face:
+        raw["default_portrait"] = face
+
     who = str((answers or {}).get("name") or "").strip()
     if who:
         raw["default_protagonist"] = who[:120]
@@ -1510,7 +1730,15 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
                                          fallback=str(raw.get("name") or ""))
     raw["researched"] = bool(found.get("found"))
     raw["personal_only"] = personal
-    raw["inspired_by"] = found.get("canonical_name") or (setting if personal else "")
+    # The SOURCE the narrator is told about is the setting, not the whole
+    # sentence the player typed. A crossover premise ("I and Charlie from Hazbin
+    # Hotel are inside the world of Demon Slayer") was recorded verbatim, so the
+    # narrator's source line read like the player's request rather than the
+    # world the story is actually in.
+    source_name = (found.get("canonical_name") or "").strip()
+    if not source_name and parsed.get("host_is_proper"):
+        source_name = (parsed.get("host") or "").strip()
+    raw["inspired_by"] = source_name or (setting if personal else "")
     raw["mode"] = "canon" if canon else "original"
     raw["scale"] = scale if scale in SCALES else "town"
     if personal:
@@ -1547,8 +1775,17 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # soft-spoken and kind / CONSTRAINTS: is an ordinary mortal person" under
     # the heading "obey these exactly", and the narrator would obey.
     if canon:
-        raw = _apply_canon_personas(
-            raw, found.get("canonical_name") or setting, user_id=user_id)
+        # The SOURCE these cards are looked up under, resolved the same way
+        # `inspired_by` is below: the host setting, never the sentence the
+        # player typed. Passing the raw premise here meant a crossover asked
+        # "SOURCE: I and my girlfriend charlie (from hazbin hotel) in Demon
+        # Slayer verse" for Tanjiro Kamado - the same disease the narrator's
+        # source line already had, in the one call that decides what a canon
+        # character actually is. Research supplies the canonical title when it
+        # answers; the parse supplies the host when it does not.
+        persona_source = (found.get("canonical_name") or parsed.get("host")
+                          or setting)
+        raw = _apply_canon_personas(raw, persona_source, user_id=user_id)
         # And then make the collision real. A crossover's whole interest is
         # what the host world does about the outsider being what they are.
         raw = _crossover_friction(
@@ -1557,7 +1794,22 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
             user_id=user_id)
         # The rest of the setting's geography, reachable rather than merely
         # mentioned. Costs nothing until somebody walks there.
-        raw = _record_beyond(raw, found)
+        # The frontier is built from researched places, and research is a
+        # network call that sometimes comes back thin - the same build produced
+        # eighteen places on one run and none on the next. The seeded roster
+        # knows where this setting's real places are regardless, so it is
+        # MERGED IN rather than only used as a last resort: a thin research pass
+        # used to leave the landmark check (and the frontier) keyed on a handful
+        # of names while the town's own streets wore the rest.
+        seeded = canon_seed.fallback_places(
+            setting, found.get("canonical_name") or "", era=era)
+        merged = list(found.get("places") or [])
+        have = {_fold(p.get("name", "")) for p in merged}
+        for p in seeded:
+            if _fold(p["name"]) not in have:
+                merged.append(p)
+                have.add(_fold(p["name"]))
+        raw = _record_beyond(raw, {**found, "places": merged})
 
     raw = _top_up(raw)
     return worldkit.normalise(raw, strict=True)
