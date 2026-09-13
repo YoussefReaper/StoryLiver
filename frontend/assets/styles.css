@@ -3456,3 +3456,17 @@ button { background: none; border: 0; cursor: pointer; }
 }
 .dh-face-btn:hover .dh-face-hint { opacity: 1; }
 .dh-face-btn:hover .dh-face { box-shadow: inset 0 0 0 1px var(--ember); }
+
+/* Find something in two hundred turns of memory. */
+.tl-find {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding: 10px 14px; border-radius: var(--r);
+  background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--rule-hair);
+}
+.tl-find:focus-within { box-shadow: inset 0 0 0 1px rgba(240,169,76,.5); }
+.tl-find .ico { font-size: 15px; color: var(--label); flex: none; }
+.tl-find input {
+  flex: 1; min-width: 0; border: 0; outline: 0; background: none;
+  font-family: var(--ui); font-size: 14px; color: var(--vellum);
+}
+.tl-find input::placeholder { color: var(--faint); }

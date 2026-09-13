@@ -1866,16 +1866,40 @@ async function showTimeline() {
   const { events } = await api(`/playthroughs/${S.ptId}/timeline`);
   const keys = [['action', 'var(--vellum-dim)'], ['fate', 'var(--ember)'], ['rejection', 'var(--crimson)'],
                 ['npc', 'var(--verdigris)'], ['beat', 'var(--rose)'], ['contest', 'var(--ember-soft)']];
+  // Two hundred turns in, this is the only place that holds everything and it
+  // had no way to find anything. "What did the Warden tell me about the mill"
+  // is the question a long campaign generates constantly, and the answer was
+  // scrolling. Filtering is local: the whole record is already here.
+  S.timelineEvents = events;
   showModal(`${head('Memory &amp; Timeline', `${events.length} events, append-only. The actual memory — not a transcript.`)}
     <div class="modal-body">
+      <label class="tl-find">
+        <svg viewBox="0 0 16 16" class="ico"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
+        <input id="tlFind" placeholder="Find a name, a place, a thing that happened…" autocomplete="off">
+      </label>
       <div class="tl-legend">${keys.map(([k, c]) => `<span class="tl-key"><i style="background:${c}"></i>${k}</span>`).join('')}</div>
-      <div class="tl">${events.slice().reverse().map((e) => `
-        <div class="tl-row k-${esc(e.kind)}"><span class="tl-turn">T${e.turn}</span>
-          <span class="tl-actor">${esc(e.actor)}</span>
-          <span class="tl-text"><b>${esc(e.action)}</b>
-            ${e.consequence ? `<span class="cons"> &mdash; ${esc(e.consequence)}</span>` : ''}
-            ${e.rule_ref ? `<span class="rule-chip">${esc(e.rule_ref)}</span>` : ''}</span></div>`).join('')}</div>
+      <div class="tl" id="tlList">${timelineRows(events)}</div>
     </div>`);
+  const find = $('#tlFind');
+  if (find) {
+    find.addEventListener('input', () => {
+      const q = find.value.trim().toLowerCase();
+      const hits = !q ? events : events.filter((e) =>
+        `${e.actor} ${e.action} ${e.consequence || ''} ${e.kind}`.toLowerCase().includes(q));
+      $('#tlList').innerHTML = hits.length ? timelineRows(hits)
+        : `<div class="empty">Nothing in this story matches “${esc(find.value.trim())}”.</div>`;
+    });
+    find.focus();
+  }
+}
+
+function timelineRows(events) {
+  return events.slice().reverse().map((e) => `
+    <div class="tl-row k-${esc(e.kind)}"><span class="tl-turn">T${e.turn}</span>
+      <span class="tl-actor">${esc(e.actor)}</span>
+      <span class="tl-text"><b>${esc(e.action)}</b>
+        ${e.consequence ? `<span class="cons"> &mdash; ${esc(e.consequence)}</span>` : ''}
+        ${e.rule_ref ? `<span class="rule-chip">${esc(e.rule_ref)}</span>` : ''}</span></div>`).join('');
 }
 
 async function showPricing() {
