@@ -206,6 +206,11 @@ SEMANTIC_ONLY = {
     "entry-narration",   # selected by app.js to find prose nodes
     "fate-card", "obj-card", "party-card", "tension-card", "you-card",
     "acct-name", "ib-facts",
+    # The weather word in the ambient strip. Its siblings each earn a rule
+    # because each is painted differently - .am-time dim, .am-mana ember - and
+    # .am-sky is the one that reads in the strip's own colour, so it inherits
+    # from .ambient. It carries #amSky, which app.js writes the weather into.
+    "am-sky",
 }
 
 

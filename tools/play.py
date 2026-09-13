@@ -47,6 +47,11 @@ DEFAULT_ACTIONS = [
 
 
 def _render(entry):
+    """One feed entry, as a reader would see it.
+
+    The `you` entry already IS the action the player typed - the engine
+    renders it as the turn's opening line - so the loop must not print the
+    action itself as well, or every turn opens twice."""
     kind = entry.get("kind")
     text = (entry.get("text") or "").strip()
     if kind == "you":
@@ -54,11 +59,14 @@ def _render(entry):
     if kind == "speech":
         name = (entry.get("meta") or {}).get("speaker", {}).get("name") or entry.get("actor")
         return f"\n**{name}:** {text}\n"
-    if kind == "safety":
-        return f"\n_(the table draws a line)_ {text}\n"
-    if kind == "refusal":
-        return f"\n_(the world pushes back)_ {text}\n"
-    return f"\n{text}\n"
+    if kind == "narration":
+        return f"\n{text}\n"
+    label = {"safety": "the table draws a line",
+             "refusal": "the world pushes back",
+             "fate": "the world, on its own",
+             "beat": "the story turns",
+             "npc": "somebody moves first"}.get(kind, kind)
+    return f"\n_({label})_ {text}\n"
 
 
 def main():
@@ -131,7 +139,8 @@ def main():
         if res.get("blocked"):
             out.append(f"\n> {action}\n\n_(blocked)_ {res.get('reason')}\n")
             continue
-        out.append(f"\n> {action}\n")
+        # The action itself arrives as the turn's first feed entry, so it is
+        # not printed here as well.
         for entry in res.get("entries", []):
             out.append(_render(entry))
         if res.get("ending"):
