@@ -5253,6 +5253,13 @@ async function goNextChapter() {
   if (btn) btn.disabled = true;
   try {
     const r = await api(`/playthroughs/${S.ptId}/chapter`, { method: 'POST' });
+    // The engine refuses to travel on from a chapter that has not finished,
+    // and says why. Without this branch that refusal was rendered as
+    // "undefined — undefined places, undefined people."
+    if (!r.moved) {
+      if (btn) btn.disabled = false;
+      return toast(r.note || 'There is still something here to finish.', 'warn');
+    }
     closeOverlays();
     if (r.aftermath) {
       toast('The source has run out. What happens now is yours.');

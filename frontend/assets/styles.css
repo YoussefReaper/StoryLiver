@@ -3428,3 +3428,16 @@ button { background: none; border: 0; cursor: pointer; }
    and its portrait does not need to be the anchor of the whole screen. */
 .plate:not(.plate-speaking) { align-items: center; gap: 14px; }
 .plate:not(.plate-speaking) .plate-face { width: 54px; height: 54px; font-size: 20px; }
+
+/* The composer sits over the end of the column, so the prose has to fade into
+   it rather than being sliced mid-word by the edge of a gradient that is only
+   as tall as the box. A taller scrim above the dock, and room under the last
+   entry so it can scroll clear of it. */
+.composer { position: relative; background: none; }
+.composer::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; top: -44px;
+  background: linear-gradient(to top, var(--ink) 58%, transparent);
+  pointer-events: none;
+}
+.composer > * { position: relative; }
+.feed { padding-bottom: 18px; }
