@@ -9,3 +9,13 @@ venv/
 
 # Test scratch: every suite writes a throwaway world here.
 .t/
+
+# Play-harness scratch: tools/play.py writes the transcript, every prompt it
+# built, and the spool of answers it is still waiting on. All of it is output,
+# none of it is source.
+prompts/
+spool/
+playtest.md
+
+# A zip of the repo, inside the repo.
+StoryLiver.zip
