@@ -28,7 +28,11 @@ export function attach(svg, base) {
   if (!svg) return null;
   let view = attached.get(svg);
   if (!view) {
-    view = { x: 0, y: 0, scale: 1, base, dragging: false, moved: false };
+    // Start at the content's OWN origin, not at 0,0. A panel that frames its
+    // drawing with a base of [0, 150, w, h] - because nothing it draws is
+    // above y=150 - had that offset silently dropped, so the first view was
+    // 150 units of empty space with the content hanging off the bottom.
+    view = { x: base[0], y: base[1], scale: 1, base, dragging: false, moved: false };
     attached.set(svg, view);
     bind(svg, view);
   }
@@ -41,8 +45,8 @@ export function attach(svg, base) {
 export function reset(svg) {
   const view = attached.get(svg);
   if (!view) return;
-  view.x = 0;
-  view.y = 0;
+  view.x = view.base[0];
+  view.y = view.base[1];
   view.scale = 1;
   apply(svg, view);
 }

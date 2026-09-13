@@ -566,10 +566,17 @@ def _deterministic_tick(pt, world, *, turn, player, actor_name, action, verdict,
         # deltas so the ledger has something real to point at.
         cause_node = 0
         if relationships.is_harmful(event) or relationships.is_bonding(event):
+            # Says what happened BETWEEN them, not what the player did - the
+            # turn already writes an "action" node with that, and the two
+            # rendered as an exact duplicate pair in the Chronicle. This one
+            # is the only line in the world that names the relational event,
+            # which is the thing a drifting character needs to point at.
+            who = actor_name or _player_name(pt, player)
+            toward = ", ".join(world.npc_name(n) for n in aimed_at[:2])
             cause_node = narrgraph.add(
                 pt["id"], turn,
                 "rupture" if relationships.is_harmful(event) else "bond",
-                memory.retell(action[:120], actor_name or _player_name(pt, player))[:140],
+                f"{who} {event.replace('_', ' ')} {toward}".strip()[:140],
                 detail=verdict.get("consequence", "")[:200],
                 place_id=pt["current_location"], actor=player, weight=4)
         for npc_id in aimed_at[:3]:

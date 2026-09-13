@@ -570,7 +570,11 @@ function renderAtlasDetail() {
 function renderGraph() {
   const g = S.graph; const svg = $('#graphMap');
   if (!g) { svg.innerHTML = ''; return; }
-  const NW = 148, NH = 40, GAPX = 176, LANEY = 66;
+  // Bigger than it was. At 148x40 with a 9.5px label, fitted into a frame a
+  // third the width of the content, every node rendered as an unreadable
+  // chip - which is what the Threads tab looked like for the first twenty
+  // turns of every world.
+  const NW = 196, NH = 54, GAPX = 228, LANEY = 84;
   const nodes = g.nodes.slice(-26);
   const startSeq = nodes.length ? nodes[0].seq : 0;
   const pos = {};
@@ -578,16 +582,26 @@ function renderGraph() {
     pos[n.id] = { x: 40 + (n.seq - startSeq) * GAPX, y: 190 + n.lane * LANEY };
   });
   const futureBase = 40 + (nodes.length ? (nodes[nodes.length - 1].seq - startSeq + 1) : 0) * GAPX;
-  const width = futureBase + (g.futures.length ? g.futures.length * GAPX : 0) + NW + 60;
-  const fullWidth = Math.max(width, 900);
+  // Fit the view to what is actually drawn. A fixed 900x400 box meant a young
+  // story - four nodes in a row - was rendered at a third of the frame and
+  // read as a strip of unreadable chips floating in an empty panel, which is
+  // how the Threads tab looked for the first twenty turns of every world.
+  const laneMax = Math.max(0, ...nodes.map((n) => n.lane || 0),
+                           ...g.futures.map((f) => f.lane || 0));
+  const contentW = futureBase + (g.futures.length ? g.futures.length * GAPX : 0) + NW + 40;
+  const contentH = 190 + laneMax * LANEY + NH + 40;
+  // Capped, not fitted. Framing the WHOLE strip means a long story shrinks
+  // until nothing can be read; this keeps the nodes at a legible size and
+  // lets the player pan, which is what the pan/zoom layer is for.
+  const box = [0, 150, Math.min(Math.max(contentW, 560), 1000),
+               Math.max(contentH - 150, 200)];
   // The old panel widened the viewBox as nodes accumulated and left the far
   // end unreachable. It is a pannable canvas now, so it stays the size of the
   // frame and the player moves around inside it.
   if (window.__viewport) {
-    window.__viewport.attach(svg, [0, 0, fullWidth, 400]);
+    window.__viewport.attach(svg, box);
   } else {
-    svg.setAttribute('viewBox', `0 0 ${fullWidth} 400`);
-    svg.style.minWidth = `${fullWidth}px`;
+    svg.setAttribute('viewBox', box.join(' '));
   }
 
   const parts = [];
@@ -613,16 +627,16 @@ function renderGraph() {
     parts.push(`<g class="g-node tone-${esc(n.tone)} ${n.id === g.here ? 'here' : ''}"
         data-gnode="${n.id}" transform="translate(${p.x},${p.y})" tabindex="0">
       <rect width="${NW}" height="${NH}"/>
-      <text x="11" y="16" style="font-size:9.5px;fill:var(--faint);letter-spacing:.1em">T${n.turn} ${esc(n.kind).toUpperCase()}</text>
-      <text x="11" y="31">${label(n.label, 22)}</text></g>`);
+      <text x="14" y="20" style="font-size:10.5px;fill:var(--faint);letter-spacing:.12em">T${n.turn} ${esc(n.kind).toUpperCase()}</text>
+      <text x="14" y="40" style="font-size:14px">${label(n.label, 26)}</text></g>`);
   }
   for (const f of g.futures) {
     const p = pos[f.id];
     parts.push(`<g class="g-node future tone-fate" data-gfuture="${esc(f.id)}"
         transform="translate(${p.x},${p.y})" tabindex="0">
       <rect width="${NW}" height="${NH}"/>
-      <text x="11" y="16" style="font-size:9.5px;fill:var(--ember-deep);letter-spacing:.1em">T${f.turn} SEALED</text>
-      <text x="11" y="31">${label(f.label, 22)}</text></g>`);
+      <text x="14" y="20" style="font-size:10.5px;fill:var(--ember-deep);letter-spacing:.12em">T${f.turn} SEALED</text>
+      <text x="14" y="40" style="font-size:14px">${label(f.label, 26)}</text></g>`);
   }
   svg.innerHTML = parts.join('');
   $('#graphDetail').innerHTML = '';
