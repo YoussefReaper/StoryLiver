@@ -137,6 +137,32 @@ def _public_ips(host: str) -> list:
     return good
 
 
+# A proxy is an egress point somebody else configured on purpose. When one is
+# set, the dossier must route through it: a request pinned to a resolved IP
+# connects directly and cannot use a proxy at all, which is how a working
+# network produced "unreachable" for every lookup.
+def _proxy_for(host: str) -> str:
+    """The proxy configured for this host, or "" for a direct connection.
+
+    Reads the same environment httpx itself would, so a deployment that sets
+    HTTPS_PROXY (or the lowercase form, or NO_PROXY to exempt a host) gets the
+    behaviour it asked for rather than a silently direct connection. Removed
+    from the module-level client cache key too, so changing the proxy does not
+    silently reuse a connection opened under the old one."""
+    import os
+    keys = (f"no_proxy", f"NO_PROXY")
+    for k in keys:
+        for entry in (os.environ.get(k) or "").split(","):
+            entry = entry.strip().lower().lstrip(".")
+            if entry and (host == entry or host.endswith("." + entry)):
+                return ""
+    for k in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 class _Budget:
     """A dossier gets a fixed number of requests, and ONE connection per host.
 
@@ -144,7 +170,6 @@ class _Budget:
     waits. The connection pool matters just as much: a fresh client per request
     means a fresh DNS lookup and a fresh TLS handshake every time, which was
     the bulk of the wall clock on a ten-request dossier."""
-
     def __init__(self, limit=MAX_REQUESTS):
         self.left = limit
         self._clients = {}
@@ -155,13 +180,36 @@ class _Budget:
         self.left -= 1
 
     def client(self, host, ip, timeout):
-        """One pinned, verified connection per host, kept open for the dossier."""
+        """One connection per host, kept open for the dossier.
+
+        IP-PINNED BY DEFAULT, because that is the SSRF defence `_get_json`
+        depends on: validate the address, then connect to that exact address,
+        so nothing between the check and the connection can swap it.
+
+        BUT a pinned request goes to the address directly and therefore cannot
+        use a proxy - the whole point of a proxy is that it is the thing you
+        connect TO, and it makes the outbound connection for you. On a host
+        behind one (a corporate egress proxy, a sandbox, a metered relay) the
+        pinned socket is refused and every wiki lookup fails with "unreachable",
+        which reads as a network problem and is not one.
+
+        So when a proxy is actually configured, the proxy wins and pinning is
+        dropped - a proxy is itself a validated egress point, and refusing to
+        route through it is not more secure, it is just broken. Verified by the
+        two symptoms this had: `502 Bad Gateway` from httpx, and Wikipedia's
+        own `403 Please set a user-agent` when the same request went direct."""
         import httpx
         if host not in self._clients:
+            pinned = not _proxy_for(host)
+            headers = {"User-Agent": USER_AGENT, "Accept": "application/json",
+                       "Accept-Encoding": "gzip"}
+            if pinned:
+                # Only meaningful while pinning - it names the host on a socket
+                # already opened to that host's address.
+                headers["Host"] = host
             self._clients[host] = httpx.Client(
                 timeout=timeout, follow_redirects=False, verify=True,
-                headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                         "Host": host, "Accept-Encoding": "gzip"},
+                headers=headers, trust_env=not pinned,
                 limits=httpx.Limits(max_connections=2, keepalive_expiry=30.0))
         return self._clients[host]
 
@@ -187,17 +235,27 @@ def _get_json(url: str, params: dict, budget: _Budget, *, timeout=None,
     if not _host_allowed(host):
         raise BlockedHost(f"{host} is not an allowed research source")
 
-    ip = _public_ips(host)[0]
-    # Connect to the validated ADDRESS, carrying the hostname in SNI and in the
-    # certificate check. Nothing between validating and connecting can swap it.
-    pinned = parsed._replace(netloc=ip).geturl()
+    proxy = _proxy_for(host)
+    if proxy:
+        # Behind a proxy, the proxy resolves and connects on our behalf, so the
+        # address check below cannot pin anything - and trying to would send
+        # the request straight to the IP, past the only route out. The host is
+        # still validated by `_host_allowed` above, and TLS still verifies the
+        # certificate, so the name reached is the name asked for.
+        target, sni = url, {}
+    else:
+        ip = _public_ips(host)[0]
+        # Connect to the validated ADDRESS, carrying the hostname in SNI and in
+        # the certificate check. Nothing between validating and connecting can
+        # swap it.
+        target = parsed._replace(netloc=ip).geturl()
+        sni = {"sni_hostname": host}
 
-    client = budget.client(host, ip, timeout)
+    client = budget.client(host, None, timeout)
 
     for attempt in range(attempts):
         try:
-            r = client.get(pinned, params=params,
-                           extensions={"sni_hostname": host})
+            r = client.get(target, params=params, extensions=sni)
         except httpx.HTTPError as e:
             if attempt == attempts - 1:
                 raise ResearchError(f"{host} unreachable: {e}")
@@ -674,6 +732,21 @@ def categories_for(bucket: str, available: list) -> list:
     return hits if bucket == "arcs" else hits[:4]
 
 
+# A category whose entire name is just the CONCEPT ("Story Arcs", "Arcs",
+# "Sagas") is a container, not an arc. Reading it as one arc was a live bug:
+# Vinland Saga's wiki has exactly one arc-shaped category, `Story Arcs`, whose
+# name stripped to "Story" - so the whole chapter book for a whole franchise
+# was a single chapter called "Story", and every arc the source actually has
+# was invisible. A name this bare carries no information about a story beat,
+# so it is descended into rather than used.
+_ARC_CONTAINER = re.compile(r"^(story\s*)?arcs?$|^sagas?$|^seasons?$|^events?$", re.I)
+
+
+def _arc_is_container(name: str) -> bool:
+    """A category with no name beyond the concept is a box, not an arc."""
+    return bool(_ARC_CONTAINER.match((name or "").strip()))
+
+
 CATEGORY_SETS = {
     "characters": ("Category:Characters", "Category:Male Characters",
                    "Category:Female Characters"),
@@ -798,10 +871,45 @@ def describe(host: str, titles: list, budget: _Budget) -> dict:
 _CONNECTIVE = r"(?:of|the|and|in|on|at|to|de|von|van|no|le|la|du)"
 _PROPER = (r"((?:The\s+)?[A-Z][\w'\-]*"
            r"(?:\s+(?:" + _CONNECTIVE + r"\s+)*[A-Z0-9][\w'\-]*)*)")
+
+# A name as a human actually types it. _PROPER demands capitalisation, and
+# players write "spongbob square pants", "gojo", "thanos" - so a property
+# typed in lowercase was invisible to EVERY host pattern and the parser fell
+# back to guessing from capitalised words. Used only directly after an
+# explicit host trigger ("world of X", "goes to X"), where the trigger - not
+# the capitalisation - is what makes the next words a name. It stops at the
+# words that end a name (which/who/with/and...) so "spongbob square pants
+# which also have thanos" yields the property and not the whole sentence.
+_CONNECTIVE_MIN = r"(?:of|the|in|on|at|to|de|von|van|no|le|la|du)"
+_STOP = (r"(?:which|who|whom|whose|where|when|while|that|with|and|but|also"
+         r"|then|than|have|has|had|is|are|was|were|will|would|can|could"
+         r"|should|because|there|their|our|my|his|her|its|goes|go)")
+_LOOSE = (r"((?:The\s+)?[A-Za-z][\w'\-]*"
+          r"(?:\s+(?:" + _CONNECTIVE_MIN + r"\s+)*"
+          r"(?!" + _STOP + r"\b)[A-Za-z0-9][\w'\-]*){0,3})")
+# "verse" is how people actually say it. "in the verse of Demon Slayer" was
+# not in this list, so no host was extracted at all and a crossover silently
+# fell back to research's highest-ranked franchise - which is usually the
+# IMPORT's own home, i.e. exactly backwards from what the player meant.
 _HOST_PATTERNS = (
-    rf"\b(?:world|universe|setting|reality|timeline|continuity)\s+of\s+{_PROPER}",
+    rf"\b(?:world|universe|verse|realm|setting|reality|timeline|continuity"
+    rf"|cosmos|series)\s+of\s+{_PROPER}",
     rf"\bset\s+in\s+{_PROPER}",
     rf"\b(?:inside|within|into|in)\b\s+(?:the\s+)?(?:world\s+of\s+)?{_PROPER}",
+)
+
+# The same triggers, tolerating lowercase. Tried only after the strict set
+# finds nothing, so a capitalised name is never downgraded. "goes to X" is
+# here because that is how a player describes arriving somewhere and it was
+# not a host phrase at all - "I ... goes to spongbob square pants" parsed no
+# host, no imports and no entities, i.e. the whole premise was dropped.
+_LOOSE_HOST_PATTERNS = (
+    rf"\b(?:world|universe|verse|realm|setting|reality|timeline|continuity"
+    rf"|cosmos|series)\s+of\s+{_LOOSE}",
+    rf"\b(?:go(?:es|ing)?|travel(?:s|ling|led)?|arrive[sd]?|head(?:s|ing)?"
+    rf"|venture[sd]?|move[sd]?|teleport(?:ed|s)?|warp(?:ed|s)?|sent"
+    rf"|return(?:s|ed)?|wake)\s+(?:to|into|in)\s+(?:the\s+)?{_LOOSE}",
+    rf"\bset\s+in\s+{_LOOSE}",
 )
 
 # "X from Y" - a character carried in from somewhere else.
@@ -949,6 +1057,97 @@ def _name_before(text: str, pos: int) -> str:
     return name
 
 
+_RELATION_WORDS = (r"girlfriend|boyfriend|partner|wife|husband|fianc[eé]|"
+                   r"lover|best friend|close friend|friends|friend|brother|"
+                   r"sister|mentor|rival|enemy|ally|companion|sidekick|"
+                   r"bodyguard|acquaintance")
+
+_REL_BEFORE = (rf"\b(?:my|our|his|her|their)\s+({_RELATION_WORDS})\b\s*,?\s*"
+               rf"({_LOOSE})")
+_REL_AFTER = (rf"({_LOOSE})\s*,?\s+who\s+(?:is|are)\s+"
+              rf"(?:my|our|his|her|their)\s+({_RELATION_WORDS})\b")
+_WITH_LIST = rf"\bwith\s+({_LOOSE}(?:\s*(?:,|and)\s*{_LOOSE})*)"
+_GOAL = (r"(?:whose|who(?:'s)?)\s+(?:goal|aim|plan|mission|objective|dream"
+         r"|purpose|ambition)\s+is\s+to\s+([^.,;]+)")
+_WANTS = r"\bwho\s+wants?\s+to\s+([^.,;]+)"
+
+
+def _attach_import(out: dict, name: str, relation: str = "",
+                   with_player: bool | None = None) -> dict:
+    """Record a person the premise named exactly once, merging what we learn
+    about them from each phrase that mentions them."""
+    for imp in out["imports"]:
+        if _norm(imp.get("character", "")) == _norm(name):
+            if relation and not imp.get("relation"):
+                imp["relation"] = relation
+            if with_player:
+                imp["with_player"] = True
+            return imp
+    imp = {"character": name, "from": "", "with_player": bool(with_player)}
+    if relation:
+        imp["relation"] = relation
+    out["imports"].append(imp)
+    return imp
+
+
+def _relations_and_goals(raw: str, out: dict, remember) -> None:
+    """Relationships, companion groups and stated goals.
+
+    All of this was being dropped: the parser knew exactly one shape,
+    "Character from Source", and a relationship is not a source. So "my
+    girlfriend charlie morningstar", "with gojo and geto who are our friends"
+    and "thanos whose goal is to remove half the universe" produced nothing at
+    all - no seat, no persona, no drive.
+
+    A girlfriend is not a travelling companion and a rival is not a friend.
+    If the difference never reaches the build, the world cannot treat them
+    differently, which is the whole point of naming them.
+    """
+    for m in re.finditer(_REL_BEFORE, raw, re.I):
+        rel = (m.group(1) or "").lower()
+        name = _titleish(_clean_entity(m.group(2)))
+        if name:
+            _attach_import(out, remember(name), relation=rel, with_player=True)
+
+    for m in re.finditer(_REL_AFTER, raw, re.I):
+        name = _titleish(_clean_entity(m.group(1)))
+        if name:
+            _attach_import(out, remember(name),
+                           relation=(m.group(2) or "").lower(), with_player=True)
+
+    for m in re.finditer(_WITH_LIST, raw, re.I):
+        rel = ""
+        rm = re.search(rf"who\s+(?:is|are)\s+(?:my|our|his|her|their)\s+"
+                       rf"({_RELATION_WORDS})\b", raw[m.end():m.end() + 60], re.I)
+        if rm:
+            rel = rm.group(1).lower()
+        for part in re.split(r"\s*(?:,|and)\s*", m.group(1) or ""):
+            name = _titleish(_clean_entity(part))
+            if name:
+                _attach_import(out, remember(name), relation=rel, with_player=True)
+
+    # "thanos whose goal is to X" - a drive the world has to actually run.
+    for pat in (_GOAL, _WANTS):
+        for m in re.finditer(pat, raw, re.I):
+            goal = (m.group(1) or "").strip(" .")
+            if not goal:
+                continue
+            before = raw[:m.start()]
+            target = None
+            for imp in out["imports"]:
+                nm = _norm(imp.get("character", ""))
+                if nm and nm in _norm(before):
+                    target = imp
+            if target is None:
+                pm = re.search(rf"({_LOOSE})\s*,?\s+(?:whose|who)\b", before, re.I)
+                if pm:
+                    name = _titleish(_clean_entity(pm.group(1)))
+                    if name:
+                        target = _attach_import(out, remember(name))
+            if target is not None:
+                target["goal"] = goal
+
+
 def parse_premise(text: str) -> dict:
     """Pull the named properties out of what the player actually wrote.
 
@@ -1001,11 +1200,22 @@ def parse_premise(text: str) -> dict:
             continue
         out["imports"].append({"character": character, "from": source})
 
-    for pattern in _HOST_PATTERNS:
+    # Relationships, companion groups and goals - see _relations_and_goals.
+    # Runs after the "X from Y" shapes so a person is recorded once and then
+    # enriched, rather than being duplicated by every phrase naming them.
+    _relations_and_goals(raw, out, remember)
+
+    for pattern in (*_HOST_PATTERNS, *_LOOSE_HOST_PATTERNS):
         m = re.search(pattern, raw)
         if m:
             host = remember(m.group(1))
-            if host and host not in [i["from"] for i in out["imports"]]:
+            # Not the host if the premise brought that person WITH it.
+            # "Charlie Morningstar at the world of spongbob square pants" made
+            # Charlie the world she is standing in.
+            taken = {x for i in out["imports"]
+                     for x in ((i.get("from") or ""), (i.get("character") or ""))
+                     if x}
+            if host and host not in taken:
                 out["host"] = host
                 out["host_is_proper"] = True
                 break
@@ -1049,7 +1259,122 @@ def parse_premise(text: str) -> dict:
     return out
 
 
-def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") -> dict:
+PREMISE_SYSTEM = """You read ONE sentence a player typed describing the story they want. You return structured JSON and nothing else - no prose, no commentary, no markdown fences.
+
+Return exactly this shape:
+{
+  "host": "the world the story is SET IN",
+  "imports": [
+    {"character": "name, as the player wrote it",
+     "from": "that person's home world, or empty if the sentence never says",
+     "relation": "who they are to the player, in your own words",
+     "goal": "what that person wants, or empty"}
+  ]
+}
+
+Rules that matter:
+- `host` is a PLACE, not a person, and never the home a guest came FROM. "Charlie Morningstar in the world of SpongeBob" has host "SpongeBob"; Charlie is an import.
+- `relation` is free text and the nuance is the entire point. "enemies but we have respect" is a DIFFERENT relation from "enemy" and must not be flattened. "my girlfriend" is not "a companion". Keep what the player actually meant.
+- One entry per person the sentence really names. Never invent anybody.
+- If the sentence names a world AND a character's origin, the world they are GOING TO is the host.
+"""
+
+
+def _coerce_premise_json(data) -> dict | None:
+    """Shape-check what the model returned. A model is not a trusted source:
+    anything malformed is dropped rather than allowed to build a world."""
+    if not isinstance(data, dict):
+        return None
+    host = str(data.get("host") or "").strip()
+    imports = []
+    for item in (data.get("imports") or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("character") or "").strip()
+        if not name:
+            continue
+        imports.append({
+            "character": name,
+            "from": str(item.get("from") or "").strip(),
+            "relation": str(item.get("relation") or "").strip(),
+            "goal": str(item.get("goal") or "").strip(),
+            "with_player": True,
+        })
+    return {"host": host, "imports": imports} if (host or imports) else None
+
+
+def _merge_premise(det: dict, llm_out: dict | None) -> dict:
+    """The model reads the sentence; the deterministic parse is the floor.
+
+    Neither is trusted alone. The model can silently drop somebody; the regex
+    can mislabel them. So a person found by EITHER is kept, and the richer
+    record wins field by field - which is how "girlfriend" survives even when
+    the model only says "companion".
+    """
+    if not llm_out:
+        return det
+    out = dict(det)
+    if llm_out.get("host"):
+        out["host"] = llm_out["host"]
+        out["host_is_proper"] = True
+
+    merged = [dict(i) for i in (llm_out.get("imports") or [])]
+    have = {_norm(i.get("character", "")) for i in merged}
+    for imp in (det.get("imports") or []):
+        if _norm(imp.get("character", "")) not in have:
+            merged.append(dict(imp))
+
+    det_by_name = {_norm(i.get("character", "")): i
+                   for i in (det.get("imports") or [])}
+    for imp in merged:
+        d = det_by_name.get(_norm(imp.get("character", "")))
+        if not d:
+            continue
+        for key in ("from", "relation", "goal"):
+            if not imp.get(key) and d.get(key):
+                imp[key] = d[key]
+    out["imports"] = merged
+
+    # Keep `entities` - what gets researched - in step with the merged parse.
+    for imp in merged:
+        for key in ("character", "from"):
+            name = (imp.get(key) or "").strip()
+            if name and _norm(name) not in {_norm(x) for x in out["entities"]}:
+                out["entities"].append(name)
+    return out
+
+
+def llm_parse_premise(text: str, *, user_id: str = "") -> dict | None:
+    """Ask the model to read the premise itself.
+
+    Regex cannot cover how people actually write these - "enemies but we have
+    respect", "my girlfriend charlie", "thanos whose goal is to erase half of
+    them" - and every missed shape built the wrong world. The model reads the
+    sentence ONCE, at world creation, and returns the same shape the
+    deterministic parser does.
+
+    Never raises and never blocks: offline, on a bad key, or on any error it
+    returns None and the caller keeps the deterministic parse. A premise must
+    not become unparseable because a lookup was unavailable.
+    """
+    from . import config, llm            # deferred: llm sits above this module
+
+    if not (getattr(config, "ANTHROPIC_API_KEY", "")
+            or getattr(config, "OPENAI_API_KEY", "")):
+        return None
+    try:
+        out = llm.complete(
+            "premise", PREMISE_SYSTEM,
+            f"The player wrote:\n{text}\n\nReturn the JSON.",
+            user_id=user_id or "worldforge", json_mode=True,
+            max_tokens=600, temperature=0.2, stub=lambda: None)
+    except Exception:
+        return None
+    return _coerce_premise_json(out)
+
+
+def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full",
+                    user_id: str = "") -> dict:
     """Research every property named in a premise, not just the whole string.
 
     The result always carries the parse, so the world builder knows what the
@@ -1057,6 +1382,10 @@ def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") ->
     research is an enhancement, and a failed lookup must never turn a canon
     crossover into "build something original"."""
     parsed = parse_premise(text)
+    # The model reads the sentence itself; the deterministic parse is the
+    # floor that can only improve on. Offline, or on any failure, `parsed`
+    # comes back untouched.
+    parsed = _merge_premise(parsed, llm_parse_premise(text, user_id=user_id))
     out = {**_empty(text, ""), "premise": parsed, "entities": {}}
 
     if not parsed["entities"]:
@@ -1210,13 +1539,36 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
                 # and fetching them would return every character who appeared
                 # in it instead.
                 if bucket == "arcs" and found_cats:
-                    arc_names = [re.sub(r"\s*Arcs?$", "", c).strip() or c
-                                 for c in found_cats[:16]]
-                    # Alphabetical is not a running order. The arc articles say
-                    # which chapter each one starts at; that is the real one.
-                    arc_names = order_arcs(host, arc_names, budget)
-                    out[bucket] = [{"name": n, "note": ""} for n in arc_names[:12]]
-                    continue
+                    # A container category names the CONCEPT, not a story beat.
+                    # `Story Arcs` stripped to "Story" and became the whole
+                    # chapter book of the franchise; the real arcs were its
+                    # MEMBERS, so a container is descended into instead of
+                    # used. A named arc category ("Mugen Train Arc") is still
+                    # the arc itself and is taken as-is.
+                    specific = [c for c in found_cats if not _arc_is_container(c)]
+                    if specific:
+                        arc_names = [re.sub(r"\s*Arcs?$", "", c).strip() or c
+                                     for c in specific[:16]]
+                    else:
+                        members = []
+                        for cat in found_cats[:3]:
+                            full = cat if cat.lower().startswith("category:") \
+                                else f"Category:{cat}"
+                            members.extend(category_members(host, full, budget, limit=80))
+                        arc_names = _dedupe([m for m in members
+                                             if m and not _arc_is_container(m)])[:16]
+                    if not arc_names:
+                        # Nothing arc-shaped on this wiki. Fall through to the
+                        # guessed category names rather than shipping a book
+                        # with no chapters in it.
+                        found_cats = []
+                    else:
+                        # Alphabetical is not a running order. The arc articles
+                        # say which chapter each one starts at; that is the
+                        # real one.
+                        arc_names = order_arcs(host, arc_names, budget)
+                        out[bucket] = [{"name": n, "note": ""} for n in arc_names[:12]]
+                        continue
 
                 names = []
                 for cat in (found_cats or list(guesses)):
@@ -1264,6 +1616,19 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
         # PIN: even a healthy cast can rank the real protagonist below a
         # shorter-article side character - a Tanjiro-less Demon Slayer build
         # is not Demon Slayer regardless of how the wiki ranked it.
+        #
+        # The curated table knows this for six franchises. For every other
+        # setting - which is most of them, and all of the ones nobody has
+        # hardcoded yet - ask the model, which knows the source. This is the
+        # general mechanism; the table is the offline floor under it.
+        leads = leads_for(setting, out["canonical_name"], out.get("characters") or [])
+        if leads:
+            have = {_norm(c["name"]) for c in out["characters"]}
+            missing = [{"name": n, "note": ""} for n in leads
+                       if _norm(n) not in have]
+            if missing:
+                out["characters"] = missing + out["characters"]
+                out["pinned_by"] = "model"
         out["characters"] = canon_seed.pin_protagonists(
             setting, out["canonical_name"], out["characters"])
 
@@ -1319,6 +1684,84 @@ def _dedupe(names):
         seen.add(k)
         out.append(n)
     return out
+
+
+LEADS_SYSTEM = """You are a canon consultant. You are given the name of a published work.
+Answer with the small number of characters it is ABOUT - the protagonist and, at
+most, the two or three whose stories the work is actually told through.
+
+Not the most popular, not the strongest, not the fan favourites: the people a
+reader would name if asked "who is this story about?". The title character
+counts. A mentor who dies in the first act does not, however famous. A villain
+is only a lead if the work is genuinely told from their side.
+
+Answer with names exactly as the source spells them - the form a fan would
+recognise, not a translation or a title. Two to four names.
+
+If you do not know the work, return an empty list rather than guessing - a wrong
+name pinned as a lead is worse than no pin at all.
+
+JSON only:
+{"leads":["Name","Name"]}
+"""
+
+
+def leads_for(setting: str, canonical: str, characters: list) -> list:
+    """Who the source is ABOUT, asked rather than hardcoded.
+
+    `canon_seed.pin_protagonists` guarantees the lead of a franchise it has on
+    file - six of them. Every other setting got whatever the wiki ranking
+    produced, which for a long-running work is routinely its own protagonist
+    missing: a Vinland Saga build came back with Einar, Snake and Ketil and no
+    Thorfinn. The pin existed and could not fire, because the table had no row.
+
+    This asks the model instead, so it works for anything the model knows. One
+    call per BUILD, cached with the dossier, and it fails soft in every
+    direction: offline, no key, bad JSON, an unknown work, an implausible name
+    -> the cast is exactly what it would have been without it.
+    """
+    name = (canonical or setting or "").strip()
+    if not name:
+        return []
+    key = "leads:" + _norm(name)
+    cached = _cache_get(key)
+    if cached is not None:
+        return list(cached.get("leads") or [])
+
+    from . import config, llm
+    leads: list = []
+    try:
+        if config.live_llm():
+            out = llm.complete(
+                "premise", LEADS_SYSTEM,
+                f"WORK: {name}\n\nName the leads. JSON only.",
+                user_id="research", json_mode=True, max_tokens=200, temperature=0.2,
+                stub=lambda: {"leads": []})
+            raw = out.get("leads") if isinstance(out, dict) else None
+            if isinstance(raw, list):
+                # Plausibility only. A name can be one word or four (most are
+                # two or three), so what is rejected is not "has a space" but
+                # what a name cannot be: empty, a whole sentence, a list the
+                # model padded, or a name already in OUR OWN cast - which would
+                # pin nothing while reading as a success.
+                seen = {_norm(c.get("name", "")) for c in characters}
+                for item in raw[:6]:
+                    s = str(item).strip().strip('"').strip()
+                    words = s.split()
+                    if not (1 <= len(words) <= 4):
+                        continue
+                    if not (2 <= len(s) <= 48):
+                        continue
+                    if s.endswith((".", "!", "?", ":", ";")):
+                        continue          # a sentence, not a name
+                    if _norm(s) in seen:
+                        continue          # already in the roster: pins nothing
+                    leads.append(s)
+    except Exception:
+        leads = []
+
+    _cache_put(key, {"leads": leads})
+    return leads
 
 
 def _empty(setting, note):

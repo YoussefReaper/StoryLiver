@@ -301,7 +301,21 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
 
     npcs = []
     seen_npc: set[str] = set()
+    seen_name: set[str] = set()
     for i, npc in enumerate(raw.get("npcs") or []):
+        # ONE PERSON IS ONE RECORD. Every other guard in this file is about ids,
+        # and ids are unique by construction - so two entries both called
+        # "Canute", one written by the builder and one seated by the canon
+        # pass, both survived, and the narrator was handed the same character
+        # in two places at once. That is not a fidelity detail: it is the
+        # engine's own R5 law broken by the world that declares it. Names are
+        # the identity a player sees, so the first record wins and the rest are
+        # dropped rather than renamed - a duplicate is not a new character.
+        name_key = re.sub(r"[^a-z0-9]+", " ", str(npc.get("name") or "").lower()).strip()
+        if name_key and name_key in seen_name:
+            continue
+        if name_key:
+            seen_name.add(name_key)
         nid = slug(npc.get("id") or npc.get("name") or f"npc_{i}", f"npc_{i}")
         while nid in seen_npc:
             nid = f"{nid}_{i}"

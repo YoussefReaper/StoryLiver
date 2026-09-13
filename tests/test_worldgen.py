@@ -39,8 +39,8 @@ os.environ["STORYLIVER_LLM_MODE"] = "mock"
 _TMP = tempfile.mkdtemp(prefix="storyliver-worldgen-")
 os.environ["STORYLIVER_DATA_DIR"] = _TMP
 
-from backend import (authority, db, death, engine, memory, modetree,  # noqa: E402
-                     research, worldforge, worldkit)
+from backend import (authority, canon_lore, canon_seed, db, death, engine,  # noqa: E402
+                     memory, modetree, persona, research, worldforge, worldkit)
 from backend import worlds as registry  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -142,6 +142,160 @@ def test_a_parenthesised_source_still_carries_the_character_in():
     ok(True, "a parenthesised source is a source, with or without 'from', "
              "lowercase or not")
 
+
+def test_a_crossover_is_set_in_the_host_world_not_the_guests_home():
+    section("crossover - the world is the HOST, not where the guest came from")
+    # REPORTED: "I and my girlfriend Charlie from Hazbin Hotel in the verse of
+    # Demon Slayer" built a world called HAZBIN HOTEL - the imported guest's
+    # home, not the world the story is set in. Two causes, both fixed:
+    #   1. "verse" was not in _HOST_PATTERNS, so "in the verse of Demon Slayer"
+    #      parsed NO host at all (the fallback needed a capitalised name and
+    #      lowercase "verse" failed).
+    #   2. inspired_by took research's canonical_name FIRST - and research
+    #      resolves whichever franchise it ranks highest, which in a crossover
+    #      is usually the explicitly-named import. The host must outrank it.
+    for text in (
+            "I and my girlfriend charlie (from hazbin hotel) in Demon Slayer verse",
+            "me and Charlie from Hazbin Hotel in the verse of Demon Slayer"):
+        p = research.parse_premise(text)
+        if p["host"] != "Demon Slayer":
+            ok(False, f"{text!r} parsed host={p['host']!r}, expected 'Demon Slayer'")
+            return
+    ok(True, "'verse' is a host phrase - trailing ('Demon Slayer verse') and "
+             "leading ('the verse of Demon Slayer')")
+
+    imports = research.parse_premise(
+        "me and Charlie from Hazbin Hotel in the verse of Demon Slayer")["imports"]
+    ok([i["from"] for i in imports] == ["Hazbin Hotel"],
+       f"the guest's home is still recorded as an import ({imports})")
+
+    # ...and the world that actually gets built is the host's, not the
+    # guest's. This is the line the player reads: narrator source, World
+    # Master source, and every canon persona lookup all key off it.
+    world = _forge("me and Charlie from Hazbin Hotel in the verse of Demon Slayer")
+    src = str(world.get("inspired_by") or "")
+    ok(src.lower() == "demon slayer",
+       f"the world is Demon Slayer, not the guest's home ({src!r})")
+
+    # If the parser captures a CHARACTER as host (no explicit world phrase),
+    # world resolution should still prefer that character's franchise when we
+    # know it, not build a world "inspired by Akaza".
+    host_char = _forge("I meet Akaza; we are enemies but we have respect.")
+    inferred = str(host_char.get("inspired_by") or "")
+    ok(inferred.lower() == "demon slayer",
+       f"a host character is mapped back to its franchise ({inferred!r})")
+
+
+def test_the_very_beginning_narrows_the_cast_instead_of_widening_it():
+    section("canon - an entry point is a moment, not the whole franchise")
+    # REPORTED: picked "The very beginning" of Demon Slayer and landed in a
+    # place with Rengoku and Shinobu already standing in it. They are Hashira
+    # who do not appear until far later; chapter one is Tanjiro, Nezuko and
+    # Giyu on Mt. Sagiri. The roster was flat, so choosing an entry point
+    # changed the prose and nothing else.
+    start = {c["name"] for c in canon_seed.arc_cast("Demon Slayer", arc="start")}
+    ok(bool(start), "the seed has a canon answer for 'the very beginning'")
+    ok("Tanjiro Kamado" in start and "Nezuko Kamado" in start,
+       f"Tanjiro and Nezuko are there ({sorted(start)})")
+    ok("Giyu Tomioka" in start, "and so is Giyu, who IS on that mountain")
+    for late in ("Kyojuro Rengoku", "Shinobu Kocho", "Zenitsu Agatsuma",
+                 "Inosuke Hashibira", "Muzan Kibutsuji"):
+        ok(late not in start, f"{late} is NOT - not in the story yet")
+
+    # Silence must mean silence. Falling back to the franchise roster is the
+    # bug itself, so an unknown moment has to return nothing at all and let
+    # research (or the builder) keep whatever it already had.
+    ok(canon_seed.arc_cast("Demon Slayer", arc="not_a_real_moment") == [],
+       "an unknown entry point returns nothing, not the whole roster")
+    ok(canon_seed.arc_places("Demon Slayer", arc="not_a_real_moment") == [],
+       "and neither do its places")
+    ok(canon_seed.arc_cast("A Wholly Invented Setting", arc="start") == [],
+       "a setting the roster does not know is left untouched")
+
+    places = {p["name"] for p in canon_seed.arc_places("Demon Slayer", arc="start")}
+    ok("Mt. Sagiri" in places,
+       f"the start is on Mt. Sagiri, not a generic village ({sorted(places)})")
+
+
+def test_the_model_may_read_the_premise_but_must_never_be_required():
+    section("premise - a model may read it; the parse must not depend on one")
+    from backend import config
+
+    det = research.parse_premise(
+        "me and Charlie from Hazbin Hotel in the verse of Demon Slayer")
+
+    # With no key the model pass is SKIPPED, not fatal. A premise must never
+    # become unparseable because a lookup was unavailable.
+    saved = (config.OPENAI_API_KEY, config.ANTHROPIC_API_KEY)
+    config.OPENAI_API_KEY, config.ANTHROPIC_API_KEY = "", ""
+    try:
+        ok(research.llm_parse_premise("anything at all") is None,
+           "no key -> the model pass returns None instead of raising")
+    finally:
+        config.OPENAI_API_KEY, config.ANTHROPIC_API_KEY = saved
+    ok(research._merge_premise(det, None) is det,
+       "and the deterministic parse comes back untouched")
+
+    # A model that silently drops somebody must not delete them from the
+    # world. Charlie was found by the regex, Vaggie only by the model.
+    llm_out = {"host": "Demon Slayer",
+               "imports": [{"character": "Vaggie", "from": "Hazbin Hotel",
+                            "relation": "enemies but we have respect",
+                            "goal": "", "with_player": True}]}
+    merged = research._merge_premise(det, llm_out)
+    names = {i["character"].lower() for i in merged["imports"]}
+    ok("charlie" in names and "vaggie" in names,
+       f"a person found by EITHER parser is kept ({sorted(names)})")
+
+    # Nuance is the whole reason to ask a model, so it must survive intact.
+    vaggie = [i for i in merged["imports"] if i["character"] == "Vaggie"][0]
+    ok(vaggie["relation"] == "enemies but we have respect",
+       f"nuance is not flattened into 'enemy' ({vaggie['relation']!r})")
+
+    # A model is not a trusted source: malformed answers are dropped, not
+    # handed to a world builder.
+    ok(research._coerce_premise_json("not json at all") is None,
+       "a bare string is rejected")
+    ok(research._coerce_premise_json({"host": "", "imports": []}) is None,
+       "an empty answer is rejected")
+    ok(research._coerce_premise_json({"host": "X", "imports": "nope"})
+       == {"host": "X", "imports": []}, "a malformed import list is emptied")
+
+
+def test_a_girlfriend_is_not_a_travelling_companion():
+    section("relationships - what they are to you changes the numbers")
+    # The parse records "girlfriend"; until this ran, the relationship engine
+    # handed every carried-in character the same four values, so a partner, a
+    # friend and an enemy all arrived identical and the world had no way to
+    # tell them apart. No prose downstream can repair that.
+    gf, gf_bond = worldforge._relationship_for("girlfriend")
+    fr, fr_bond = worldforge._relationship_for("friend")
+    en, en_bond = worldforge._relationship_for("enemy")
+    ok(gf_bond == "partner" and en_bond == "enemy",
+       f"a girlfriend and an enemy are different bonds ({gf_bond}/{en_bond})")
+    ok(gf["affinity"] > fr["affinity"] > en["affinity"],
+       f"and different numbers ({gf['affinity']} > {fr['affinity']} "
+       f"> {en['affinity']})")
+    ok(gf["trust"] > 60 and gf["obligation"] > 30,
+       f"a partner starts trusting and indebted, not neutral ({gf})")
+
+    # "enemies but we have respect" - still enemies, still not friends. The
+    # nuance is the entire reason to ask instead of offering a dropdown.
+    soft, soft_bond = worldforge._relationship_for("enemies but we have respect")
+    ok(soft_bond == "enemy", "an enemy with respect is still an enemy")
+    ok(en["affinity"] < soft["affinity"] < fr["affinity"],
+       f"but a softer one ({en['affinity']} < {soft['affinity']} "
+       f"< {fr['affinity']})")
+
+    # Unknown or absent wording falls back rather than raising.
+    ok(worldforge._relationship_for("")[1] == "companion",
+       "no relation stated is a plain companion")
+    ok(worldforge._relationship_for("my sworn nemesis")[1] == "enemy",
+       "free text still finds the bond")
+    ok(all(-100 <= v <= 100 for v in
+           worldforge._relationship_for("girlfriend")[0].values()),
+       "every value is inside the engine's bounds")
+
     # A source must not swallow the host. "Charlie from Hazbin Hotel in Demon
     # Slayer" used to record the source as "Hazbin Hotel in Demon Slayer" -
     # `in` is a connective inside a title ("Made in Abyss"), so the pattern ran
@@ -215,6 +369,226 @@ def test_a_character_who_came_with_you_starts_as_your_companion():
     tanjiro = next((n for n in world.npcs if "Tanjiro" in n["name"]), None)
     ok(tanjiro is not None and not tanjiro.get("companion"),
        "nobody the player did not bring is marked as a companion")
+
+
+def test_a_container_category_is_not_mistaken_for_an_arc():
+    section("chapters - a wiki's container category is a box, not a story arc")
+
+    # Vinland Saga's wiki has exactly one arc-shaped category: `Story Arcs`.
+    # Stripping the suffix produced "Story", and a whole franchise's chapter
+    # book became a single chapter called "Story" - every real arc invisible.
+    # A name that carries nothing but the concept is a container to descend
+    # into, never an arc to use.
+    ok(research._arc_is_container("Story Arcs"),
+       "'Story Arcs' is recognised as a container")
+    ok(research._arc_is_container("Arcs"), "'Arcs' is recognised as a container")
+    ok(research._arc_is_container("Sagas"), "'Sagas' is recognised as a container")
+    ok(not research._arc_is_container("Mugen Train Arc"),
+       "a NAMED arc is not - it is the arc itself")
+    ok(not research._arc_is_container("Slave Arc"),
+       "and neither is a named arc that happens to end in Arc")
+    ok(not research._arc_is_container("Eastern Expedition Arc"),
+       "nor one with several words before the suffix")
+
+    # And the second half of the same bug, one layer up: a chapter book that
+    # is a single concept word is refused even if it reaches the builder.
+    kind = worldforge.CONCEPT_ONLY_ARCS
+    ok("story" in kind and "sagas" in kind,
+       f"a concept word is on the reject list for a one-entry book ({sorted(kind)})")
+
+
+def test_canon_famous_lines_survive_into_world_cards():
+    section("persona - beat-keyed canon lines survive from lore to world cards")
+
+    # Charlie is the one character the curated FLOOR happens to have lines for,
+    # so she is how this test proves the plumbing end to end without a model:
+    # the loop is lore card -> _apply_card -> anchors -> worldkit -> npc.
+    hh = _forge("Hazbin Hotel")
+    charlie = next((n for n in hh.npcs if "Charlie" in n["name"]), None)
+    ok(charlie is not None, "Charlie exists in Hazbin build")
+    if charlie is not None:
+        lines = (charlie.get("anchors") or {}).get("famous_lines") or []
+        ok(bool(lines), f"Charlie keeps beat-keyed lines ({lines})")
+        ok(any("chance" in (x.get("line") or "").lower() for x in lines),
+           f"the line table contains her canon refrain ({lines})")
+        # The SHAPE is what the rest of the engine depends on: a beat key and
+        # a line. A list of bare strings would survive normalise() and then
+        # make eligible_lines() throw on the first real turn.
+        ok(all(isinstance(x, dict) and "line" in x for x in lines),
+           f"every line is a dict with a line field ({lines})")
+        ok(all((x.get("beat") or "any").lower() in persona.BEATS or
+               (x.get("beat") or "any") == "any" for x in lines),
+           f"and every beat key is one the detector can return ({lines})")
+
+    # The crowd the floor does NOT cover. This used to assert the curated table
+    # was fat enough to give Gojo and Zoro lines - which was the wrong thing to
+    # want. The cast of a published work is not a table to fill in by hand; it
+    # is asked of the model. What must hold hermetically is that a character
+    # with no floor lines still builds, still has a voice and constraints, and
+    # simply has no lines yet - not that the build crashes or that the seat is
+    # dropped. A thin floor is allowed to be thin.
+    jjk = _forge("Jujutsu Kaisen")
+    gojo = next((n for n in jjk.npcs if "Gojo" in n["name"]), None)
+    ok(gojo is not None, "Gojo is seated even with no line on the floor")
+    if gojo is not None:
+        anchors = gojo.get("anchors") or {}
+        ok(bool(anchors.get("voice") or anchors.get("role")),
+           f"and still has a persona to voice, lines or no lines ({anchors})")
+
+    op = _forge("One Piece")
+    zoro = next((n for n in op.npcs if "Zoro" in n["name"]), None)
+    ok(zoro is not None, "Zoro is seated even with no line on the floor")
+    if zoro is not None:
+        anchors = zoro.get("anchors") or {}
+        ok(bool(anchors.get("voice") or anchors.get("role")),
+           f"and still has a persona to voice ({anchors})")
+
+
+def test_a_famous_line_is_keyed_to_a_beat_that_actually_happens():
+    section("persona - every beat a line is filed under must be reachable")
+
+    # The seam this catches: `canon_lore` files a line under `meeting` and
+    # `persona.detect_beat` has no cue that can ever return `meeting`. The line
+    # is authored, stored, lifted onto the world card, and then unreachable
+    # forever - because `eligible_lines` withholds any line whose beat is not
+    # the detected one, and the detected one is never `meeting`.
+    #
+    # It is the difference between "the lines are present in the anchors" and
+    # "the line is available at the moment it belongs to", which is the whole
+    # reason the field exists.
+    reachable = set(beat for beat, _ in persona.BEAT_CUES)
+    used = set()
+    for card in canon_lore.LORE.values():
+        for entry in card.get("famous_lines") or []:
+            beat = (entry.get("beat") or "").strip().lower()
+            if beat and beat != "any":
+                used.add(beat)
+    orphans = sorted(used - reachable)
+    ok(not orphans,
+       f"no famous line is filed under a beat the detector cannot return "
+       f"(unreachable: {orphans})")
+
+    # And the reverse, which is cheaper to keep true than to discover: every
+    # beat in the declared vocabulary has a cue list, so `BEATS` cannot drift
+    # ahead of what can actually be detected.
+    undeclared = sorted(reachable - set(persona.BEATS))
+    ok(not undeclared,
+       f"every detectable beat is one the vocabulary declares ({undeclared})")
+
+
+def test_the_right_line_is_available_at_the_right_moment():
+    section("persona - the beat unlocks the line, and withholds the rest")
+
+    card = canon_lore.card("Charlie Morningstar")
+    ok(card is not None and card.get("famous_lines"),
+       "Charlie has a curated floor with lines on it")
+
+    # A greeting is a greeting. The lines filed to her OTHER moments must not
+    # come along for the ride - that is what makes her a character and not a
+    # soundboard.
+    beat = persona.detect_beat("I greet the demon slayers and introduce myself.", "")
+    ok(beat == "greeting", f"an introduction is read as a greeting (got {beat!r})")
+    eligible = persona.eligible_lines(card, beat)
+    ok(not any("not giving up on you" in ln.lower() for ln in eligible),
+       f"a greeting does not unlock a line filed for a setback ({eligible})")
+
+    # Her welcome line is filed under `meeting` - walking into the hotel in
+    # front of her - so that is the beat that must unlock it. (The old form of
+    # this test wanted a `greeting` to unlock a `meeting` line, which was only
+    # ever true because the floor happened to carry a duplicate; the mechanism
+    # was right and the assertion was describing the wrong beat.)
+    arrived = persona.detect_beat("We have arrived and she comes out to meet us.", "")
+    ok(arrived == "meeting", f"arriving in front of her is a meeting (got {arrived!r})")
+    ok(any("hazbin hotel" in ln.lower()
+           for ln in persona.eligible_lines(card, arrived)),
+       f"and it unlocks her welcome line "
+       f"({persona.eligible_lines(card, arrived)})")
+
+    # An ordinary turn unlocks nothing keyed - only the always-available lines.
+    # Ordinary is the common case, so this is the case that matters most.
+    quiet = persona.eligible_lines(card, persona.detect_beat("I look at the well.", ""))
+    ok(not any("hazbin hotel" in ln.lower() for ln in quiet),
+       f"a quiet turn does not unlock a scene-specific line ({quiet})")
+
+    # A line filed under a beat that exists must be a line you can actually
+    # reach by playing into that beat.
+    grief = persona.detect_beat("She is dead. I bury her.", "")
+    ok(grief == "grief", f"a burial is read as grief (got {grief!r})")
+    ok(persona.eligible_lines(card, grief) ==
+       persona.eligible_lines(card, "grief"),
+       "and asking for the beat directly is the same as detecting it")
+
+
+def test_a_character_the_floor_covers_is_not_only_floor():
+    section("persona - the curated floor is a floor, not the whole cast")
+
+    # The floor is deliberately THIN. The cast of a published work is not
+    # something to hardcode - it is something to ask the model about, and
+    # _apply_canon_personas does exactly that on a real build. The floor's only
+    # job is to keep an OFFLINE build from handing the narrator a character
+    # with no persona at all.
+    #
+    # So the thing to guarantee hermetically is not "the table is fat". It is
+    # the two properties that make the thin floor safe:
+    #
+    #   1. every character the floor does cover still yields lines in the
+    #      SHAPE the engine reads, and
+    #   2. a character the floor does NOT cover still gets a card and a seat -
+    #      the machinery degrades to "no lines yet", never to "no character".
+    #
+    # A fat curators' table would have made this test pass while the real
+    # product failure - "the model gave them no lines" - went unnoticed, which
+    # is the opposite of what a test is for.
+    covered = {n: c for n, c in canon_lore.LORE.items() if c.get("famous_lines")}
+    ok(bool(covered),
+       f"the floor still covers at least one character to prove the shape "
+       f"({len(covered)} of {len(canon_lore.LORE)})")
+    for name, card in covered.items():
+        lines = card.get("famous_lines") or []
+        ok(all(isinstance(x, dict) and str(x.get("line") or "").strip()
+               for x in lines),
+           f"{name}: every floor line is a dict with non-empty text")
+        ok(all((x.get("beat") or "any").lower() in persona.BEATS or
+               (x.get("beat") or "any") == "any" for x in lines),
+           f"{name}: every floor line is filed under a beat that exists")
+
+    # And the character the floor does NOT cover is still a character.
+    nezuko = canon_lore.card("Nezuko")
+    ok(nezuko is not None, "Nezuko has a floor card at all")
+    if nezuko is not None:
+        ok(bool(nezuko.get("voice") or nezuko.get("constraints")),
+           f"Nezuko has a persona even with no lines on the floor ({list(nezuko)})")
+
+
+def test_a_beat_cue_survives_how_a_player_actually_types():
+    section("persona - a cue must not require one exact spelling")
+
+    # The cue list stores the CONTRACTION ("she's dead"), so the beat fires only
+    # when the player happens to write the contraction. Expanded forms return
+    # nothing - and so does the same sentence typed with a curly apostrophe,
+    # which is what a phone keyboard or a pasted line produces. Either way the
+    # line filed under that beat is unreachable for a scene that is plainly
+    # that beat.
+    for said in ("she is dead", "he is dead", "they are dead", "she was dead",
+                 "my master is dead", "I bury her", "we held the funeral"):
+        ok(persona.detect_beat(said, "") == "grief",
+           f"a plain burial is read as grief: {said!r} -> "
+           f"{persona.detect_beat(said, '')!r}")
+
+    # Apostrophes are not interchangeable, and the engine never normalises
+    # them on the way in.
+    curly = "she\u2019s dead"
+    ok(persona.detect_beat(curly, "") == "grief",
+       f"the same sentence with an apostrophe typed on a phone still counts "
+       f"({curly!r} -> {persona.detect_beat(curly, '')!r})")
+
+    # The same hazard on the other beats, since they all share the mechanism.
+    for said, want in (("I won\u2019t give up", "resolve"),
+                       ("you\u2019re alive", "reunion"),
+                       ("I\u2019ll kill you", "threat"),
+                       ("it\u2019s over", "victory")):
+        ok(persona.detect_beat(said, "") == want,
+           f"{said!r} -> {want} (got {persona.detect_beat(said, '')!r})")
 
 
 def test_research_enriches_and_never_gates():
@@ -1114,6 +1488,122 @@ def test_the_opening_scene_has_people_in_it():
        "scattered across the map by the index that happened to hold them")
 
 
+def test_a_canon_cast_has_no_double_and_no_dropped_lead():
+    section("canon - one person is one record, and a lead is never the one dropped")
+
+    # Two failures a live Vinland Saga build actually produced, both caught by
+    # tools/canon_audit.py playing the world for real rather than by reading it:
+    #
+    #   * Canute and Leif Ericson each seated TWICE - once by the builder, once
+    #     by the seating pass - because normalise() dedupes ids and not names,
+    #     so the narrator was handed one character in two rooms at once.
+    #   * Askeladd, a lead of the source, in the research roster and in the
+    #     world's own leads, absent from the built world - because seat() zipped
+    #     reversed(seats) against the unused list, which seats whoever is LAST
+    #     in the roster and throws away its head.
+    #
+    # Hermetic: this drives the two functions directly, so it protects the
+    # invariant without a model call and without depending on a build landing
+    # the same way twice.
+    roster = [{"name": n} for n in
+              ["Lead One", "Lead Two", "Support A", "Support B", "Support C"]]
+
+    # The builder wrote two of them and invented two seats. Seating must not
+    # duplicate either real name, and must seat the LEADS, not the tail.
+    raw = {"source_prompt": "A Test Setting", "npcs": [
+        {"id": "p1", "name": "Lead One", "origin": "canon", "anchors": {}},
+        {"id": "p2", "name": "Lead Two", "origin": "canon", "anchors": {}},
+        {"id": "p3", "name": "Tavern Keeper", "origin": "original", "anchors": {}},
+        {"id": "p4", "name": "Dockhand", "origin": "original", "anchors": {}},
+    ]}
+    seated = worldforge._seat_unused_canon(raw, {"characters": roster})["npcs"]
+    names = [n["name"] for n in seated]
+    dups = sorted({n for n in names if names.count(n) > 1})
+    ok(not dups, f"seating never writes a name that is already in the cast ({dups})")
+    ok("Support A" in names and "Support B" in names,
+       f"and the roster is filled from its HEAD, so the leads are the ones "
+       f"seated ({names})")
+
+    # A cast with no invented seat left, and more roster than seats: the
+    # researched names still all get in. Dropping one because the builder
+    # happened to fill every slot is how a lead goes missing.
+    raw2 = {"source_prompt": "A Test Setting", "npcs": [
+        {"id": "p1", "name": "Lead One", "origin": "canon", "anchors": {}},
+        {"id": "p2", "name": "Lead Two", "origin": "canon", "anchors": {}},
+        {"id": "p3", "name": "Support A", "origin": "canon", "anchors": {}},
+    ]}
+    seated2 = worldforge._seat_unused_canon(raw2, {"characters": roster})["npcs"]
+    names2 = [n["name"] for n in seated2]
+    missing = [c["name"] for c in roster if c["name"] not in names2]
+    ok(not missing,
+       f"a world whose every seat is already real still grows to hold the rest "
+       f"of the roster rather than drop it (missing: {missing})")
+
+    # And the last line of defence: whatever path a world takes to be saved,
+    # two entries sharing a name must collapse to one before the engine runs.
+    # Driven through the real normalise() with the minimum a world needs, so
+    # this protects the actual save boundary rather than a copy of its logic.
+    collapsed = worldkit.normalise({
+        "name": "Two Canutes", "start_location": "hall",
+        "locations": [{"id": "hall", "name": "Hall"}, {"id": "yard", "name": "Yard"}],
+        "npcs": [{"id": "a", "name": "Canute", "origin": "canon"},
+                 {"id": "b", "name": "canute", "origin": "canon"},
+                 {"id": "c", "name": "Thorfinn", "origin": "canon"}],
+        "rules": [{"id": f"R{i}", "text": "a law"} for i in range(1, 10)],
+        "fated_events": [{"id": f"F{i}", "turn": i * 4, "title": "x",
+                          "desc": "y", "location": "hall"} for i in range(1, 8)],
+    }, strict=True)
+    got = [n["name"] for n in collapsed["npcs"]]
+    ok(got == ["Canute", "Thorfinn"],
+       f"normalise keeps the first record of a repeated name and drops the rest "
+       f"({got})")
+
+
+def test_the_floor_stays_a_floor_when_the_model_speaks():
+    section("canon - the model is the source, the floor is only the fallback")
+
+    # The player's instruction was explicit: do not hardcode the cast, make
+    # research and the model carry it. So the mechanism has to accept a model
+    # card shaped the way the prompt asks for it - `lines`, with a beat key -
+    # AND a card that still says `famous_lines` the old way, because worlds
+    # already authored that way are still on disk.
+    model_card = {"lines": [
+        {"line": "I was born for this.", "beat": "resolve"},
+        {"line": "Everyone deserves a chance.", "beat": "any"},
+        {"line": "And I mean it.", "beat": "any"},
+        {"line": "Nonsense beat", "beat": "not_a_real_beat"},
+        {"line": "A greeting.", "beat": "greeting"},
+        {"line": "A second greeting that must not crowd it.", "beat": "greeting"},
+    ]}
+    got = worldforge._beat_lines(model_card["lines"])
+    beats = [x["beat"] for x in got]
+    ok(beats.count("any") <= 1,
+       f"at most one always-available line survives - a refrain said at every "
+       f"moment is said over a burial too ({got})")
+    ok("not_a_real_beat" not in beats,
+       f"a beat the detector can never return is dropped, not stored "
+       f"unreachably ({got})")
+    greetings = [x for x in got if x["beat"] == "greeting"]
+    ok(len(greetings) == 1,
+       f"one line per beat, so a beat is a moment and not a pile ({got})")
+    # The refrain is stored with an empty beat key, which is what
+    # eligible_lines() reads as "available at any moment". Either spelling is
+    # the same thing; anything else that is not a declared beat is not.
+    ok(all((x["beat"] or "any").lower() in persona.BEATS or not x["beat"]
+           for x in got),
+       f"every surviving beat is one the engine can actually detect ({got})")
+
+    legacy = worldforge._beat_lines([{"line": "Old shape.", "beat": "victory"}])
+    ok(legacy == [{"line": "Old shape.", "beat": "victory"}],
+       f"the legacy famous_lines shape still reads ({legacy})")
+
+    # A synonym a model reaches for instead of the declared vocabulary lands on
+    # the real beat rather than being thrown away.
+    syn = worldforge._beat_lines([{"line": "We win.", "beat": "triumph"}])
+    ok(syn and syn[0]["beat"] in persona.BEATS,
+       f"a synonym beat is aliased onto the real one ({syn})")
+
+
 def _all():
     return (test_a_companion_goes_where_the_player_goes,
             test_the_player_is_somebody_before_turn_one,
@@ -1140,7 +1630,15 @@ def _all():
             test_the_fate_thread_does_not_spoil_itself,
             test_the_price_of_a_world_is_quoted_correctly,
             test_a_crossover_is_asked_crossover_questions,
-            test_the_forge_sends_what_the_endpoint_requires)
+            test_the_forge_sends_what_the_endpoint_requires,
+            test_canon_famous_lines_survive_into_world_cards,
+            test_a_famous_line_is_keyed_to_a_beat_that_actually_happens,
+            test_the_right_line_is_available_at_the_right_moment,
+            test_a_character_the_floor_covers_is_not_only_floor,
+            test_a_beat_cue_survives_how_a_player_actually_types,
+            test_a_canon_cast_has_no_double_and_no_dropped_lead,
+            test_a_container_category_is_not_mistaken_for_an_arc,
+            test_the_floor_stays_a_floor_when_the_model_speaks)
 
 
 def main():

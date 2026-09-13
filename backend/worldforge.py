@@ -580,22 +580,68 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
             for n, note in era.get("cast", []):
                 seed_by_name[_fold(n)] = {"note": note, "name": n}
 
+    def _dedupe(records):
+        """Collapse records that share a name down to the first one.
+
+        A MODEL IS ALLOWED TO SAY A NAME TWICE and it does: a live Vinland
+        Saga build seated Canute and Leif Ericson in two rooms at once, both
+        correctly tagged canon, because the builder wrote one of them and the
+        structure pass happened to name the other again. Normalise() dedupes
+        IDs, not names, so both survived and the narrator had two Canutes to
+        keep straight - the exact "same person in two places" the engine's own
+        R5 law forbids. The first record wins: it is the one whose id, home
+        and relationships every other record already points at."""
+        out, seen = [], set()
+        for r in records:
+            key = _fold(r.get("name", ""))
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            out.append(r)
+        return out
+
     def seat(records, roster, *, is_npc):
+        records[:] = _dedupe(records)
         present = {_fold(r.get("name", "")) for r in records}
+        # The roster arrives in research's ranking order, leads first. Walk it
+        # forwards and seat the highest-ranked name into the LAST invented
+        # seat, so the person the source is actually about is the last one the
+        # builder can drop. (The old code zipped reversed(seats) against the
+        # unused list, which seated whoever came last in the roster and threw
+        # away its head - that is how Askeladd, a lead of Vinland Saga, was
+        # absent from a world that had researched him.)
         unused = [x for x in roster if _fold(x["name"]) not in present]
         if not unused:
             return
         seats = [i for i, r in enumerate(records) if r.get("origin") == "original"]
-        for idx, real in zip(reversed(seats), unused):
-            rec = records[idx]
-            rec["name"] = real["name"]
-            rec["origin"] = "canon"
+        for real in unused:
+            name = real.get("name", "").strip()
+            folded = _fold(name)
+            if not folded or folded in present:
+                continue
             note = (real.get("note") or "").strip()
+            if seats:
+                idx = seats.pop()            # highest-priority name takes a real seat
+                rec = records[idx]
+            elif is_npc:
+                # Every seat is already a real character and a researched name
+                # is still missing. GROW the cast rather than drop them: this
+                # is what silently lost Askeladd. A world with one character
+                # more than the builder planned is a world that has its cast;
+                # a world that "fits" but is missing a lead is not the setting.
+                rec = {"id": f"canon_{folded.replace(' ', '_')[:24] or len(records)}",
+                       "origin": "canon"}
+                records.append(rec)
+            else:
+                continue
+            rec["name"] = name
+            rec["origin"] = "canon"
+            present.add(folded)
             if is_npc:
                 if note:
                     rec["role"] = note[:120]
                 # BUILD proper anchors from research + canon_seed
-                folded = _fold(real["name"])
                 seed_data = seed_by_name.get(folded, {})
                 seed_note = seed_data.get("note", "")
                 # The seat's old persona belonged to whoever used to sit here.
@@ -603,14 +649,18 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
                 # from what the model knows rather than from a roster line;
                 # the seed note is kept as the role so there is something true
                 # here even if that pass is offline or does not know them.
-                rec["anchors"] = {"name": real["name"],
+                rec["anchors"] = {"name": name,
                                   "role": (note or seed_note or "")[:120]}
                 rec.pop("seed_memories", None)
             elif note:
                 rec["desc"] = note[:200]
 
-    seat(raw.get("npcs") or [], canon_chars, is_npc=True)
-    seat(raw.get("locations") or [], canon_places, is_npc=False)
+    npcs = raw.get("npcs") or []
+    seat(npcs, canon_chars, is_npc=True)
+    raw["npcs"] = npcs
+    locs = raw.get("locations") or []
+    seat(locs, canon_places, is_npc=False)
+    raw["locations"] = locs
     return raw
 
 
@@ -620,6 +670,81 @@ def _seat_unused_canon(raw: dict, found: dict) -> dict:
 # own memory has to survive the second one.
 COMPANION_MEMORY = ("I came here with you. Whatever this place turns out to be, "
                     "we are in it together.")
+
+
+# What the player SAID they are to each other, turned into numbers the
+# relationship engine actually runs on. Until this existed every carried-in
+# character got the same four values, so a partner, a rival and a stranger all
+# arrived at affinity 45 and the world could not tell them apart.
+#
+# A girlfriend is not a travelling companion and an enemy is not a friend. If
+# that difference never reaches the engine, no amount of good prose downstream
+# can make it read as a relationship.
+_RELATION_PROFILES = (
+    (("girlfriend", "boyfriend", "partner", "wife", "wives", "husband", "fianc",
+      "lover"),
+     {"affinity": 78.0, "trust": 72.0, "fear": 0.0, "obligation": 38.0}, "partner"),
+    (("best friend", "close friend"),
+     {"affinity": 62.0, "trust": 58.0, "fear": 0.0, "obligation": 22.0}, "friend"),
+    (("brother", "sister", "sibling", "twin"),
+     {"affinity": 60.0, "trust": 52.0, "fear": 0.0, "obligation": 30.0}, "kin"),
+    (("mentor", "teacher", "sensei"),
+     {"affinity": 44.0, "trust": 55.0, "fear": 4.0, "obligation": 26.0}, "mentor"),
+    (("sidekick", "bodyguard", "ally", "allies", "companion"),
+     {"affinity": 48.0, "trust": 52.0, "fear": 0.0, "obligation": 24.0}, "ally"),
+    (("rival",),
+     {"affinity": 12.0, "trust": 18.0, "fear": 6.0, "obligation": 4.0}, "rival"),
+    # "enemies" does not contain the substring "enemy" - "girlfriends" and
+    # "allies" are the same trap. A plural that silently falls through to
+    # "companion" is an enemy arriving as a friend.
+    (("enemy", "enemies", "nemesis", "foe"),
+     {"affinity": -38.0, "trust": -32.0, "fear": 12.0, "obligation": 0.0}, "enemy"),
+    (("friend",),
+     {"affinity": 54.0, "trust": 52.0, "fear": 0.0, "obligation": 20.0}, "friend"),
+)
+
+_BOND_MEMORY = {
+    "partner": "We came here together. Whatever this place is, we are each other's.",
+    "friend": ("We came here together, and I would rather not find out what this "
+               "place does to one of us alone."),
+    "kin": "Blood or not, this one is mine to get home.",
+    "mentor": "I got them this far. What they do with it is theirs.",
+    "ally": "I am here because of them. That is a debt I intend to pay.",
+    "rival": "I am not here to help them. I am here to be there when they fail.",
+    "enemy": "We are not on the same side. This place has not changed that.",
+}
+
+
+def _relationship_for(relation: str):
+    """Numbers and a bond for what the player said they are to each other.
+
+    Free text in, because "enemies but we have respect" is a real answer and a
+    dropdown is not. Words are matched in order so "best friend" is read before
+    "friend". Nuance is honoured rather than thrown away: respect softens an
+    enemy without making them a friend, and "former" cools what is left.
+    """
+    fall = ({"affinity": 45.0, "trust": 45.0, "fear": 0.0, "obligation": 15.0},
+            "companion")
+    rel = (relation or "").lower().strip()
+    if not rel:
+        return fall
+    for words, vals, bond in _RELATION_PROFILES:
+        if not any(w in rel for w in words):
+            continue
+        vals = dict(vals)
+        if any(w in rel for w in ("respect", "grudging", "uneasy", "owe")):
+            vals["affinity"] += 22.0
+            vals["trust"] += 18.0
+        if any(w in rel for w in ("used to be", "former", "fallen out", "estranged")):
+            vals["affinity"] -= 10.0
+            vals["trust"] -= 8.0
+        # Bounded: the relationship engine clamps to +/-100 anyway, but a
+        # profile that starts outside it is a typo waiting to be discovered
+        # by a player.
+        for k in vals:
+            vals[k] = max(-100.0, min(100.0, vals[k]))
+        return vals, bond
+    return fall
 
 
 def _seat_imports(raw: dict, imports: list) -> dict:
@@ -677,11 +802,18 @@ def _seat_imports(raw: dict, imports: list) -> dict:
         stranger is the right answer for her."""
         if not imp.get("with_player"):
             return
-        rec["initial_relationship"] = {"affinity": 45.0, "trust": 45.0,
-                                       "fear": 0.0, "obligation": 15.0}
+        # WHO they are to the player, not merely that they came along. The
+        # premise says "my girlfriend", "our friends", "enemies but we have
+        # respect", and each of those is a different starting relationship -
+        # see _relationship_for.
+        vals, bond = _relationship_for(imp.get("relation"))
+        rec["initial_relationship"] = vals
         rec["companion"] = True
+        rec["bond"] = bond
+        if (imp.get("relation") or "").strip():
+            rec["relation_to_player"] = imp["relation"].strip()
         seeds = [s for s in (rec.get("seed_memories") or [])]
-        seeds.insert(0, COMPANION_MEMORY)
+        seeds.insert(0, _BOND_MEMORY.get(bond, COMPANION_MEMORY))
         rec["seed_memories"] = seeds[:6]
 
     for imp in wanted:
@@ -762,6 +894,70 @@ Write what is TRUE OF THEM IN THE SOURCE, not a plot summary:
                 bedridden, in another country, or would never be standing in a
                 village square where anybody could walk up and talk to them.
                 The setting's hidden antagonist is almost always false.
+  lines       - THE LINES THIS CHARACTER IS KNOWN FOR, each tagged with the beat
+                it belongs to. This is not a catchphrase list and it is not the
+                character's whole repertoire - it is the small number of things
+                they say (or do) that a fan would recognise instantly, filed
+                against the ONE moment each belongs to.
+
+                Tag each line with exactly one of these beats, and use the beat
+                name verbatim:
+                  greeting      arriving in front of someone, introducing
+                                themselves, being asked to account for themselves
+                  meeting       the first real contact - a handshake, an offer,
+                                being handed to somebody
+                  threat        a warning, a challenge, standing their ground
+                  battle_start  the instant violence begins
+                  resolve       refusing to quit, declaring what they will do
+                  victory       the fight is over and they won
+                  defeat        they lost, they are beaten, they are on their knees
+                  setback       the plan failed, help did not come, it did not work
+                  mercy         choosing to spare, or refusing to
+                  grief         a death, a burial, mourning
+                  farewell      parting, the last time, saying goodbye
+                  reunion       finding someone again, they are alive
+                  betrayal      a trust broken, a double-cross
+                  sacrifice     giving their life, taking someone's place
+                If a line is a standing refrain that fits any moment, tag it
+                "any" and it will always be available.
+
+                Quote the line AS IT APPEARS IN THE SOURCE where it is famous
+                enough to have a canonical wording. Where the character is known
+                for a MOMENT rather than a sentence - a silence, a gesture, a
+                thing they do and never explain - write it as a stage direction
+                in parentheses instead: "(She does not speak. She steps in front
+                of her brother.)" is a line. A character defined by never
+                speaking has signature moments like anyone else, and a narrator
+                given nothing will give them dialogue and break the one rule
+                that makes them them.
+
+                Two to four per character. Fewer, better lines beat more, worse
+                ones. If you cannot name a line or a moment this character is
+                genuinely known for, leave the list empty rather than inventing
+                something plausible - a generic line filed under a beat is worse
+                than no line, because the narrator is told to deliver it
+                verbatim.
+
+                SPREAD THEM, AND USE AT MOST ONE "any". Left alone, nearly
+                every list comes back all "resolve": the famous quote is almost
+                always a declaration, so a card ends up with three variations of
+                the same speech and nothing at all for a funeral, a betrayal or
+                a defeat. Two rules:
+
+                  1. No two lines on one card may share a beat.
+                  2. Reserve "any" for a true refrain - a greeting, a catch-
+                     phrase, a thing they say constantly. At most one. A line
+                     that only makes sense in one situation is NOT "any", and
+                     filing it as "any" is worse than omitting it, because a
+                     refrain is available at every moment and will be said over
+                     a burial.
+
+                So a good four-line card looks like: one "any" refrain, one
+                "resolve", and then TWO beats that are not declarations - the
+                line at a loss, the thing they say to someone they are about to
+                lose, what they do when they are the one in the wrong, the
+                moment they refuse to fight. Ask what this character does when
+                it goes WRONG, not only when they are announcing themselves.
 
 Be concrete and specific to the individual. "Speaks plainly", "is an ordinary
 person" and "wants to survive" are failures - they are what this exists to
@@ -769,7 +965,7 @@ replace. If you genuinely do not know a character, omit them entirely rather
 than inventing a generic card.
 
 JSON only:
-{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"mannerisms":[],"public":true}]}
+{"characters":[{"name":"","role":"","voice":"","constraints":[],"goals":[],"taboos":[],"memories":[],"mannerisms":[],"public":true,"lines":[{"line":"","beat":""}]}]}
 """
 
 
@@ -784,6 +980,17 @@ structure, return one entry naming the story as a whole.
 JSON only:
 {"arcs":[{"name":"The arc's real name","note":"one clause: what happens in it"}]}
 """
+
+
+# A ONE-ENTRY BOOK THAT NAMES THE CONCEPT IS NOT A RUNNING ORDER. Research can
+# return a single bucket-shaped entry - Vinland Saga came back with `["Story"]`,
+# which is the wiki's "Story Arcs" container stripped of its suffix - and using
+# it as the book gave a whole franchise a chapter called "Story". A real work
+# with arcs has more than one, and an arc named only by the concept carries
+# nothing about a story beat, so the model is asked instead. Kept module-level
+# so a test can assert the list rather than a copy of it.
+CONCEPT_ONLY_ARCS = {"story", "arc", "arcs", "saga", "sagas", "plot", "season",
+                     "seasons", "events", "story arcs", "the story", ""}
 
 
 def canon_chapters(setting: str, *, user_id: str, known: list | None = None) -> list:
@@ -809,6 +1016,10 @@ def canon_chapters(setting: str, *, user_id: str, known: list | None = None) -> 
     # knowledge and hoping the two agree.
     names = [str(a.get("name") or a).strip() for a in (known or [])
              if str(a.get("name") if isinstance(a, dict) else a or "").strip()]
+    # A ONE-ENTRY LIST THAT NAMES THE CONCEPT IS NOT A RUNNING ORDER. See
+    # CONCEPT_ONLY_ARCS above for why this exists.
+    if len(names) == 1 and names[0].strip().lower() in CONCEPT_ONLY_ARCS:
+        names = []
     # Research now orders arcs from the arc articles' own chapter numbers,
     # which is exact. Asking a model to re-sort an already-correct sequence can
     # only make it worse, so when research supplied one it is used as-is and
@@ -1124,6 +1335,98 @@ def _crossover_friction(raw: dict, imports: list, host: str, *, user_id: str) ->
     return raw
 
 
+def _beat_lines(value) -> list:
+    """Normalise a card's lines to [{beat, line}], dropping the unreachable.
+
+    A line is only worth storing if the beat it is filed under is one the
+    detector can actually return. `persona.detect_beat` is a fixed keyword
+    matcher, so a model that answers "beat": "confrontation" - or "sadness",
+    or "triumph" - has written a line that can never be unlocked, and the
+    narrator is instructed to deliver canon lines verbatim. A dead line is
+    therefore worse than an absent one: it is an instruction that either never
+    fires or, if a later change made it fire, fires at a moment nobody chose.
+
+    Mapping the obvious synonyms onto the real vocabulary is the compromise -
+    a model reaching for a natural English word is doing nothing wrong, and
+    discarding its line over vocabulary would be the tail wagging the dog.
+    """
+    from . import persona
+    known = set(persona.BEATS)
+    # The words a model plausibly reaches for, folded onto the beats that exist.
+    alias = {
+        "introduction": "greeting", "intro": "greeting", "arrival": "greeting",
+        "welcome": "greeting", "first_meeting": "meeting", "first meeting": "meeting",
+        "confrontation": "threat", "warning": "threat", "challenge": "threat",
+        "combat_start": "battle_start", "battle": "battle_start", "fight": "battle_start",
+        "triumph": "victory", "win": "victory", "loss": "defeat", "losing": "defeat",
+        "failure": "setback", "hardship": "setback", "despair": "grief",
+        "sadness": "grief", "mourning": "grief", "death": "grief", "loss_of_loved_one": "grief",
+        "goodbye": "farewell", "parting": "farewell", "reunion_sweet": "reunion",
+        "revelation": "betrayal", "treachery": "betrayal", "last_stand": "sacrifice",
+        "self_sacrifice": "sacrifice", "determination": "resolve", "conviction": "resolve",
+        "sparing": "mercy", "forgiveness": "mercy",
+    }
+    out = []
+    for x in (value or []):
+        if not isinstance(x, dict):
+            # A plain string is a standing line with no beat - always available.
+            s = str(x).strip()
+            if s:
+                out.append({"beat": "", "line": s[:220]})
+            continue
+        line = str(x.get("line") or x.get("text") or "").strip()
+        if not line:
+            continue
+        raw = str(x.get("beat") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if raw in ("", "any", "always", "every"):
+            beat = ""
+        elif raw in known:
+            beat = raw
+        else:
+            beat = alias.get(raw, "")
+            if not beat:
+                continue                 # an unreachable beat: do not store it
+        out.append({"beat": beat, "line": line[:220]})
+
+    # ── the spread, enforced rather than requested ────────────────────────
+    # The prompt asks for one line per beat and at most one "any". A prompt is a
+    # request, and this is the difference between a card that has an answer at a
+    # funeral and one that says a victory speech over a grave. Both rules are
+    # cheap here and would be expensive to notice in play.
+    #
+    # 1. ONE "any" at most. A curatorial "any" is a true refrain; a model that
+    #    files its plot line as "any" has made a line that is available at EVERY
+    #    moment, which is the soundboard behaviour the whole field exists to
+    #    prevent. The first is kept (usually the real refrain) and the rest are
+    #    dropped rather than re-filed - guessing a beat for them would be worse
+    #    than not having them.
+    seen_any = False
+    deduped = []
+    for entry in out:
+        if entry["beat"]:
+            deduped.append(entry)
+            continue
+        if seen_any:
+            continue
+        seen_any = True
+        deduped.append(entry)
+    out = deduped
+
+    # 2. ONE line per beat. Two "resolve" lines are not two moments - the
+    #    second is unreachable in any turn the first is reachable in, so it is
+    #    dead weight in the prompt and takes the slot of a beat that has none.
+    by_beat = {}
+    spread = []
+    for entry in out:
+        key = entry["beat"]
+        if key and key in by_beat:
+            continue
+        if key:
+            by_beat[key] = True
+        spread.append(entry)
+    return spread
+
+
 def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
     """Give every canon character the persona the MODEL already knows.
 
@@ -1179,7 +1482,13 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         Used twice per character, in order: the curated floor first (what the
         source says, no model call), then the model's card over it. Field by
         field, so the model only fills what it actually answered and the floor
-        covers the rest."""
+        covers the rest.
+
+        The MODEL is the primary source here, not the curated table. The table
+        exists only so an offline build, or a character the model draws a blank
+        on, still gets a persona instead of whatever one-line roster note the
+        builder invented. The cast of a published work is not something to
+        hardcode - it is something to ask about."""
         if str(card.get("voice") or "").strip():
             anchors["voice"] = str(card["voice"]).strip()[:220]
         for key in ("constraints", "goals", "taboos"):
@@ -1193,6 +1502,16 @@ def _apply_canon_personas(raw: dict, setting: str, *, user_id: str) -> dict:
         tells = _clean(card.get("mannerisms"), 200)[:4]
         if tells:
             anchors["mannerisms"] = tells
+        # Beat-keyed canon lines for when the mode asks for one. Stored on
+        # anchors; worldkit lifts them onto npc.famous_lines.
+        #
+        # Accepted from BOTH shapes: the prompt asks for "lines" now, and every
+        # already-authored world and the hand-curated floor still say
+        # "famous_lines". Reading only one of the two is how a field silently
+        # stops being written the moment the prompt is improved.
+        lines = _beat_lines(card.get("lines")) or _beat_lines(card.get("famous_lines"))
+        if lines:
+            anchors["famous_lines"] = lines[:8]
         anchors["name"] = npc["name"]
         if str(card.get("role") or "").strip():
             npc["role"] = str(card["role"]).strip()[:120]
@@ -1497,7 +1816,7 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # character; searching that whole string found nothing, and the player was
     # told "Nothing found for that name" about a wholly canon request.
     found = (_empty_dossier(setting) if mode == "original"
-             else research.premise_dossier(setting))
+             else research.premise_dossier(setting, user_id=user_id))
 
     # F1 - era selection. Chosen in Session Zero (after this dossier already
     # exists), so it has to override the cast/places HERE rather than at
@@ -1516,6 +1835,22 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
             found = {**found, "characters": era_cast}
         if era_places:
             found = {**found, "places": era_places}
+
+    # P2 - entry point. Chosen in Session Zero, and until this ran it changed
+    # nothing but the prose: picking "the very beginning" still seated the
+    # whole franchise roster, so Rengoku and Shinobu stood on Mt. Sagiri in
+    # chapter one. Only overrides when canon_seed actually has that moment on
+    # record - an unmatched setting or arc falls through untouched, exactly
+    # as before.
+    arc = (answers or {}).get("entry") or ""
+    if arc:
+        canonical = found.get("canonical_name", "")
+        wanted_cast = canon_seed.arc_cast(setting, canonical, arc, era=era)
+        wanted_places = canon_seed.arc_places(setting, canonical, arc, era=era)
+        if wanted_cast:
+            found = {**found, "characters": wanted_cast}
+        if wanted_places:
+            found = {**found, "places": wanted_places}
 
     # A setting the curated roster knows by name keeps its real cast whether or
     # not the lookup ran. Research is an ENHANCEMENT, and when it is off (a wiki
@@ -1659,6 +1994,40 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     if not laws_source and parsed.get("host_is_proper"):
         laws_source = (parsed.get("host") or "").strip()
     laws_setting = f"\nSETTING: {laws_source or setting}\n"
+    # A CANON WORLD'S FATE IS NOT INVENTED. For an original world the spine is
+    # seven escalating events the World Master makes up, and that is right. For
+    # a world continuing somebody else's story it is the one thing that must
+    # NOT be made up: the whole promise is "the canon events happen, in order,
+    # and you are inside them". Asking the same blank question produced seven
+    # invented Harbor events for Vinland Saga - a raid on a sleeping shed, a
+    # fire, a drowning at the tide steps - none of which is in the source, and
+    # the player was then told these were canon and immutable. The brief below
+    # hands over what the source actually contains and asks for the source's
+    # own order, with the player's arrival treated as the complication rather
+    # than the plot.
+    canon_fate = ""
+    if canon:
+        known_arcs = [str(a.get("name") if isinstance(a, dict) else a).strip()
+                      for a in (found.get("arcs") or [])]
+        known_arcs = [a for a in known_arcs if a]
+        canon_fate = (
+            f"\nTHIS IS A CANON WORLD CONTINUING «{laws_source or setting}». The fate "
+            "spine must be THE SOURCE'S OWN EVENTS, in the source's own order - the "
+            "things that actually happen in that story, not new ones invented in its "
+            "style. Each fated event is a real beat of the original: the arrival, the "
+            "betrayal, the battle, the death, whatever that work actually contains, in "
+            "the sequence it contains them. Name them in the source's own terms.\n"
+            "THE PLAYER IS AN INTRUSION, NOT A REPLACEMENT. Their presence complicates "
+            "each event and can change WHO is standing there, who is wounded, who "
+            "survives - but it cannot cancel the event or reorder the story. An event "
+            "the source says happens still happens.\n"
+            "Do NOT invent a parallel crisis in the source's style. If the source has "
+            "no fire, there is no fire; a made-up disaster wearing the setting's "
+            "clothes is exactly what the player asked you not to do."
+        )
+        if known_arcs:
+            canon_fate += ("\nThe source's arcs, as researched: "
+                           + "; ".join(known_arcs[:12]) + ".")
     laws_brief = (
         f"WORLD: {structure.get('name')}{laws_setting}"
         f"PLACES: {', '.join(l.get('id', '') for l in structure.get('locations', []))}\n"
@@ -1666,7 +2035,7 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         "The laws are what is TRUE in this setting - its own physics, powers and "
         "prohibitions - not a generic village's. A law that forbids something the "
         "setting runs on is a law that breaks the world.\n"
-        "Write the laws and the fate. JSON only."
+        "Write the laws and the fate. JSON only." + canon_fate
     )
     laws = _resilient(
         "narrator", LAW_SYSTEM, laws_brief, user_id=user_id,
@@ -1735,9 +2104,34 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
     # Hotel are inside the world of Demon Slayer") was recorded verbatim, so the
     # narrator's source line read like the player's request rather than the
     # world the story is actually in.
-    source_name = (found.get("canonical_name") or "").strip()
-    if not source_name and parsed.get("host_is_proper"):
-        source_name = (parsed.get("host") or "").strip()
+    # The HOST outranks research. A crossover names two franchises and
+    # research resolves whichever it ranks highest - which is usually the
+    # IMPORT's own home ("Hazbin Hotel"), not the world the story is set in.
+    # Whatever the premise carried IN can never be the host.
+    import_sources = {_fold(str(i.get("from") or ""))
+                     for i in (parsed.get("imports") or [])}
+    import_chars = {_fold(str(i.get("character") or ""))
+                    for i in (parsed.get("imports") or [])}
+    source_name = ""
+    host = (parsed.get("host") or "").strip()
+    host_fold = _fold(host)
+    if parsed.get("host_is_proper"):
+        # A host that is one of the carried-in characters is not a world name.
+        # When we can map the character back to a known franchise, prefer that.
+        if host_fold in import_chars:
+            source_name = canon_seed.franchise_for_character(host) or ""
+        elif host_fold not in import_sources:
+            source_name = (host if canon_seed.known(host)
+                           else (canon_seed.franchise_for_character(host) or host))
+    if not source_name and host and not canon_seed.known(host):
+        source_name = canon_seed.franchise_for_character(host) or ""
+    if not source_name:
+        cand = (found.get("canonical_name") or "").strip()
+        cand_fold = _fold(cand)
+        if cand_fold in import_chars:
+            source_name = canon_seed.franchise_for_character(cand) or ""
+        elif cand_fold not in import_sources:
+            source_name = cand
     raw["inspired_by"] = source_name or (setting if personal else "")
     raw["mode"] = "canon" if canon else "original"
     raw["scale"] = scale if scale in SCALES else "town"
@@ -1781,10 +2175,11 @@ def bootstrap(setting: str, *, user_id: str, tone: str = "",
         # "SOURCE: I and my girlfriend charlie (from hazbin hotel) in Demon
         # Slayer verse" for Tanjiro Kamado - the same disease the narrator's
         # source line already had, in the one call that decides what a canon
-        # character actually is. Research supplies the canonical title when it
-        # answers; the parse supplies the host when it does not.
-        persona_source = (found.get("canonical_name") or parsed.get("host")
-                          or setting)
+        # character actually is. The host is resolved once above and reused
+        # here, so the cards and the narrator can never disagree about which
+        # world this actually is.
+        persona_source = (source_name or found.get("canonical_name")
+                          or parsed.get("host") or setting)
         raw = _apply_canon_personas(raw, persona_source, user_id=user_id)
         # And then make the collision real. A crossover's whole interest is
         # what the host world does about the outsider being what they are.
