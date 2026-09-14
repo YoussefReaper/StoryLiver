@@ -3584,3 +3584,44 @@ button { background: none; border: 0; cursor: pointer; }
     var(--panel);
 }
 .modal-body { padding-bottom: 30px; }
+
+/* ------------------------------------------------- Session Zero (onboarding)
+   The decisions a new player meets before a blank input box. Every choice
+   also takes free text, so "or describe it yourself" is not a special case:
+   it sits under the options at the same width, and typing clears the
+   selection rather than leaving two contradictory answers. */
+.sz { padding: 0 20px 20px; }
+.sz-lede { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.sz-q { padding: 14px 0; border-top: 1px solid var(--line); }
+.sz-q h4 { margin: 0 0 4px; font-size: 14px; }
+.sz-why { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.sz-opts { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.sz-opt {
+  display: flex; flex-direction: column; gap: 3px; text-align: left;
+  padding: 10px 12px; border-radius: var(--r-sm, 10px); cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--vellum); font: inherit;
+  transition: border-color .12s var(--ease, ease), background .12s var(--ease, ease);
+}
+.sz-opt:hover { border-color: var(--ember); }
+.sz-opt.on { border-color: var(--ember); background: var(--ember-soft); }
+.sz-opt b { font-size: 13px; font-weight: 600; }
+.sz-opt span { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+.sz-free {
+  margin-top: 8px; width: 100%; box-sizing: border-box;
+  padding: 9px 11px; font: inherit; font-size: 13px;
+  border-radius: var(--r-sm, 10px); border: 1px solid var(--line);
+  background: var(--panel); color: var(--vellum);
+}
+.sz-free:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+.sz-opt:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+.sz-act { display: flex; gap: 10px; justify-content: flex-end; padding-top: 16px; }
+
+@media (max-width: 640px) {
+  .sz-opts { grid-template-columns: 1fr; }
+  .sz-act { flex-direction: column-reverse; }
+  .sz-act button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sz-opt { transition: none; }
+}

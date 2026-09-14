@@ -8,7 +8,7 @@ of the openings already used in this playthrough that must not recur.
 """
 import re
 
-from . import arcs, callbacks, db, llm, memory, modes, npc_sim
+from . import arcs, callbacks, canon_evidence, db, llm, memory, modes, npc_sim
 
 BANNED = (
     "I understand your frustration; I hear you; a mix of X and Y; a testament to; "
@@ -183,6 +183,40 @@ def _openings(pt_id, n=8):
     return outs
 
 
+def _spoken_before(pt_id, n=400):
+    """Every line anybody has already said in this playthrough, folded.
+
+    Unbounded by turn on purpose, unlike `_recent_speech`: an ordinary line can
+    fairly be echoed later, but a character's ONE famous line is spent the
+    moment it lands. Folding drops punctuation and case so a near-identical
+    redelivery is still recognised as the same line.
+    """
+    rows = db.rows(
+        "SELECT text FROM narrative WHERE playthrough_id=? AND kind='speech'"
+        " ORDER BY id DESC LIMIT ?", (pt_id, n))
+    return {_fold(r["text"]) for r in rows if (r["text"] or "").strip()}
+
+
+def _recent_speech(pt_id, n=14, cap=10):
+    """The lines characters have actually said lately, whole.
+
+    Whole, not the first five words like `_openings`: a spoken line is short
+    enough to repeat exactly, and it is the exact repeat that reads as broken.
+    Trimmed to the most recent handful so an old line stops being forbidden
+    once the scene has genuinely moved on - a catchphrase said twice an hour
+    apart is characterisation; twice in two turns is a stuck record.
+    """
+    rows = db.rows(
+        "SELECT text FROM narrative WHERE playthrough_id=? AND kind='speech'"
+        " ORDER BY id DESC LIMIT ?", (pt_id, n))
+    out = []
+    for r in rows:
+        line = " ".join((r["text"] or "").split())[:100]
+        if line and line not in out:
+            out.append(line)
+    return out[:cap]
+
+
 def _stub(world, pt, action, verdict, extra):
     """The offline narrator. No key, no spend - used by the whole test suite.
 
@@ -221,8 +255,16 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
     # D10: a WANTS entry the player already addressed drops out of the prompt
     # here - the same place it was leaking back in, since narrate() is what
     # actually builds the anchor block the model sees.
+    # A SIGNATURE LINE IS SPENT ONCE IT HAS BEEN SAID. The card offers it every
+    # turn its beat is live, and the narrator is told in as many words to
+    # deliver an offered canon line verbatim - so Gojo said "Throughout heaven
+    # and earth, I alone am the honored one." three times in eight turns, which
+    # is the soundboard the whole beat mechanism exists to prevent. Asking the
+    # prompt nicely does not beat an explicit instruction; withholding the line
+    # does. Cheap, deterministic, and it cannot be argued with.
+    spent = _spoken_before(pt["id"])
     anchors = "\n".join(memory.anchor_block(
-        world, n, beat=moment,
+        world, n, beat=moment, spent=spent,
         answered_goals=npc_sim.answered_goals(pt["id"], n, player))
         for n in present)
     events = memory.retrieve_events(pt["id"], state["turn"], action + " " + (beat or ""), k=7)
@@ -239,25 +281,26 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
                and (not f.get("location") or f["location"] == state["location"])]
     fate_line = f"\nHAPPENING RIGHT NOW, UNSTOPPABLE: {fate_now[0]['desc']}" if fate_now else ""
 
-    # THE SETTING. Its absence was the single largest quality gap against a
-    # plain chat model running the same franchise: that model knows it is
-    # running Hazbin Hotel and reaches for Alastor's 1930s radio diction, the
-    # green of a deal, the Pride Ring. This narrator was told "PLACE: the
-    # chapel steps" and a list of strangers, and had no reason to reach for
-    # any of it. The world dict cannot carry a franchise's texture - only the
-    # model's own knowledge of the source can, and it was never invited to use
-    # it. Established facts below still outrank it, so this adds colour and
-    # register without letting canon overwrite what has actually happened.
+    # A source title identifies the work; it is not permission to improvise
+    # facts from model memory. The saved entry contract is revision-linked and
+    # quote-backed, and therefore the only canon authority a turn receives.
     source = (world.get("inspired_by") or world.get("source_prompt") or "").strip()
     setting_line = ""
     if source and world.get("mode") == "canon":
+        contract = canon_evidence.brief(world.get("canon_entry") or {})
         setting_line = (
-            f"THE SOURCE: this world continues {source}. You know this setting. Use what you "
-            f"know of it - how these people actually speak, what they call things, the honorifics, "
-            f"the techniques, the factions, the small details a fan would notice. Characters sound "
-            f"like themselves or the world is not this world. Never contradict ESTABLISHED FACTS "
-            f"below; where the source and this world's own history disagree, this world wins.\n"
+            f"THE SOURCE IDENTITY: this world continues {source}. The title identifies style "
+            f"and vocabulary; it does NOT authorize facts from memory. Use only the saved "
+            f"SOURCE-BACKED ENTRY CONTRACT, character anchors, and established play history "
+            f"as factual canon. Never add a named person, place, power, relationship, death, "
+            f"or past event merely because you recall it. When evidence is missing, keep the "
+            f"scene local and uncertain rather than completing canon by guess.\n"
         )
+        if contract:
+            setting_line += "\n" + contract + "\n"
+        else:
+            setting_line += ("\nCANON EVIDENCE: unverified. Do not assert source-specific facts that are "
+                             "not already present in the world state.\n")
 
     # A crossover's standing problem, carried every turn. Without it the fact
     # that the princess of Hell is standing in a town of demon slayers is
@@ -364,6 +407,28 @@ def narrate(pt, world, action, verdict, *, user_id, premium=False, beat=None,
     if forbidden:
         parts.append("\nFORBIDDEN OPENINGS (do not begin with any of these constructions):\n" +
                      "\n".join("  - " + f for f in forbidden))
+    # A LINE ALREADY SAID IS NOT AVAILABLE AGAIN. `_openings` reads narration,
+    # beats and npc rows and takes the first five words of each - so it never
+    # saw SPEECH at all, and a character could repeat a whole sentence verbatim
+    # on consecutive turns with nothing to stop them. In a six-turn audit
+    # Takuma Ino opened two turns running with "Let me put it another way." A
+    # person who says the same sentence twice in two minutes is not a person.
+    # SAYING IT AGAIN AND DOING IT AGAIN ARE ONE PROBLEM, so they are one
+    # section - and a section that costs nothing on the turns where there is
+    # nothing to repeat yet. `_openings` reads narration, beats and npc rows
+    # and keeps five words of each, so it never saw SPEECH at all: in a
+    # six-turn audit Takuma Ino opened two turns running with "Let me put it
+    # another way." The same audit had one character hook his fingers under his
+    # cap brim and count shoes in ten passages out of six turns, because
+    # mannerisms arrive from the persona card on every single turn and the
+    # narrator reaches for what it is handed. A card says what a person is
+    # like; it does not say to perform it on a loop.
+    said = _recent_speech(pt["id"])
+    if said:
+        parts.append(
+            "\nALREADY USED (no one repeats a line or a paraphrase of one; at most "
+            "ONE physical mannerism this passage, and not a recent one):\n"
+            + "\n".join('  - "' + s + '"' for s in said))
     parts.append("\nWrite the passage.")
 
     # Modes re-tune the narrator's register and the AU premise reframes the

@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from . import arcs, llm, memory, persona
+from . import arcs, canon_evidence, llm, memory, persona
 
 MOVE_VERB = re.compile(
     r"\b(go|walk|head|move|travel|leave for|leave|return|climb|cross|make my way|"
@@ -278,12 +278,13 @@ def validate(pt, world, action, *, user_id, player=memory.SOLO, party=None):
     source = (world.get("inspired_by") or world.get("source_prompt") or "").strip()
     source_line = ""
     if source and world.get("mode") == "canon":
+        contract = canon_evidence.brief(world.get("canon_entry") or {})
         source_line = (
-            f"THE SOURCE: this world continues {source}. You know this setting. Judge an "
-            f"action by what is actually possible THERE - its techniques, its powers and "
-            f"their limits, its factions, what its people would and would not do - not by "
-            f"what would be possible in a generic village. Something ordinary in {source} "
-            f"is ordinary here. Only RULES below can make it invalid.\n")
+            f"THE SOURCE IDENTITY: {source}. Do not judge from remembered franchise lore. "
+            f"Only RULES, structured state, character anchors, established history, and the "
+            f"SOURCE-BACKED ENTRY CONTRACT below may establish named powers, limits, people, "
+            f"places or events. Missing evidence means unknown, not impossible and not an "
+            f"invitation to invent.\n{contract}\n")
     prompt = f"""WORLD: {world.name} - {world.get('tagline', '')}
 {source_line}RULES:
 {chr(10).join('  ' + r['id'] + ': ' + r['text'] for r in world.rules)}

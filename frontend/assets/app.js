@@ -1486,7 +1486,7 @@ function closeOverlays() {
 function showModal(html) {
   $('#scrim').hidden = false; $('#modalCard').innerHTML = html; $('#modal').hidden = false;
 }
-const closeX = `<button class="close-btn" data-close>
+const closeX = `<button class="close-btn" data-close aria-label="Close">
   <svg viewBox="0 0 16 16" class="ico"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>`;
 const head = (title, sub) => `<div class="modal-head"><div style="flex:1">
   <h2>${title}</h2>${sub ? `<p>${sub}</p>` : ''}</div>${closeX}</div>`;
@@ -2182,7 +2182,7 @@ async function showForge() {
             <b>Build my own</b><small>Nothing is looked up. Pure invention, from
               your description alone.</small></button>
         </div>
-        <label class="big-field"><span>The setting</span><input id="bootSetting" maxlength="160" placeholder="a frozen post-collapse Earth"></label>
+        <label class="big-field"><span>The setting or full premise</span><textarea id="bootSetting" rows="3" maxlength="2000" placeholder="I and my girlfriend Charlie from Hazbin Hotel enter Demon Slayer at the exact beginning…"></textarea></label>
         <div class="suggest">${suggestions.map((s) => `<button data-suggest="${esc(s)}">${esc(s)}</button>`).join('')}</div>
         <div id="researchPeek" class="research-peek"></div>
         <label class="big-field"><span>Tone (optional)</span><input id="bootTone" maxlength="160" placeholder="quiet, cold, and merciless"></label>
@@ -2257,15 +2257,104 @@ async function peekResearch() {
   } catch { box.innerHTML = ''; }
 }
 
+// Session Zero - the decisions a new player is supposed to meet before a
+// blank input box. The endpoint existed and the player never called it, so
+// the advertised onboarding was invisible: every world was built with no
+// era, no entry point and no answers at all, which is also why "the very
+// beginning" seated characters who are not in the story yet.
+//
+// Every choice also accepts free text. Research can only offer what it could
+// name, and a menu you cannot override is a menu arguing with the player -
+// "the Final Selection, just before dawn" is a better answer than any four
+// options a wiki happened to have.
+async function askSessionZero(setting, mode) {
+  let form = null;
+  try {
+    form = await api(`/forge/session-zero?setting=${encodeURIComponent(setting)}`
+      + `&mode=${encodeURIComponent(mode || 'auto')}`);
+  } catch { return null; }
+  const qs = (form && form.questions) || [];
+  if (!qs.length) return null;
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+
+    const body = qs.map((q) => {
+      const opts = (q.options || []).map((o) => `
+        <button type="button" class="sz-opt" data-sz-q="${esc(q.id)}" data-sz-v="${esc(o.id)}">
+          <b>${esc(o.label)}</b>${o.blurb ? `<span>${esc(o.blurb)}</span>` : ''}
+        </button>`).join('');
+      const free = (q.kind === 'text' || q.allow_free) ? `
+        <input class="sz-free" data-sz-free="${esc(q.id)}" type="text"
+               placeholder="${q.kind === 'text' ? 'Type your answer…' : 'Or describe it yourself…'}"
+               aria-label="${esc(q.q)}">` : '';
+      return `<div class="sz-q">
+        <h4>${esc(q.q)}</h4>
+        ${q.why ? `<p class="sz-why">${esc(q.why)}</p>` : ''}
+        ${opts ? `<div class="sz-opts">${opts}</div>` : ''}
+        ${free}
+      </div>`;
+    }).join('');
+
+    showModal(`<div class="modal-head"><div style="flex:1"><h2>Before the world exists</h2>
+        <p>${esc(form.setting || setting)} — a few decisions, then it builds.</p></div>${closeX}</div>
+      <div class="sz">
+        <p class="sz-lede">Every answer is optional. Skip and the world decides for you.</p>
+        ${body}
+        <div class="sz-act">
+          <button type="button" class="btn btn-ghost" id="szSkip">Skip — decide for me</button>
+          <button type="button" class="btn btn-primary" id="szGo">Build the world</button>
+        </div></div>`);
+
+    const card = $('#modalCard');
+    card.querySelectorAll('.sz-opt').forEach((b) => {
+      b.addEventListener('click', () => {
+        b.parentElement.querySelectorAll('.sz-opt').forEach((x) => x.classList.remove('on'));
+        b.classList.add('on');
+        const free = card.querySelector(`.sz-free[data-sz-free="${b.dataset.szQ}"]`);
+        if (free) free.value = '';   // typing overrides choosing, and vice versa
+      });
+    });
+    card.querySelectorAll('.sz-free').forEach((i) => {
+      i.addEventListener('input', () => {
+        if (!i.value.trim()) return;
+        card.querySelectorAll(`.sz-opt[data-sz-q="${i.dataset.szFree}"]`)
+          .forEach((x) => x.classList.remove('on'));
+      });
+    });
+    card.querySelector('[data-close]')?.addEventListener('click', () => {
+      closeOverlays(); finish(null);
+    });
+    $('#szSkip').addEventListener('click', () => { closeOverlays(); finish(null); });
+    $('#szGo').addEventListener('click', () => {
+      const answers = {};
+      card.querySelectorAll('.sz-free').forEach((i) => {
+        const v = i.value.trim();
+        if (v) answers[i.dataset.szFree] = v;
+      });
+      card.querySelectorAll('.sz-opt.on').forEach((b) => {
+        if (!answers[b.dataset.szQ]) answers[b.dataset.szQ] = b.dataset.szV;
+      });
+      closeOverlays(); finish(answers);
+    });
+  });
+}
+
 async function runBootstrap() {
   const setting = $('#bootSetting').value.trim();
   if (!setting) return toast('Name a setting first.', 'warn');
   const btn = $('#bootGo'); btn.disabled = true;
+  btn.textContent = 'A few questions first…';
+  // Session Zero runs BEFORE the build and its answers travel with it -
+  // which is the entire reason an entry point now changes who is actually
+  // in the world rather than only the prose describing it.
+  const answers = await askSessionZero(setting, S.buildMode || 'auto');
   btn.textContent = (S.buildMode === 'original') ? 'Building it…' : 'Reading up on it…';
   try {
     const r = await api('/forge/bootstrap', { method: 'POST', body: {
       user_id: S.userId, setting, tone: $('#bootTone').value.trim(),
-      mode: S.buildMode || 'auto', save: true } });
+      mode: S.buildMode || 'auto', save: true, answers: answers || {} } });
     openEditor(r.world, (r.saved && r.saved.id) || null, r.notice);
   } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = 'Build the world'; }
 }
@@ -5539,21 +5628,47 @@ async function saveIdentity(cardId) {
        const url = await askForArt(); if (url) …
 
    Nothing here generates an image. The picker is the only way a face enters
-   this product, deliberately. */
+   this product, deliberately.
+
+   Two things about the settle order, because getting it wrong is silent:
+
+   - The promise is claimed the moment a file exists, BEFORE the upload
+     starts. Resolving with the pending promise adopts it, so the
+     cancel-detection timer below cannot win the race by finishing first. It
+     used to await the upload inside the handler, which left a 700ms hole: on
+     any link slower than that the picture was stored on the server, the
+     answer was thrown away, and the button looked like it had done nothing
+     at all — no error, because nothing had failed.
+   - A picker that produced a file is not a cancel, so the fallback checks
+     `input.files` before deciding. `cancel` is the honest signal and every
+     current browser fires it; the focus timer is only for the ones that do
+     not, and it must never be the thing that answers. */
 function askForArt() {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/png,image/jpeg,image/gif,image/webp';
-    input.addEventListener('change', async () => {
+
+    input.addEventListener('change', () => {
       const file = input.files && input.files[0];
-      resolve(file ? await uploadImage(file) : null);
+      finish(file ? uploadImage(file) : null);
     }, { once: true });
-    // A cancelled picker fires no event in most browsers; resolve on the
-    // window regaining focus so an awaited call can never hang forever.
+
+    // The picker was dismissed. No file, nothing to upload, no ambiguity.
+    input.addEventListener('cancel', () => finish(null), { once: true });
+
+    // For browsers that fire no `cancel`. A cancelled picker is the one that
+    // comes back with nothing in it; a chosen file must be left alone to
+    // finish uploading.
     window.addEventListener('focus', () => {
-      setTimeout(() => resolve(null), 700);
+      setTimeout(() => {
+        if (!input.files || !input.files.length) finish(null);
+      }, 700);
     }, { once: true });
+
     input.click();
   });
 }
@@ -5562,8 +5677,17 @@ async function uploadImage(file) {
   if (!file) return null;
   const fd = new FormData();
   fd.append('file', file);
-  const r = await fetch(`/api/upload?user_id=${encodeURIComponent(S.userId)}`,
-                        { method: 'POST', body: fd });
+  let r;
+  try {
+    r = await fetch(`/api/upload?user_id=${encodeURIComponent(S.userId)}`,
+                    { method: 'POST', body: fd });
+  } catch {
+    // A dropped connection used to reject inside the change handler, which
+    // left askForArt() pending forever — the same "nothing happened" the
+    // race above caused, arrived at from the other direction.
+    toast('Could not reach the server — the picture was not uploaded.', 'err');
+    return null;
+  }
   if (!r.ok) { toast((await r.json().catch(() => ({}))).detail || 'Upload failed.', 'err'); return null; }
   return (await r.json()).url;
 }
@@ -6390,8 +6514,29 @@ async function changePassword() {
 
 async function showProfile() {
   if (!S.account) return showAuth('login');
-  let p;
+  let p, tr = null;
   try { p = await api('/profile'); } catch (e) { return toast(e.message, 'err'); }
+  // Trophies live on their own endpoint and were never fetched by anything,
+  // so the whole meta-progression - what a run actually earned you - was
+  // invisible. Fetched separately and non-fatally: a profile that cannot
+  // load its trophy case must still load.
+  try {
+    tr = await api(`/profile/trophies?user_id=${encodeURIComponent(S.userId)}`);
+  } catch { tr = null; }
+  const earnedT = (tr && tr.earned) || [];
+  const lockedN = ((tr && tr.locked) || []).length;
+  const trophyHtml = (earnedT.length || lockedN) ? `<div class="pf-towns">
+      <div class="pf-head">Trophies</div>
+      ${earnedT.length
+        ? earnedT.map((t) => `<div class="pf-town">
+            <span>${esc(t.name || 'earned')}</span>
+            <span class="pf-standing good">earned</span>
+            ${t.blurb ? `<span class="pf-crimes">${esc(t.blurb)}</span>` : ''}
+          </div>`).join('')
+        : `<div class="pf-town"><span class="pf-crimes">None yet — they come
+             from finishing runs.</span></div>`}
+      ${lockedN ? `<p class="fineprint">${lockedN} still to earn.</p>` : ''}
+    </div>` : '';
   showModal(`${head(esc(p.account.display_name || 'Your profile'), esc(p.account.email))}
     <div class="modal-body">
       <div class="row" style="align-items:center;gap:14px">
@@ -6445,6 +6590,8 @@ async function showProfile() {
           <span class="pf-standing ${t.standing < 0 ? 'bad' : 'good'}">${Math.round(t.standing)}</span>
           ${t.crimes ? `<span class="pf-crimes">${t.crimes} on record</span>` : ''}
         </div>`).join('')}</div>` : ''}
+
+      ${trophyHtml}
 
       ${p.sessions?.length > 1 ? `<p class="fineprint">${p.sessions.length} devices signed in.</p>` : ''}
 

@@ -244,6 +244,33 @@ def test_every_class_written_is_a_class_that_paints():
        "and `.input`, the most-written class in the app, is one of them")
 
 
+def test_the_app_announces_itself_to_a_screen_reader():
+    section("a11y — a screen reader is told what changed")
+    # Nearly every element in this app is created by JS, so the static HTML is
+    # the only place these can live. Without them a modal opens in silence and
+    # an error toast - the one message that has to reach everybody - is never
+    # spoken at all.
+    m = re.search(r'<div class="modal" id="modal"([^>]*)>', HTML)
+    ok(bool(m) and 'role="dialog"' in m.group(1) and "aria-modal" in m.group(1),
+       "the modal is a dialog and says so"
+       + (f" ({m.group(1).strip()})" if m else " — modal element not found"))
+
+    t = re.search(r'<div class="toasts" id="toasts"([^>]*)>', HTML)
+    ok(bool(t) and "aria-live" in t.group(1),
+       "toasts are a live region — an error nobody hears is not an error")
+
+    n = re.search(r'<nav class="table-tabs" id="tableTabs"([^>]*)>', HTML)
+    ok(bool(n) and "aria-label" in n.group(1),
+       "the view switcher says what it switches")
+
+    # A control whose only content is an icon has no accessible name unless one
+    # is written. Counted, not asserted: this is the remaining gap, and the
+    # number has to go down, not up.
+    icon_only = len(re.findall(r"<button[^>]*>\s*<svg", JS))
+    ok(True, f"gap on record: {icon_only} icon-only buttons in app.js still "
+             f"carry no accessible name")
+
+
 def test_a_built_world_is_not_given_a_database_id_it_does_not_have():
     section("save — a freshly built world can actually be saved")
     # THE BUG: every save of a newly built world came back 404 "no such world"

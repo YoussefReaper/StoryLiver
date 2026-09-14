@@ -32,6 +32,8 @@ builder receives. No extra model call.
 """
 from __future__ import annotations
 
+import re
+
 from . import canon_seed, db, research
 
 # A canon world where research found a power system or a timeline gets the
@@ -79,7 +81,8 @@ def questions(dossier: dict) -> dict:
     Options come from the world's ACTUAL arcs and powers where research found
     them, so the player is choosing "start at the Mugen Train arc" rather than
     typing a guess and hoping the model recognises it."""
-    found = bool(dossier.get("found"))
+    premise = dossier.get("premise") or {}
+    found = bool(dossier.get("found") or premise.get("host_is_proper"))
     out = {"canon": found, "setting": dossier.get("canonical_name") or dossier.get("setting", ""),
            "questions": []}
 
@@ -99,8 +102,19 @@ def questions(dossier: dict) -> dict:
             "options": [{"id": e["id"], "label": e["label"], "blurb": e["blurb"]} for e in eras],
         })
 
+    if found:
+        out["questions"].append({
+            "id": "continuity",
+            "q": "Which continuity or adaptation?",
+            "why": "Anime, manga, film, remake and game versions can disagree. Leave this blank only when there is one clear continuity.",
+            "kind": "text",
+            "placeholder": "manga canon · 2019 anime · original game timeline",
+        })
+
     arcs = [a for a in (dossier.get("arcs") or []) if a.get("name")][:10]
-    if arcs:
+    # Exact timeline placement is required even when research could not produce
+    # an arc menu. In that case free text is more important, not less.
+    if found:
         out["questions"].append({
             "id": "entry",
             "q": "Where in the story do you come in?",
@@ -109,8 +123,7 @@ def questions(dossier: dict) -> dict:
             "kind": "choice",
             "options": ([{"id": "start", "label": "The very beginning",
                           "blurb": "Before any of it. You watch it happen."}]
-                        + [{"id": research.slugify(a["name"]) if hasattr(research, "slugify")
-                            else a["name"].lower().replace(" ", "_"),
+                        + [{"id": research.slugify(a["name"]),
                             "label": a["name"], "blurb": (a.get("note") or "")[:90]}
                            for a in arcs]
                         + [{"id": "after", "label": "After it all",
@@ -170,8 +183,8 @@ def questions(dossier: dict) -> dict:
             "kind": "choice",
             "options": [
                 {"id": "full", "label": "Everything, intact",
-                 "blurb": "They are as powerful here as they were there - and this "
-                          "world has no answer for it yet."},
+                 "blurb": "They retain their source abilities. The host world's actual "
+                          "rules decide what can interact with them."},
                 {"id": "weakened", "label": "Weakened, and it costs",
                  "blurb": "It still works. It works badly, it draws attention, and "
                           "it takes something out of them."},
@@ -294,6 +307,41 @@ def questions(dossier: dict) -> dict:
     return out
 
 
+def _known(raw: str, options: list, id_key: str = "id", label_key: str = "label") -> str:
+    """The readable meaning of an answer, whether they PICKED it or TYPED it.
+
+    Every choice question also takes free text (`allow_free`), and free text is
+    the interesting case: a player who types "the Final Selection, just before
+    dawn" has said something the option list cannot express, and the old code
+    ran `.replace("_", " ")` over it - which turned that sentence into a
+    mangled slug and handed the builder nonsense. It also could not tell a
+    chosen option from a typed one, so a typed "Mugen Train" was never matched
+    back to the option it plainly meant.
+
+    So: match what was typed against the options first (by id, then by label,
+    loosely), and when it is genuinely new, pass the player's own words through
+    UNCHANGED. Their sentence is the most specific thing anyone has said about
+    where the story starts; it must reach the builder intact.
+    """
+    val = (raw or "").strip()
+    if not val:
+        return ""
+    folded = re.sub(r"[^a-z0-9]+", " ", val.lower()).strip()
+    for o in options or []:
+        oid = re.sub(r"[^a-z0-9]+", " ", str(o.get(id_key) or "").lower()).strip()
+        lab = re.sub(r"[^a-z0-9]+", " ", str(o.get(label_key) or "").lower()).strip()
+        if folded and folded in (oid, lab):
+            return str(o.get(label_key) or val)
+    # A slug that matches a known option reveals intent ("mugen_train").
+    slugged = val.replace("_", " ").replace("-", " ").strip()
+    for o in options or []:
+        lab = str(o.get(label_key) or "")
+        if slugged and re.sub(r"[^a-z0-9]+", " ", lab.lower()).strip() == \
+                re.sub(r"[^a-z0-9]+", " ", slugged.lower()).strip():
+            return lab
+    return val                     # the player's own words, untouched
+
+
 def brief(answers: dict, dossier: dict) -> str:
     """Fold the answers into the world-builder's brief.
 
@@ -307,18 +355,50 @@ def brief(answers: dict, dossier: dict) -> str:
         return ""
 
     lines = ["THE PLAYER'S PLACE IN THIS WORLD (build around these, do not overrule them):"]
+    # The option lists exist to be READ BACK, so a typed answer that means an
+    # option is reported as that option, and a typed answer that means nothing
+    # on the list is carried through as the player's own words.
+    _arcs = [a for a in (dossier.get("arcs") or []) if a.get("name")]
+    entry_opts = ([{"id": "start", "label": "The very beginning"},
+                   {"id": "after", "label": "After it all"}]
+                  + [{"id": research.slugify(a["name"]),
+                      "label": a["name"]} for a in _arcs])
+    if a.get("continuity"):
+        lines.append(f"- CONTINUITY: {a['continuity'][:180]}. Do not combine facts, designs, "
+                     f"chronology or dialogue from another adaptation or timeline.")
     if a.get("era"):
         eras = canon_seed.era_options(dossier.get("setting", ""), dossier.get("canonical_name", ""))
-        label = next((e["label"] for e in eras if e["id"] == a["era"]), a["era"])
+        label = next((e["label"] for e in eras if e["id"] == a["era"]),
+                     _known(a["era"], eras) or a["era"])
         lines.append(f"- ERA: {label}. The REAL PLACES and REAL CHARACTERS listed above "
                      f"already belong to this era specifically - do not mix in anyone or "
                      f"anywhere from a different era of this setting.")
-    if a.get("entry") and a["entry"] not in ("start",):
-        where = "after everything the source covers" if a["entry"] == "after" else a["entry"].replace("_", " ")
-        lines.append(f"- ENTRY POINT: the story begins {where}. Seed the world as it stands "
-                     f"THEN - who is already dead, what has already happened, what is common "
-                     f"knowledge. Do not replay earlier events as if they are still ahead.")
-    elif a.get("entry") == "start":
+    if a.get("entry"):
+        # A chosen option reads as its label; a TYPED entry point ("the night
+        # the wall falls", "during the Chunin Exams") is the most specific
+        # instruction in the whole form and is passed through verbatim.
+        # "start" is excluded here on purpose: it has its own long form below,
+        # because "the very beginning" is a constraint about who KNOWS WHOM and
+        # not merely a position on a timeline.
+        if a["entry"] not in ("start", "after"):
+            known_entry = None
+            for o in entry_opts:
+                if o["id"] == a["entry"]:
+                    known_entry = o["label"]
+                    break
+            if known_entry is None:
+                known_entry = _known(a["entry"], entry_opts)
+            if known_entry:
+                lines.append(f"- ENTRY POINT: the story begins at {known_entry}. Seed the "
+                             f"world as it stands THEN - who is already dead, what has "
+                             f"already happened, what is common knowledge. Do not replay "
+                             f"earlier events as if they are still ahead.")
+        elif a["entry"] == "after":
+            lines.append("- ENTRY POINT: the story begins AFTER everything the source "
+                         "covers. Seed the world as it stands at the end - who "
+                         "survived, what was lost, what the ending left unresolved - "
+                         "and let the player live in the aftermath of a finished story.")
+    if a.get("entry") == "start":
         # "The very beginning" is a real constraint, not the absence of one.
         # Told nothing, a builder seats the SETTLED version of every character:
         # Demon Slayer opened with four sitting Hashira and Muzan Kibutsuji at
@@ -326,13 +406,12 @@ def brief(answers: dict, dossier: dict) -> str:
         # exactly where nobody has met anybody yet. The opening cast list is the
         # floor on WHO exists; this is the floor on WHO KNOWS WHOM.
         lines.append(
-            "- ENTRY POINT: the story begins at the VERY BEGINNING of the source - "
-            "before the protagonist has joined anything, earned any rank, or met "
-            "almost anyone. Seed the world as it is THEN. Characters who in the "
-            "source have not yet appeared here, or have not yet met each other, "
-            "must not be present, must not know the player, and must not be "
-            "treated as allies or enemies they have not yet become. Speak of "
-            "later events and later figures only as rumour, if at all.")
+            "- ENTRY POINT: the story begins at the earliest scene of the SELECTED "
+            "continuity. Seed only what source evidence establishes at that moment. "
+            "Do not assume a universal origin pattern (untrained protagonist, no rank, "
+            "or no prior relationships): different stories begin in different states. "
+            "Characters not yet introduced or not locally present must not appear, and "
+            "later knowledge, abilities, relationships and events remain unavailable.")
     if a.get("role"):
         lines.append(f"- WHO THEY ARE: {a['role']}")
     if a.get("system") and a["system"] != "none":
@@ -370,8 +449,9 @@ def brief(answers: dict, dossier: dict) -> str:
         lines.append(f"- HOW THEY GOT HERE: {how}")
     if a.get("keeps"):
         band = {
-            "full": "everything they could do still works, at full strength. This world "
-                    "has no counter for it yet - build the reaction, not a nerf.",
+            "full": "everything they could do still works at source-established strength. "
+                    "Do not invent either a nerf or immunity: interactions follow the "
+                    "host world's evidenced rules and remain uncertain where research is silent.",
             "weakened": "what they could do still works, badly. It costs them, it is "
                         "conspicuous, and it fails when it matters most.",
             "none": "nothing carried over. They are exactly who they are with none of "

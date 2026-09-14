@@ -123,7 +123,7 @@ class Contest(BaseModel):
 
 class Bootstrap(BaseModel):
     user_id: str = Field(min_length=4, max_length=64)
-    setting: str = Field(min_length=2, max_length=160)
+    setting: str = Field(min_length=2, max_length=2000)
     tone: str = Field(default="", max_length=160)
     save: bool = True
     # "original" builds from imagination, "canon" reads the real setting and
@@ -2212,7 +2212,7 @@ def auth_password(body: PasswordChange, request: Request, response: Response):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/forge/research")
-def forge_research(setting: str = Query(min_length=2, max_length=120),
+def forge_research(setting: str = Query(min_length=2, max_length=2000),
                    refresh: bool = Query(default=False),
                    depth: str = Query(default="quick")):
     """What the web knows about a setting, before committing to building it.
@@ -2330,7 +2330,7 @@ def forge_scales():
 
 
 @app.get("/api/forge/session-zero")
-def forge_session_zero(setting: str = Query(min_length=2, max_length=160),
+def forge_session_zero(setting: str = Query(min_length=2, max_length=2000),
                        mode: str = Query(default="auto")):
     """The questions to ask BEFORE building a world.
 

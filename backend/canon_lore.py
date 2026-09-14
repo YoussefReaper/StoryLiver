@@ -495,6 +495,22 @@ def card(name: str) -> dict | None:
     under "Charlie Morningstar", and a carried-in character seated as "Charlie"
     was missing its own persona. The boundary matters: it lets "Charlie" find
     "Charlie Morningstar" without letting "San" find "Sanji".
+
+    A THIRD WAY, because a name is not always written in the same ORDER: the
+    same words in a different sequence are the same person. Published material
+    is inconsistent about this - a character is "Satoru Gojo" in his own
+    series and "Gojo Satoru" in a fan premise, and BOTH are correct - but the
+    prefix rule above only ever walks one direction, so "Gojo Satoru" missed
+    the card filed as "Satoru Gojo". The miss was not graceful: with no floor
+    to fall back on, a character the model also declined to card kept whatever
+    the builder invented, and a build handed the narrator Gojo as "the only
+    doctor / an ordinary mortal person", who then agreed with locals about a
+    world he had never heard of.
+
+    So: same words, any order, is a match. Extra words either side are still
+    allowed to be the difference - "Gojo" alone finds "Satoru Gojo" - but
+    every word of the shorter name must be present in the longer one, so this
+    can never fall open the way a loose contains() would.
     """
     want = _fold(name)
     if not want:
@@ -505,6 +521,19 @@ def card(name: str) -> dict | None:
             if k.startswith(want + " ") or want.startswith(k + " "):
                 key = k
                 break
+    if not key:
+        # Same words, different order. Compares word SETS, so word order stops
+        # mattering while a partial overlap ("Gojo Satoru" vs "Satoru Gojo
+        # Sensei") still only matches when one set contains the other.
+        want_words = set(want.split())
+        best = ""
+        for k in LORE:
+            k_words = set(k.split())
+            if want_words <= k_words or k_words <= want_words:
+                # Prefer the closest fit when several contain each other.
+                if len(k_words ^ want_words) < len(set(best.split()) ^ want_words):
+                    best = k
+        key = best
     if not key:
         return None
     out = dict(LORE[key])

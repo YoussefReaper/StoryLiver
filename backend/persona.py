@@ -21,6 +21,8 @@ Everything here is string assembly. $0, deterministic, no model call.
 """
 from __future__ import annotations
 
+import re
+
 # --------------------------------------------------------------------------
 # The card. Every field is optional - a world authored before this module
 # existed simply has none of them, and gets exactly the block it always got.
@@ -82,7 +84,7 @@ def _bullets(label: str, items, limit=6) -> str:
     return f"  {label}: {'; '.join(items)}\n" if items else ""
 
 
-def identity_block(card: dict, *, beat: str = "") -> str:
+def identity_block(card: dict, *, beat: str = "", spent=()) -> str:
     """The block re-injected on EVERY call for this character.
 
     Stable by construction: same card + same beat always produces the same
@@ -120,8 +122,16 @@ def identity_block(card: dict, *, beat: str = "") -> str:
     # because the character acts on them; they must never be narrated openly.
     out += _bullets("KNOWS BUT WILL NOT SAY", c["secrets"], 5)
 
-    out += _bullets("SIGNATURE", c["catchphrases"], 4)
-    eligible = eligible_lines(c, beat)
+    # SIGNATURE IS THE SAME HAZARD ONE FIELD OVER. `famous_lines` are withheld
+    # once spent; catchphrases were handed over on every turn regardless, so a
+    # card carrying "Know your place." got it said twice in four turns by the
+    # same character - the identical soundboard failure, arriving through the
+    # field nobody had filtered.
+    used = {re.sub(r"[^a-z0-9]+", "", str(s or "").lower()) for s in (spent or ())}
+    fresh_signature = [p for p in c["catchphrases"]
+                       if re.sub(r"[^a-z0-9]+", "", str(p or "").lower()) not in used]
+    out += _bullets("SIGNATURE", fresh_signature, 4)
+    eligible = eligible_lines(c, beat, spent=spent)
     if eligible:
         out += f"  CANON LINES FOR THIS MOMENT: {' | '.join(eligible)}\n"
     if c["speech_constraints"]:
@@ -129,7 +139,7 @@ def identity_block(card: dict, *, beat: str = "") -> str:
     return out.rstrip("\n")
 
 
-def eligible_lines(card: dict, beat: str, limit=3):
+def eligible_lines(card: dict, beat: str, limit=3, spent=()):
     """Lines keyed to this beat, plus the standing refrain in the right context.
 
     A line keyed to a DIFFERENT beat is deliberately withheld: that is the whole
@@ -153,9 +163,24 @@ def eligible_lines(card: dict, beat: str, limit=3):
     c = card if "famous_lines" in card and isinstance(card.get("famous_lines"), list) \
         and all(isinstance(x, dict) for x in card["famous_lines"]) else normalise(card)
     beat = (beat or "").strip().lower()
+    # A LINE ALREADY DELIVERED IS NO LONGER ON OFFER. `spent` holds the folded
+    # text of everything said so far in this playthrough. Without it the card
+    # re-offers a refrain on every turn its beat is live, and the narrator is
+    # told to deliver an offered canon line verbatim - so a live run had one
+    # character say "Throughout heaven and earth, I alone am the honored one."
+    # three times in eight turns. Withholding beats asking: the instruction to
+    # deliver it is explicit, so the only reliable way to stop the repeat is to
+    # stop handing it over.
+    used = {re.sub(r"[^a-z0-9]+", "", str(s or "").lower()) for s in (spent or ())}
+
+    def fresh(line: str) -> bool:
+        return re.sub(r"[^a-z0-9]+", "", str(line or "").lower()) not in used
+
     keyed, refrain = [], []
     for entry in c.get("famous_lines") or []:
         key = (entry.get("beat") or "").strip().lower()
+        if not fresh(entry.get("line")):
+            continue
         if key and key != "any":
             if beat and key == beat:
                 keyed.append(entry["line"])

@@ -126,6 +126,15 @@ MODELS = {
     # A room seat says one to three sentences. The cheap model is not a
     # compromise here - the frame does the work, and the frame is code.
     "room": os.getenv("STORYLIVER_MODEL_ROOM", "gpt-5.4-mini"),
+    # Reading the premise, and naming a work's leads. It LOOKS like a cheap
+    # structured-extraction job - one sentence in, small JSON out, once per
+    # world - and it is not. Measured: moved to the nano tier, the same
+    # chaotic premise came back with a host of "Tokyo in the Jujutsu Kaisen
+    # verse" instead of "Jujutsu Kaisen", which found no wiki, which left the
+    # entry contract unverified, which left 0 of 7 fated events sourced. The
+    # whole canon chain hangs off this one answer, so it gets a model that can
+    # read a sentence. It runs once per WORLD, never per turn.
+    "premise": os.getenv("STORYLIVER_MODEL_PREMISE", "gpt-5.4-mini"),
 }
 
 # USD per 1M tokens (input, output). Verified against OpenAI's and Anthropic's
@@ -178,6 +187,109 @@ def price_for(model: str):
         if model.startswith(known):
             return price
     return FALLBACK_PRICE
+
+
+# --- Model availability --------------------------------------------------
+# The defaults above name checkpoints that a given key may not be entitled to
+# (`gpt-5.4-nano` and friends are rolling out, not universal). A named-but-
+# unavailable model used to fail at the API with a 404 the player saw as a
+# broken turn, which made the whole product look key-dependent when it was
+# only credential-dependent. These lists let a call degrade to the nearest
+# model the key actually has instead of dying.
+#
+# ORDER IS PREFERENCE, best-first within a tier. Resolution walks the
+# preferred model's own family first (same vendor, closest capability), then
+# the rest of the tier, then gives up and lets the API raise - a wrong-but-
+# working model beats a hard failure, and a real error still surfaces.
+_TIER_FALLBACKS = {
+    # Role tier "small": cheap, instruction-following, structured JSON.
+    "nano": (
+        "gpt-5.4-nano", "gpt-5.6-luna", "gpt-5-nano", "gpt-5-mini",
+        "gpt-4.1-nano", "gpt-4o-mini", "gpt-4.1-mini",
+    ),
+    # Role tier "mini": the model that writes prose a player reads.
+    "mini": (
+        "gpt-5.4-mini", "gpt-5.4", "gpt-5.1", "gpt-5",
+        "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o",
+    ),
+    # Opt-in premium (Deep Prose). Never silently cheapened below this list:
+    # paying 4 Mana for nano-tier output would be a swindle.
+    "premium": (
+        "gpt-5.1", "gpt-5.4", "gpt-5", "gpt-5.6-terra",
+        "gpt-4.1", "gpt-4o",
+    ),
+}
+
+# Which family a role's default belongs to, so a degraded pick stays as close
+# to the intended model as the key allows.
+_ROLE_TIER = {
+    "world_master": "nano",
+    "director": "nano",
+    "narrator": "mini",
+    "npc": "mini",
+    "room": "mini",
+    "premise": "mini",
+    "narrator_premium": "premium",
+}
+
+# Populated on first successful probe; maps a desired model to the model that
+# will actually be used. Small and cheap to consult on every call.
+_RESOLVED: dict = {}
+_AVAILABLE: set | None = None
+
+
+def _known_models() -> set:
+    """Models this key can reach, or an empty set if that cannot be known.
+
+    Cached for the process. A failure to list is not fatal: an empty set makes
+    every `resolve_model` a no-op, which preserves the old behaviour (let the
+    API decide) rather than inventing a constraint we did not verify."""
+    global _AVAILABLE
+    if _AVAILABLE is not None:
+        return _AVAILABLE
+    key = key_for(MODELS["narrator"])
+    if not key:
+        _AVAILABLE = set()
+        return _AVAILABLE
+    try:
+        import httpx
+        r = httpx.get("https://api.openai.com/v1/models",
+                      headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        if r.status_code != 200:
+            _AVAILABLE = set()
+        else:
+            _AVAILABLE = {m.get("id", "") for m in r.json().get("data", [])}
+    except Exception:
+        _AVAILABLE = set()
+    return _AVAILABLE
+
+
+def resolve_model(model: str) -> str:
+    """The model to actually call, given what this key has.
+
+    Unchanged when the key lists `model` (the common case) or when listing
+    failed. Otherwise the best model from the same tier that IS listed; if the
+    tier has nothing, the original is returned so the API's own error is what
+    the operator sees - honest, and it names the model they configured."""
+    if model in _RESOLVED:
+        return _RESOLVED[model]
+    avail = _known_models()
+    if not avail or model in avail:
+        _RESOLVED[model] = model
+        return model
+    # Same family first (a gpt-5 need prefers another gpt-5), then tier order.
+    family = model.split("-")[0] + "-" + (model.split("-")[1] if "-" in model else "")
+    candidates = []
+    for tier, names in _TIER_FALLBACKS.items():
+        if model in names or any(n.startswith(family) for n in names):
+            candidates.extend(names)
+    candidates.extend(n for names in _TIER_FALLBACKS.values() for n in names)
+    for cand in candidates:
+        if cand in avail:
+            _RESOLVED[model] = cand
+            return cand
+    _RESOLVED[model] = model
+    return model
 
 
 # --- Economy ------------------------------------------------------------

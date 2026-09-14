@@ -83,6 +83,10 @@ def complete(role, system, user, *, user_id, playthrough_id=None, model=None,
     tests measure the same bound the live path obeys."""
     budget.record(role)
     model = model or config.MODELS.get(role, config.MODELS["narrator"])
+    # Degrade to a model this key actually has before anything else looks at
+    # the name - a role's configured default is a preference, not a promise.
+    if config.live_llm() and not config.is_claude_model(model):
+        model = config.resolve_model(model)
 
     if config.LLM_MODE == "spool" and role not in config.SPOOL_STUB_ROLES:
         return _spool(role, system, user, model=model, json_mode=json_mode,
