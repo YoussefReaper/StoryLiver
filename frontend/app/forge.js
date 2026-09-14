@@ -113,7 +113,7 @@ function premiseStep(f) {
       + 'is a thing you can ask for.')}
     <label class="fld">
       <span class="fld-label">The world</span>
-      <textarea class="fld-input tall" id="forgeSetting" maxlength="240"
+      <textarea class="fld-input tall" id="forgeSetting" maxlength="2000"
         placeholder="a frozen post-collapse Earth">${esc(f.setting)}</textarea>
     </label>
     <div class="suggests">${SUGGESTIONS.map((s) => `

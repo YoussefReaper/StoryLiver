@@ -242,7 +242,8 @@ def clamp(v: float) -> float:
 # (c) persona anchors - constant blocks, never summarised, never trimmed
 # --------------------------------------------------------------------------
 
-def anchor_block(world, npc_id: str, *, beat: str = "", answered_goals=None) -> str:
+def anchor_block(world, npc_id: str, *, beat: str = "", answered_goals=None,
+                 spent=()) -> str:
     """The constant re-injected every call. Never a summary, never decayed.
 
     A character authored with only the original five fields produces exactly
@@ -261,7 +262,7 @@ def anchor_block(world, npc_id: str, *, beat: str = "", answered_goals=None) -> 
     if any(a.get(f) for f in persona.LIST_FIELDS + persona.TEXT_FIELDS
            if f not in ("constraints", "goals", "taboos", "voice")):
         card = dict(a, goals=goals)
-        return persona.identity_block(card, beat=beat)
+        return persona.identity_block(card, beat=beat, spent=spent)
     return (
         f"{a['name']} - {a['role']}\n"
         f"  VOICE: {a['voice']}\n"

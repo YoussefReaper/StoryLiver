@@ -136,12 +136,26 @@ LORE: dict[str, dict] = {
     "kyojuro rengoku": {
         "voice": "Booming, warm, absolutely certain. Never hedges and never lowers his voice.",
         "constraints": ["Flame Hashira. Uses Flame Breathing.",
-                        "Fights to protect everyone behind him and does not count the cost."],
+                        "Fights to protect everyone behind him and does not count the cost.",
+                        "His father Shinjuro is a retired, bitter former Flame Hashira; his "
+                        "younger brother Senjuro is alive and keeps the house.",
+                        "He has no student of his own and is looking for one."],
         "goals": ["Do his duty as a Hashira.", "Pass his flame to whoever comes after."],
         "taboos": ["Never lets an innocent die if he can prevent it.", "Never shows fear."],
-        "mannerisms": ["Calls food 'delicious' at full volume.", "Meets every eye directly."],
+        # The old card said "calls food 'delicious' at full volume", and a live
+        # narration turned that into shouting "UMAI!" at a mountain road in the
+        # middle of a serious scene. A mannerism has to be a thing the character
+        # DOES, not a meme they are known for quoting - the narrator reaches for
+        # the loudest reading of whatever the card licenses, so a card that
+        # hands it a catchphrase will get the catchphrase, everywhere.
+        "mannerisms": ["Says what he means at once and at volume, and means it.",
+                       "Meets every eye directly and holds it.",
+                       "Praise from him is specific and immediate - he names the thing "
+                       "you did well before he says anything else."],
         "memories": ["Set your heart ablaze.",
-                     "My mother told me the strong are born to protect the weak. She was right."],
+                     "My mother told me the strong are born to protect the weak. She was right.",
+                     "My little brother Senjuro is better than I am at the parts of this "
+                     "that do not involve a sword."],
     },
     "muzan kibutsuji": {
         "voice": "Calm, courteous, almost gentle - and utterly monstrous underneath.",
@@ -164,13 +178,38 @@ LORE: dict[str, dict] = {
         "constraints": ["Princess of Hell. Daughter of Lucifer; runs the Hazbin Hotel to "
                         "rehabilitate sinners.",
                         "Can open portals to Earth; is far stronger than she behaves, and "
-                        "her demonic side shows when she is pushed."],
+                        "her demonic side shows when she is pushed.",
+                        # The distinction a crossover actually turns on. In a
+                        # world that hunts man-eating demons she gets read as
+                        # one, and being lumped in with them is the exact
+                        # misunderstanding her whole project argues against.
+                        # She is Hellborn - born, not made.
+                        "She is NOT the kind of demon a world of demon-slayers "
+                        "hunts: she was BORN in Hell, not made from a human by "
+                        "another demon's blood; she does not eat people, does "
+                        "not need to, and does not burn in sunlight. When "
+                        "somebody assumes she does, she corrects it gently and "
+                        "plainly rather than letting the fear stand."],
         "goals": ["Prove a sinner can be redeemed.", "Keep the hotel - and everyone in it - alive."],
         "taboos": ["Never gives up on someone she has decided to save.", "Never harms an innocent."],
         "mannerisms": ["Horns normally hidden in her hair, and out when she turns lethal.",
                        "Claps and bounces on her heels when she is excited; talks with her whole body."],
         "memories": ["This hotel is my whole dream. Everyone deserves a second chance.",
                      "My father does not believe in this. I will make him."],
+        # Beat-keyed, so she says the RIGHT thing and not everything she owns:
+        # a soundboard says everything, a character says the right thing.
+        "famous_lines": [
+            {"line": "Everyone deserves a chance to be better.", "beat": "any"},
+            {"line": "I am not giving up on you. That is not how this works.",
+             "beat": "setback"},
+            {"line": "Welcome to the Hazbin Hotel! ...okay, that landed better "
+                     "in my head.", "beat": "meeting"},
+            {"line": "If there is a problem, we talk about it. Together.",
+             "beat": "betrayal"},
+            {"line": "I know what everyone sees when they look at me. I would "
+                     "like to be given the chance to be something else.",
+             "beat": "farewell"},
+        ],
     },
     "vaggie": {
         "voice": "Deadpan, blunt, protective. Says the unromantic true thing nobody else will.",
@@ -456,6 +495,22 @@ def card(name: str) -> dict | None:
     under "Charlie Morningstar", and a carried-in character seated as "Charlie"
     was missing its own persona. The boundary matters: it lets "Charlie" find
     "Charlie Morningstar" without letting "San" find "Sanji".
+
+    A THIRD WAY, because a name is not always written in the same ORDER: the
+    same words in a different sequence are the same person. Published material
+    is inconsistent about this - a character is "Satoru Gojo" in his own
+    series and "Gojo Satoru" in a fan premise, and BOTH are correct - but the
+    prefix rule above only ever walks one direction, so "Gojo Satoru" missed
+    the card filed as "Satoru Gojo". The miss was not graceful: with no floor
+    to fall back on, a character the model also declined to card kept whatever
+    the builder invented, and a build handed the narrator Gojo as "the only
+    doctor / an ordinary mortal person", who then agreed with locals about a
+    world he had never heard of.
+
+    So: same words, any order, is a match. Extra words either side are still
+    allowed to be the difference - "Gojo" alone finds "Satoru Gojo" - but
+    every word of the shorter name must be present in the longer one, so this
+    can never fall open the way a loose contains() would.
     """
     want = _fold(name)
     if not want:
@@ -466,6 +521,19 @@ def card(name: str) -> dict | None:
             if k.startswith(want + " ") or want.startswith(k + " "):
                 key = k
                 break
+    if not key:
+        # Same words, different order. Compares word SETS, so word order stops
+        # mattering while a partial overlap ("Gojo Satoru" vs "Satoru Gojo
+        # Sensei") still only matches when one set contains the other.
+        want_words = set(want.split())
+        best = ""
+        for k in LORE:
+            k_words = set(k.split())
+            if want_words <= k_words or k_words <= want_words:
+                # Prefer the closest fit when several contain each other.
+                if len(k_words ^ want_words) < len(set(best.split()) ^ want_words):
+                    best = k
+        key = best
     if not key:
         return None
     out = dict(LORE[key])

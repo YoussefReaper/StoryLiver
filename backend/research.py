@@ -56,7 +56,8 @@ import json
 import re
 import socket
 import time
-from urllib.parse import quote, urlparse
+import unicodedata
+from urllib.parse import quote, urljoin, urlparse
 
 from . import canon_seed, config, db
 
@@ -75,8 +76,12 @@ ALLOWED_SUFFIXES = (
 )
 
 MAX_BYTES = 2 * 1024 * 1024          # a MediaWiki JSON reply is far under this
-MAX_REQUESTS = 16                    # hard ceiling per dossier, so latency is bounded
-CACHE_DAYS = 30                      # canon does not move fast
+MAX_REQUESTS = 64                    # full dossiers: discovery AND evidence, bounded
+CACHE_DAYS = 30
+RESEARCH_VERSION = 3               # old untyped/name-only caches are not evidence
+# A latency heuristic, NOT a claim that article count proves source quality.
+# Identity checks still apply, and the selected continuity is resolved separately.
+SUBSTANTIAL_ARTICLES = 300
 EXTRACT_CHARS = 1200                 # grounding summary cap - facts, not prose
 SNIPPET_CHARS = 180                  # per-entity note cap
 
@@ -137,6 +142,32 @@ def _public_ips(host: str) -> list:
     return good
 
 
+# A proxy is an egress point somebody else configured on purpose. When one is
+# set, the dossier must route through it: a request pinned to a resolved IP
+# connects directly and cannot use a proxy at all, which is how a working
+# network produced "unreachable" for every lookup.
+def _proxy_for(host: str) -> str:
+    """The proxy configured for this host, or "" for a direct connection.
+
+    Reads the same environment httpx itself would, so a deployment that sets
+    HTTPS_PROXY (or the lowercase form, or NO_PROXY to exempt a host) gets the
+    behaviour it asked for rather than a silently direct connection. Removed
+    from the module-level client cache key too, so changing the proxy does not
+    silently reuse a connection opened under the old one."""
+    import os
+    keys = (f"no_proxy", f"NO_PROXY")
+    for k in keys:
+        for entry in (os.environ.get(k) or "").split(","):
+            entry = entry.strip().lower().lstrip(".")
+            if entry and (host == entry or host.endswith("." + entry)):
+                return ""
+    for k in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 class _Budget:
     """A dossier gets a fixed number of requests, and ONE connection per host.
 
@@ -144,24 +175,48 @@ class _Budget:
     waits. The connection pool matters just as much: a fresh client per request
     means a fresh DNS lookup and a fresh TLS handshake every time, which was
     the bulk of the wall clock on a ten-request dossier."""
-
-    def __init__(self, limit=MAX_REQUESTS):
+    def __init__(self, limit=MAX_REQUESTS, seconds=150):
         self.left = limit
+        self.limit = limit
+        self.deadline = time.monotonic() + seconds
         self._clients = {}
 
     def take(self):
-        if self.left <= 0:
+        if self.left <= 0 or time.monotonic() >= self.deadline:
             raise ResearchError("research budget exhausted")
         self.left -= 1
 
     def client(self, host, ip, timeout):
-        """One pinned, verified connection per host, kept open for the dossier."""
+        """One connection per host, kept open for the dossier.
+
+        IP-PINNED BY DEFAULT, because that is the SSRF defence `_get_json`
+        depends on: validate the address, then connect to that exact address,
+        so nothing between the check and the connection can swap it.
+
+        BUT a pinned request goes to the address directly and therefore cannot
+        use a proxy - the whole point of a proxy is that it is the thing you
+        connect TO, and it makes the outbound connection for you. On a host
+        behind one (a corporate egress proxy, a sandbox, a metered relay) the
+        pinned socket is refused and every wiki lookup fails with "unreachable",
+        which reads as a network problem and is not one.
+
+        So when a proxy is actually configured, the proxy wins and pinning is
+        dropped - a proxy is itself a validated egress point, and refusing to
+        route through it is not more secure, it is just broken. Verified by the
+        two symptoms this had: `502 Bad Gateway` from httpx, and Wikipedia's
+        own `403 Please set a user-agent` when the same request went direct."""
         import httpx
         if host not in self._clients:
+            pinned = not _proxy_for(host)
+            headers = {"User-Agent": USER_AGENT, "Accept": "application/json",
+                       "Accept-Encoding": "gzip"}
+            if pinned:
+                # Only meaningful while pinning - it names the host on a socket
+                # already opened to that host's address.
+                headers["Host"] = host
             self._clients[host] = httpx.Client(
                 timeout=timeout, follow_redirects=False, verify=True,
-                headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                         "Host": host, "Accept-Encoding": "gzip"},
+                headers=headers, trust_env=not pinned,
                 limits=httpx.Limits(max_connections=2, keepalive_expiry=30.0))
         return self._clients[host]
 
@@ -175,29 +230,40 @@ class _Budget:
 
 
 def _get_json(url: str, params: dict, budget: _Budget, *, timeout=None,
-              attempts=3) -> dict:
+              attempts=3, wiki_probe=False) -> dict:
     import httpx
 
     timeout = config.RESEARCH_TIMEOUT if timeout is None else timeout
     budget.take()
     parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise BlockedHost("research is HTTPS-only")
+    if (parsed.scheme != "https" or parsed.username or parsed.password
+            or parsed.port not in (None, 443)):
+        raise BlockedHost("research is HTTPS-only on the standard port")
     host = parsed.hostname or ""
     if not _host_allowed(host):
         raise BlockedHost(f"{host} is not an allowed research source")
 
-    ip = _public_ips(host)[0]
-    # Connect to the validated ADDRESS, carrying the hostname in SNI and in the
-    # certificate check. Nothing between validating and connecting can swap it.
-    pinned = parsed._replace(netloc=ip).geturl()
+    proxy = _proxy_for(host)
+    if proxy:
+        # Behind a proxy, the proxy resolves and connects on our behalf, so the
+        # address check below cannot pin anything - and trying to would send
+        # the request straight to the IP, past the only route out. The host is
+        # still validated by `_host_allowed` above, and TLS still verifies the
+        # certificate, so the name reached is the name asked for.
+        target, sni = url, {}
+    else:
+        ip = _public_ips(host)[0]
+        # Connect to the validated ADDRESS, carrying the hostname in SNI and in
+        # the certificate check. Nothing between validating and connecting can
+        # swap it.
+        target = parsed._replace(netloc=ip).geturl()
+        sni = {"sni_hostname": host}
 
-    client = budget.client(host, ip, timeout)
+    client = budget.client(host, None, timeout)
 
     for attempt in range(attempts):
         try:
-            r = client.get(pinned, params=params,
-                           extensions={"sni_hostname": host})
+            r = client.get(target, params=params, extensions=sni)
         except httpx.HTTPError as e:
             if attempt == attempts - 1:
                 raise ResearchError(f"{host} unreachable: {e}")
@@ -210,6 +276,16 @@ def _get_json(url: str, params: dict, budget: _Budget, *, timeout=None,
             time.sleep(min(wait, 5.0))
             continue
         if r.status_code in (301, 302, 303, 307, 308):
+            if wiki_probe:
+                dest = urlparse(urljoin(url, r.headers.get("location", "")))
+                moved = (dest.hostname or "").lower()
+                if (dest.scheme == "https" and not dest.username and not dest.password
+                        and dest.port in (None, 443)
+                        and re.fullmatch(r"[a-z0-9][a-z0-9-]*\.fandom\.com", moved)
+                        and moved != host):
+                    # Discovery only. The next request revalidates and pins
+                    # the new host; never follow an unchecked HTTP redirect.
+                    return {"_redirect_host": moved}
             raise ResearchError("redirect refused - the source moved")
         if r.status_code >= 400:
             raise ResearchError(f"{host} returned {r.status_code}")
@@ -258,11 +334,66 @@ STOPWORDS = {"the", "a", "an", "of", "and", "no", "wiki", "fandom", "series",
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+    text = unicodedata.normalize("NFKD", str(s or "")).casefold()
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[\W_]+", " ", text, flags=re.UNICODE).strip()
+
+
+def name_key(s: str) -> str:
+    """Identity matching preserves non-Latin names and folds accents/apostrophes."""
+    return _norm(s).replace(" ", "")
 
 
 def _tokens(s: str) -> set:
     return {t for t in _norm(s).split() if t and t not in STOPWORDS}
+
+
+def slugify(s: str) -> str:
+    """A stable id for an arc name, so Session Zero can offer `mugen_train_arc`
+    as an option id and the entry point can be matched back to the arc's REAL
+    name later. `sessionzero` and `worldforge` both referenced this via
+    `hasattr(research, "slugify")` and quietly fell through to an inline
+    copy when it was missing - so the two sides could disagree about the
+    spelling of the same arc. One implementation, used by both."""
+    return _norm(s).replace(" ", "_")
+
+
+def resolve_arc(name: str, arcs: list, era: str = "") -> str:
+    """The arc's REAL name for whatever the player picked or typed.
+
+    An option arrives as a slug ("mugen_train_arc"); a typed answer arrives as
+    prose ("the night the wall falls"). Matching is done against the researched
+    arc list first - by slug, then by whole-name fold, then by containment - so
+    a choice made from a GENERIC verse's own researched arcs resolves the same
+    way a hardcoded franchise's does. Returns "" when nothing matches, which
+    callers read as "the player described a moment we have no canned cast for"
+    rather than silently widening back to the whole franchise."""
+    n = (name or "").strip()
+    if not n:
+        return ""
+    if not arcs:
+        return n
+    knock = slugify(n)
+    flat = _norm(n)
+    # 1. exact slug (how an option id is built)
+    for a in arcs:
+        label = str(a.get("name") if isinstance(a, dict) else a or "").strip()
+        if label and slugify(label) == knock:
+            return label
+    # 2. exact folded name
+    for a in arcs:
+        label = str(a.get("name") if isinstance(a, dict) else a or "").strip()
+        if label and _norm(label) == flat:
+            return label
+    # A unique whole-token match only. Short substrings such as "war" must
+    # not select an unrelated arc, and ambiguous choices remain free text.
+    matches = []
+    for a in arcs:
+        label = str(a.get("name", "") if isinstance(a, dict) else a or "").strip()
+        ln = re.sub(r"\s+(?:arc|saga)$", "", _norm(label))
+        if len(ln) >= 4 and re.search(r"(?<!\w)" + re.escape(ln) + r"(?!\w)", flat):
+            matches.append(label)
+    return matches[0] if len(matches) == 1 else n
 
 
 def identify(setting: str, budget: _Budget) -> dict | None:
@@ -436,11 +567,12 @@ def characters_from_wikipedia(setting: str, canonical: str, budget: _Budget) -> 
                 and not any(w in low for w in furniture)
                 and not re.search(r"\d", line)):
             names.append(line)
-    # Was 14. Wikipedia's cast list is the main cast by construction, so a
-    # name cut here is a real character the builder had to replace with an
-    # invented one.
-    clean = _dedupe(names)[:26]
-    return [{"name": n, "note": ""} for n in clean] if len(clean) >= 3 else []
+    # Section headings can also be countries, institutions and shelves. Apply
+    # the SAME filter as the wiki bucket before merging or caching.
+    clean = _keep_character_names(names, limit=40)
+    url = "https://en.wikipedia.org/wiki/" + quote(page.replace(" ", "_"), safe="()_")
+    return [{"name": n, "note": "", "source_url": url,
+             "provenance": "wikipedia_heading"} for n in clean]
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +583,10 @@ def _slug_candidates(setting: str, wiki_title: str = "") -> list:
     """Fandom subdomains are guessable, but only if you try the CANONICAL title
     and its subtitle too. "Demon Slayer" alone finds `demon.fandom.com`, which
     is a real wiki about something else entirely; the actual one is keyed to
-    the subtitle, "Kimetsu no Yaiba"."""
+    the subtitle, "Kimetsu no Yaiba".
+
+    Straight initialisms are additional candidates, not an abbreviation table.
+    Moved/abbreviated wikis are primarily discovered from validated redirects."""
     seeds = []
     if wiki_title:
         clean = re.sub(r"\s*\(.*?\)\s*", "", wiki_title).strip()
@@ -465,17 +600,25 @@ def _slug_candidates(setting: str, wiki_title: str = "") -> list:
     seeds.append(setting)
 
     out = []
+
+    def add(cand: str) -> None:
+        if cand and len(cand) >= 3 and cand not in out:
+            out.append(cand)
+
     for seed in seeds:
         base = _norm(seed)
         if not base:
             continue
-        # Leading articles are dropped from most wiki subdomains.
+        words = [w for w in base.split() if w]
+        # Full names first; a short initialism is less discriminating.
         stripped = re.sub(r"^(the|a|an)\s+", "", base)
         for form in (base, stripped):
             for cand in (form.replace(" ", ""), form.replace(" ", "-")):
-                if cand and cand not in out:
-                    out.append(cand)
-    return out[:7]
+                if re.fullmatch(r"[a-z0-9-]+", cand):
+                    add(cand)
+        if len(words) >= 3:
+            add("".join(w[0] for w in words if w not in {"the", "of", "and"}))
+    return out[:12]
 
 
 def _wiki_is_about(sitename: str, setting: str, canonical: str, slug: str = "") -> bool:
@@ -516,6 +659,25 @@ def _wiki_is_about(sitename: str, setting: str, canonical: str, slug: str = "") 
     return False
 
 
+def _probe_wiki(host: str, budget: _Budget, *, attempts=2) -> tuple:
+    """Discover a moved wiki without bypassing the normal transport guards."""
+    try:
+        data = _get_json(
+            f"https://{host}/api.php",
+            {"format": "json", "formatversion": "2", "maxlag": "5",
+             "action": "query", "meta": "siteinfo", "siprop": "general|statistics"},
+            budget, timeout=min(config.RESEARCH_TIMEOUT, 8),
+            attempts=attempts, wiki_probe=True)
+        if data.get("_redirect_host"):
+            return ("", 0, data["_redirect_host"])
+        query = data.get("query") or {}
+        stats = query.get("statistics") or {}
+        return ((query.get("general") or {}).get("sitename", ""),
+                int(stats.get("articles") or stats.get("pages") or 0), "")
+    except (ResearchError, ValueError, TypeError):
+        return ("", 0, "")
+
+
 def find_wiki(setting: str, wiki_title: str, budget: _Budget,
               *, trace: list | None = None) -> str | None:
     """Probe candidate subdomains, and only accept one that is demonstrably
@@ -527,31 +689,84 @@ def find_wiki(setting: str, wiki_title: str, budget: _Budget,
     string. A production dossier came back `wiki: ""` for weeks; the wiki was
     answering in under 300ms the whole time, and two separate fixes went in
     against causes that were never happening because there was nothing to read.
-    A failure that cannot say why is a failure that gets guessed at."""
+    A failure that cannot say why is a failure that gets guessed at.
+
+    The FIRST acceptable wiki is not necessarily the right one. A franchise
+    often has several: the main wiki, plus a thin sub-wiki for one adaptation.
+    Fullmetal Alchemist answers at BOTH `fma.fandom.com` (1017 articles) and
+    `fullmetal-alchemist-brotherhood.fandom.com` (78) - and returning whichever
+    was guessed first gave a dossier two characters and no arcs, because the
+    episode sub-wiki was "about" the setting by every boolean the old test
+    asked. So every passing candidate is RANKED by how much it actually holds,
+    and the substantial wiki wins. Content, not candidate order, decides.
+
+    Probes share a bounded request/deadline budget with evidence retrieval.
+    Stop at a substantial identity-matched wiki to preserve that budget. Size
+    is a latency heuristic; it does not verify an adaptation or its facts."""
     cands = _slug_candidates(setting, wiki_title)
     if trace is not None and not cands:
         trace.append("no subdomain candidates for that name")
-    for slug in cands:
-        if budget.left <= 5:
+    passed = []
+    seen_hosts = set()
+    # Reserve a few requests for the category buckets the dossier fetches next;
+    # a wiki found at the cost of an empty dossier is not a win.
+    floor = min(5, budget.left)
+
+    def survey(slug: str) -> str:
+        """Probe one slug; append to `passed` and return any redirect target
+        that should be surveyed in turn."""
+        if slug in seen_hosts:
+            return ""
+        seen_hosts.add(slug)
+        if budget.left <= floor:
             if trace is not None:
-                trace.append(f"budget exhausted before trying {slug}")
-            break
+                trace.append(f"budget floor reached before trying {slug}")
+            return ""
         host = f"{slug}.fandom.com"
-        try:
-            # Probes are cheap and expected to fail, so no retry budget.
-            data = _api(host, {"action": "query", "meta": "siteinfo",
-                               "siprop": "general"}, budget, quick=True)
-        except ResearchError as e:
+        sitename, articles, moved = _probe_wiki(host, budget)
+        if moved:
             if trace is not None:
-                trace.append(f"{host}: {e}")
-            continue
-        sitename = ((data.get("query") or {}).get("general") or {}).get("sitename", "")
-        if sitename and _wiki_is_about(sitename, setting, wiki_title, slug):
-            return host
+                trace.append(f"{host}: moved to {moved}")
+            return moved
+        if not sitename:
+            if trace is not None:
+                trace.append(f"{host}: no answer")
+            return ""
+        if not _wiki_is_about(sitename, setting, wiki_title, slug):
+            if trace is not None:
+                trace.append(f"{host}: answered as {sitename!r}, not this setting")
+            return ""
         if trace is not None:
-            trace.append(f"{host}: answered as {sitename!r}, which is not this setting"
-                         if sitename else f"{host}: no sitename in reply")
-    return None
+            trace.append(f"{host}: accepted, {articles} articles")
+        passed.append((articles, len(passed), host, slug))
+        return ""
+
+    # A redirect can point at a slug we never guessed, so the queue grows as
+    # redirects are discovered. Bounded so a redirect loop cannot spin.
+    queue = list(cands)
+    hops = 0
+    while queue and hops < 12 and budget.left > floor:
+        slug = queue.pop(0)
+        target = survey(slug)
+        if target:
+            hops += 1
+            # A redirect is the strongest signal available and its target is
+            # almost always the real wiki, so it goes to the FRONT.
+            queue.insert(0, target.split(".")[0])
+            continue
+        if passed and max(p[0] for p in passed) >= SUBSTANTIAL_ARTICLES:
+            if trace is not None:
+                trace.append("stopped early: a substantial wiki was found")
+            break
+    if not passed:
+        return None
+    # Biggest wiki first; ties keep the order they were guessed in, which puts
+    # the most specific name ahead of a generic one.
+    passed.sort(key=lambda t: (-t[0], t[1]))
+    if trace is not None and len(passed) > 1:
+        trace.append("chose {} over {}".format(
+            passed[0][2], ", ".join(h for _, _, h, _ in passed[1:])))
+    return passed[0][2]
 
 
 # What each bucket's categories actually LOOK LIKE, rather than what we hoped
@@ -674,6 +889,103 @@ def categories_for(bucket: str, available: list) -> list:
     return hits if bucket == "arcs" else hits[:4]
 
 
+# A category whose entire name is just the CONCEPT ("Story Arcs", "Arcs",
+# "Sagas") is a container, not an arc. Reading it as one arc was a live bug:
+# Vinland Saga's wiki has exactly one arc-shaped category, `Story Arcs`, whose
+# name stripped to "Story" - so the whole chapter book for a whole franchise
+# was a single chapter called "Story", and every arc the source actually has
+# was invisible. A name this bare carries no information about a story beat,
+# so it is descended into rather than used.
+#
+# THE SAME IS TRUE OF A CATEGORY THAT NAMES A *GROUPING OF THINGS*, and this
+# was the second half of the same bug. A JJK build shipped a chapter book of
+# `Battles by Story; Chapters by Story; Episodes by; Events by Story` - four
+# containers that matched none of the patterns above, so all four were taken
+# as arcs. They are not arcs; they are the shelves the arcs are filed on.
+# The shape to reject is a category term followed by a preposition: "Battles
+# by Story", "Locations by type", "Episodes by Arc" (the JJK wiki's own
+# spelling - the tail is the container word, not a story beat).
+_ARC_CONTAINER = re.compile(
+    r"^(story\s*)?arcs?$|^sagas?$|^seasons?$|^events?$"
+    r"|^(chapters?|episodes?|volumes?|battles?|fights?|events?|locations?|places?"
+    r"|characters?|people|techniques?|abilities?|powers?|items?|media"
+    r"|images?|galleries|lists?)\s+(by|of)\b"
+    r"|^(chapters?|episodes?|volumes?|battles?|fights?|locations?|places?"
+    r"|characters?|techniques?|abilities?|powers?|items?|media|lists?)$",
+    re.I)
+
+
+def _order_arc_containers(cats: list) -> list:
+    """Containers worth descending into, most promising first.
+
+    A wiki files its arcs under several shelves and most are empty: the JJK
+    wiki has `Battles by Story Arc`, `Chapters by Story Arc` and `Episodes by
+    Arc` (all zero members) alongside `Story Arcs`, which holds the ten real
+    arcs. Opening them in listed order spent the whole budget on the empty
+    ones. A shelf whose name is about the STORY rather than about a kind of
+    page is the one that holds arcs, so those rank first."""
+    def rank(name: str):
+        n = (name or "").lower()
+        story = 0 if re.search(r"\b(story|stories|arc|arcs|saga|sagas)\b", n) else 1
+        # A shelf about battles/episodes/chapters files PAGES, not arcs.
+        kind_page = 1 if re.match(
+            r"^\s*(battles?|episodes?|chapters?|volumes?|events?|media)\b", n) else 0
+        return (kind_page, story, len(n))
+    return sorted(cats, key=rank)
+
+
+def _arc_is_container(name: str) -> bool:
+    """A category with no name beyond the concept is a box, not an arc.
+
+    Also rejects the `X by Y` shape (`Battles by Story`), a dangling
+    preposition (`Episodes by`), and - the JJK wiki's own spelling - a
+    category term plus a container tail (`Episodes by Arc`, `Battles by Story
+    Arc`). In that last form the trailing "Arc" is the WORD, not a story beat:
+    the category files every episode that belongs to SOME arc, which is the
+    opposite of naming one. A name is a real arc only when what remains after
+    stripping the trailing "Arc"/"Saga"/"Season" is a proper noun of its own.
+
+    That last test is what makes this general rather than a blocklist: "Story",
+    "Battles", "Chapters by" and "Events by Story Arc" all leave a bare
+    category term behind, while "Mugen Train", "Culling Game", "War" and
+    "Return to Shiganshina" each leave a real name."""
+    n = (name or "").strip().rstrip(":").strip()
+    if not n:
+        return True
+    if _ARC_CONTAINER.match(n):
+        return True
+    if re.match(r"^[a-z]+\s+by$", n, re.I):
+        return True
+    # Strip a trailing story-unit suffix and judge what is left.
+    stem = re.sub(r"\s*(arc|saga|season|story)\s*$", "", n, flags=re.I).strip()
+    if stem == n:                      # no suffix to strip: judge as-is
+        return False
+    if not stem:                       # the whole name WAS the concept word
+        return True
+    # "Battles by Story", "Locations by type" -> a shelf, not a beat. The test
+    # is whether the part BEFORE the preposition is itself a container term;
+    # "Clash of the Titans" is a proper name that merely contains "of", and
+    # rejecting it would throw away a real arc.
+    pre = re.split(r"\b(?:by|of)\b", stem, 1, flags=re.I)[0].strip()
+    if pre and re.match(
+            r"^(the\s+)?(story|stories|chapter|chapters|episode|episodes|volume"
+            r"|volumes|battle|battles|fight|fights|event|events|character"
+            r"|characters|list|lists|media|image|images|location|locations"
+            r"|place|places|technique|techniques|ability|abilities|power"
+            r"|powers|item|items)$", pre, re.I):
+        return True
+    # "Episodes by Arc" left over once the suffix is gone -> "Episodes by",
+    # which is the dangling-preposition case again.
+    if re.match(r"^[a-z]+\s+by$", stem, re.I):
+        return True
+    # A stem that is only category vocabulary still names no story.
+    return bool(re.match(
+        r"^(the\s+)?(story|stories|chapter|chapters|episode|episodes|volume"
+        r"|volumes|battle|battles|fight|fights|event|events|character"
+        r"|characters|list|lists|media|image|images|location|locations)$",
+        stem, re.I))
+
+
 CATEGORY_SETS = {
     "characters": ("Category:Characters", "Category:Male Characters",
                    "Category:Female Characters"),
@@ -720,6 +1032,147 @@ def category_members(host: str, category: str, budget: _Budget, limit=40) -> lis
         return []
     return [m.get("title", "") for m in
             (data.get("query") or {}).get("categorymembers") or [] if m.get("title")]
+
+
+# A NAME, NOT A SHELF. A wiki category listing mixes real people with the
+# pages they are filed beside, and the alternation is what makes it dangerous:
+# an Attack on Titan build seated
+#
+#   Attack on Titan Character Encyclopedia FINAL/Civilians
+#   Attack on Titan Character Encyclopedia/Civilians
+#   Attack on Titan Character Encyclopedia FINAL/Survey Corps
+#
+# as three of its characters - a bookshelf, a bookshelf, and a branch of the
+# military - and then handed them to the narrator as people to voice. The same
+# pass seated `Faculty and staff` for Jujutsu Kaisen. These read as canon
+# because they ARE the source's own words; they are just not anybody's name.
+#
+# The test is deliberately conservative and shape-based, not a blocklist of
+# titles: something that names a whole work (`... Encyclopedia`, `... Series`),
+# that is filed under a page (`Parent/Child`), or that is plainly an
+# administrative grouping is not a person. A real character can have a slash
+# in their page title ("Kokichi Muta / Mechamaru"), so a slash alone is not
+# disqualifying - it is the WORK and GROUPING words that are.
+# NOUNS THAT ARE NOT NAMES. If a title's HEAD - its last word, ignoring bracket
+# tails like "Pieck Finger (Female Titan)" - is one of these, the title names a
+# class of thing, not a person: "Survey Corps", "Military Police Brigade",
+# "Nine Titans". Real surnames are not in this set, which is why the test can
+# be this blunt where the earlier "a capitalised word must follow" guard had to
+# be clever and got it wrong twelve different ways.
+_NOT_A_SURNAME = {
+    "corps", "brigade", "regiment", "battalion", "squad", "army", "navy",
+    "staff", "faculty", "personnel", "civilians", "soldiers", "characters",
+    "organizations", "organisations", "families", "members", "groups",
+    "allies", "enemies", "antagonists", "protagonists", "people", "others",
+    "miscellaneous", "students", "teachers", "villagers", "titans",
+    "island", "district", "village", "kingdom", "continent", "locations",
+}
+# This is only a cheap shape filter. Source infobox/category evidence, not a
+# franchise-specific blacklist or a claim about surnames, decides entity type.
+# THE FIRST WORD IS THE OTHER HALF OF THE TEST. "List of Characters" and "Minor
+# characters" are caught by the head word, but "Faculty and staff" heads on
+# "staff" only after the conjunction, and "Civilians" is a lone head word.
+# These markers name a LIST rather than a person and are safe at any position.
+_GROUPING_MARKER = re.compile(
+    r"^(?:the\s+)?(?:list\s+of|miscellaneous|misc)(?:\s|$)"
+    r"|^(?:minor|major|supporting|recurring|secondary|background|other|all|former)"
+    r"\s+(?:characters?|members|people|staff)$", re.I)
+# A conjunction joining two bare lower-case nouns is a category, never a name
+# ("Faculty and staff"); a real name's connective joins proper nouns ("Dot
+# Pixis", "Kokichi Muta / Mechamaru").
+_BARE_CONJUNCTION = re.compile(r"\b[a-z]{3,}\s+(?:and|or|of|&)\s+[a-z]{3,}\b")
+_CHARACTER_GROUPING = _GROUPING_MARKER       # kept as the public name
+_CHARACTER_NOT_A_PERSON = re.compile(
+    r"\b(encyclopedias?|art\s*books?|databooks?|guide\s*books?|companions?"
+    r"|antholog(?:y|ies)|magazines?|manga|anime|films?|movies?|episodes?"
+    r"|chapters?|volumes?|soundtracks?|albums?|games?|novels?|series"
+    r"|franchise|sound\s*dramas?|ovas?|specials?|seasons?|arcs?)\b", re.I)
+_CHARACTER_PAGE_NOISE = re.compile(
+    r"^(?:category|template|file|image|list\s+of|portal|help|project)\b"
+    r"|\bdisambiguation\b", re.I)
+
+
+def _head_of(n: str) -> str:
+    """The last meaningful word of a title, minus bracket tails and the
+    possessive. "Pieck Finger (Female Titan)" -> "finger"; "Survey Corps" ->
+    "corps"; "Nine Titans" -> "titans"."""
+    stem = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", n).strip()
+    parts = [w for w in re.split(r"[\s/]+", stem) if w]
+    if not parts:
+        return ""
+    last = parts[-1]
+    last = re.sub(r"^[^\w']+|[^\w']+$", "", last)          # stray punctuation
+    if last.endswith("'s") or last.endswith("\u2019s"):
+        last = last[:-2]
+    return last.lower()
+
+
+def looks_like_a_character_name(name: str) -> bool:
+    """Whether a wiki page title can plausibly be a PERSON in this cast.
+
+    Not a claim about canon - that is the model's job and the roster's - just
+    a filter on the SHAPE of a title, because a listing full of real names
+    makes the few shelves embedded in it look real too. Reject the shelves
+    without touching anyone who could be a person: "Levi", "Annie Leonhart",
+    "Ka'qaquq" and "Bug-Eyes" pass; "Survey Corps", "Faculty and staff",
+    "Military Police Brigade", "Civilians", "Minor characters" and "Nine
+    Titans" do not.
+
+    The first version of this test asked whether a capitalised word FOLLOWED
+    the grouping word, on the theory that a real person's title keeps going
+    ("Survey Corps Regiment"). Every one of the twelve bad titles in the suite
+    has a second capitalised word TOO - "Faculty AND STAFF", "Military POLICE
+    Brigade", "Nine TITANS" - so the guard spared all of them. The shape test
+    that actually holds is about the HEAD word and the markers, not case."""
+    n = (name or "").strip()
+    if not n or len(n) > 60:
+        return False
+    if _CHARACTER_PAGE_NOISE.search(n):
+        return False
+    if _CHARACTER_NOT_A_PERSON.search(n):
+        return False
+    if _GROUPING_MARKER.search(n):          # "List of ...", "Minor characters"
+        return False
+    if _BARE_CONJUNCTION.search(n):         # "Faculty and staff"
+        return False
+    head = _head_of(n)
+    if head in _NOT_A_SURNAME:              # "Survey Corps", "Nine Titans"
+        return False
+    if re.match(r"^(?:the\s+)?[a-z\s]+$", n):   # all lowercase: a concept
+        return False
+    # At least one capitalised word, and not just connective tissue.
+    words = [w for w in re.split(r"[\s/]+", n) if w]
+    proper = [w for w in words if w[:1].isupper()]
+    return bool(proper)
+
+
+def _keep_character_names(names: list, limit: int = 0) -> list:
+    """Filter a raw listing down to plausible people, deduped by name fold.
+
+    Dedupe matters as much as the filter here: a JJK build seated both
+    `Maki Zen'in` and `Maki Zenin`, and both `Kokichi Muta` and `Kokichi Muta
+    / Mechamaru` - the same person twice under two spellings of one wiki
+    redirect, which the engine's own "one person is one record" law forbids."""
+    import re as _re
+
+    def fold(s: str) -> str:
+        return _re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+    seen, out = set(), []
+    for n in names:
+        if not looks_like_a_character_name(n):
+            continue
+        # Take the first segment of a "Name / Alias" page title: the alias is
+        # not a second person.
+        primary = re.split(r"\s*/\s*", n)[0].strip() or n
+        k = fold(primary)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(primary)
+        if limit and len(out) >= limit:
+            break
+    return out
 
 
 def by_importance(host: str, titles: list, budget: _Budget, keep=16) -> list:
@@ -798,10 +1251,46 @@ def describe(host: str, titles: list, budget: _Budget) -> dict:
 _CONNECTIVE = r"(?:of|the|and|in|on|at|to|de|von|van|no|le|la|du)"
 _PROPER = (r"((?:The\s+)?[A-Z][\w'\-]*"
            r"(?:\s+(?:" + _CONNECTIVE + r"\s+)*[A-Z0-9][\w'\-]*)*)")
+
+# A name as a human actually types it. _PROPER demands capitalisation, and
+# players write "spongbob square pants", "gojo", "thanos" - so a property
+# typed in lowercase was invisible to EVERY host pattern and the parser fell
+# back to guessing from capitalised words. Used only directly after an
+# explicit host trigger ("world of X", "goes to X"), where the trigger - not
+# the capitalisation - is what makes the next words a name. It stops at the
+# words that end a name (which/who/with/and...) so "spongbob square pants
+# which also have thanos" yields the property and not the whole sentence.
+_CONNECTIVE_MIN = r"(?:of|the|in|on|at|to|de|von|van|no|le|la|du)"
+_STOP = (r"(?:which|who|whom|whose|where|when|while|that|with|and|but|also"
+         r"|then|than|have|has|had|is|are|was|were|will|would|can|could"
+         r"|should|because|there|their|our|my|his|her|its|goes|go|from"
+         r"|enter|enters|entered|seek|seeks|seeking)")
+_LOOSE = (r"((?:The\s+)?[A-Za-z][\w'\-]*"
+          r"(?:\s+(?:" + _CONNECTIVE_MIN + r"\s+)*"
+          r"(?!" + _STOP + r"\b)[A-Za-z0-9][\w'\-]*){0,3})")
+# "verse" is how people actually say it. "in the verse of Demon Slayer" was
+# not in this list, so no host was extracted at all and a crossover silently
+# fell back to research's highest-ranked franchise - which is usually the
+# IMPORT's own home, i.e. exactly backwards from what the player meant.
 _HOST_PATTERNS = (
-    rf"\b(?:world|universe|setting|reality|timeline|continuity)\s+of\s+{_PROPER}",
+    rf"\b(?:world|universe|verse|realm|setting|reality|timeline|continuity"
+    rf"|cosmos|series)\s+of\s+{_PROPER}",
     rf"\bset\s+in\s+{_PROPER}",
     rf"\b(?:inside|within|into|in)\b\s+(?:the\s+)?(?:world\s+of\s+)?{_PROPER}",
+)
+
+# The same triggers, tolerating lowercase. Tried only after the strict set
+# finds nothing, so a capitalised name is never downgraded. "goes to X" is
+# here because that is how a player describes arriving somewhere and it was
+# not a host phrase at all - "I ... goes to spongbob square pants" parsed no
+# host, no imports and no entities, i.e. the whole premise was dropped.
+_LOOSE_HOST_PATTERNS = (
+    rf"\b(?:world|universe|verse|realm|setting|reality|timeline|continuity"
+    rf"|cosmos|series)\s+of\s+{_LOOSE}",
+    rf"\b(?:go(?:es|ing)?|travel(?:s|ling|led)?|arrive[sd]?|head(?:s|ing)?"
+    rf"|venture[sd]?|move[sd]?|teleport(?:ed|s)?|warp(?:ed|s)?|sent"
+    rf"|return(?:s|ed)?|wake)\s+(?:to|into|in)\s+(?:the\s+)?{_LOOSE}",
+    rf"\bset\s+in\s+{_LOOSE}",
 )
 
 # "X from Y" - a character carried in from somewhere else.
@@ -949,6 +1438,418 @@ def _name_before(text: str, pos: int) -> str:
     return name
 
 
+# PLURALS ARE NOT OPTIONAL HERE. "me and sukuna are enemies" is the natural way
+# to state a mutual relationship, and "enemies" does not contain "enemy", so the
+# whole clause was invisible to the parser and Sukuna was never carried in at
+# all. `worldforge._RELATION_PROFILES` already knew about the plural; this list,
+# which decides whether the clause is even seen, did not. Longest alternatives
+# come first, because a regex alternation takes the first that matches and
+# "enemy" would otherwise claim the "enem" of "enemies" and leave "ies" behind.
+_RELATION_WORDS = (r"girlfriends|boyfriends|girlfriend|boyfriend|"
+                   r"best friends|best friend|close friends|close friend|"
+                   r"partners|partner|wives|wife|husbands|husband|"
+                   r"fianc[eé]es|fianc[eé]e|fianc[eé]s|fianc[eé]|"
+                   r"lovers|lover|friends|friend|brothers|brother|"
+                   r"sisters|sister|siblings|sibling|twins|twin|"
+                   r"mentors|mentor|teachers|teacher|students|student|"
+                   r"rivals|rival|enemies|enemy|nemeses|nemesis|foes|foe|"
+                   r"allies|ally|companions|companion|sidekicks|sidekick|"
+                   r"bodyguards|bodyguard|acquaintances|acquaintance")
+
+# WORDS A PERSON'S NAME CANNOT CONTAIN.
+#
+# Every relationship pattern here has to decide where a name ends, and each one
+# got it wrong differently: "my girlfriend nezuko kamado end up in the verse of
+# jujutsu kaisen" produced a partner called "Nezuko Kamado End Up", and a
+# second, phantom partner whose name was fourteen words of the sentence. The
+# fix is not a better stop list inside each pattern - that has to be got right
+# in every pattern separately, and was not. It is ONE test, applied to every
+# person capture: a name is the run of words that contains none of these.
+#
+# Verbs and pronouns are the whole trick. A premise is a sentence, so the words
+# that end a name are the words that carry the sentence on, and a player cannot
+# type a name that contains one.
+_NOT_IN_A_NAME = {
+    "i", "me", "my", "mine", "we", "us", "our", "ours", "you", "your", "he",
+    "him", "his", "she", "hers", "they", "them", "their", "it", "its",
+    "am", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "can", "could", "will", "would", "should",
+    "must", "may", "might",
+    "go", "goes", "going", "went", "gone", "end", "ends", "ended", "ending",
+    "up", "down", "out", "off", "over", "back",
+    "arrive", "arrives", "arrived", "enter", "enters", "entered", "entering",
+    "travel", "travels", "travelling", "traveling", "travelled", "traveled",
+    "head", "heads", "heading", "wake", "wakes", "woke", "move", "moves",
+    "moved", "send", "sends", "sent", "return", "returns", "returned",
+    "get", "gets", "got", "take", "takes", "took", "meet", "meets", "met",
+    "want", "wants", "wanted", "seek", "seeks", "seeking", "try", "tries",
+    "plan", "plans", "intend", "intends", "make", "makes", "made", "play",
+    "plays", "playing", "start", "starts", "begin", "begins", "let", "lets",
+    "live", "lives", "lived", "become", "becomes", "became", "join", "joins",
+    "fight", "fights", "kill", "kills", "save", "saves", "help", "helps",
+    "who", "whom", "whose", "which", "that", "where", "when", "while", "what",
+    "why", "how", "with", "without", "but", "also", "then", "than", "because",
+    "there", "here", "and", "or", "so", "if", "as", "at", "by", "for", "into",
+    "onto", "from", "about", "against", "between", "during", "after", "before",
+    # "in", "on" and "to" belong to real WORLD titles ("Attack on Titan") and
+    # never to a person, and this test is only ever asked about people. Left
+    # out, they let "MY GIRLFRIEND NEZUKO IN NARUTO" seat a character called
+    # "NEZUKO in NARUTO".
+    "in", "on", "to",
+    "world", "worlds", "universe", "verse", "realm", "setting", "reality",
+    "timeline", "continuity", "story", "series", "franchise", "character",
+    "characters", "everyone", "someone", "anyone", "nobody", "people",
+}
+
+# Connectives a real name can carry INSIDE it - "Joan of Arc", "Ludwig van
+# Beethoven", "Monkey D. Luffy". Allowed only between two name words, never at
+# either end, so "of jujutsu kaisen" cannot start one.
+_NAME_CONNECTIVES = {"of", "de", "del", "della", "da", "van", "von", "der",
+                     "den", "la", "le", "du", "bin", "ibn", "al", "no"}
+
+# A name is at most four words. Longer than that and it is a clause.
+_NAME_MAX_WORDS = 4
+
+
+def _name_word(word: str) -> str:
+    """The comparable core of a word: letters and apostrophes, folded."""
+    return re.sub(r"[^a-z']", "", (word or "").lower())
+
+
+def _trim_name(text: str, *, from_end: bool = False) -> str:
+    """The person named at one END of a fragment, and nothing else.
+
+    Which end matters, and it is the phrase that decides. "my girlfriend NEZUKO
+    KAMADO end up in the verse of..." anchors the name at the START of what
+    follows the label, so the name is read left to right and stops at "end".
+    "...with gojo satoru and GETO who are our friends" anchors it at the END of
+    what precedes the clause, so the name is read right to left and stops at
+    "and". Reading from the wrong end is how one capture became fourteen words:
+    the pattern matched, and nothing afterwards asked where the name actually
+    was inside it.
+    """
+    words = [w for w in re.split(r"\s+", (text or "").strip()) if w]
+    if from_end:
+        words = list(reversed(words))
+    kept: list = []
+    for w in words:
+        low = _name_word(w)
+        if not low:
+            break
+        if low in _NAME_CONNECTIVES:
+            # Only ever between name words; a trailing one is trimmed below.
+            if not kept:
+                break
+            kept.append(w)
+            continue
+        if low in _NOT_IN_A_NAME:
+            break
+        kept.append(w)
+        if len(kept) >= _NAME_MAX_WORDS:
+            break
+    while kept and _name_word(kept[-1]) in _NAME_CONNECTIVES:
+        kept.pop()
+    if from_end:
+        kept.reverse()
+    return " ".join(kept)
+
+
+def is_person_like(name: str) -> bool:
+    """Could this string be somebody's name at all?
+
+    The last gate before a capture becomes a seat in a world. Deliberately
+    about SHAPE, not about canon: "Sukuna", "Charlie Morningstar" and "Joan of
+    Arc" pass; "Nezuko Kamado End Up", "Arrive in Naruto with Sakura" and any
+    fragment of a sentence do not.
+    """
+    n = (name or "").strip()
+    if not (2 <= len(n) <= 48):
+        return False
+    # NO PERSON HAS AN UNDERSCORE IN THEIR NAME. A schema key reached a live
+    # cast list as a character called "relationship_edges", seated with an id,
+    # a persona call and a place in the room. An identifier is not a name, and
+    # this is the cheapest possible way to say so.
+    if "_" in n:
+        return False
+    words = [w for w in re.split(r"\s+", n) if w]
+    if not (1 <= len(words) <= _NAME_MAX_WORDS):
+        return False
+    for i, w in enumerate(words):
+        low = _name_word(w)
+        if not low:
+            return False
+        if low in _NAME_CONNECTIVES:
+            if i == 0 or i == len(words) - 1:
+                return False
+            continue
+        if low in _NOT_IN_A_NAME:
+            return False
+    # A RELATION LABEL IS NOT PART OF ANYBODY'S NAME. "my best friend's
+    # brother's girlfriend" parsed to a character literally called "S
+    # Brother's Girlfriend In", which then got a seat, a persona call and a
+    # portrait. Whatever else a name is, it does not contain the word
+    # "girlfriend".
+    if re.search(rf"(?<!\w)(?:{_RELATION_WORDS})(?!\w)", n, re.I):
+        return False
+    return True
+
+
+# Named groups throughout, because the positional ones were wrong and silently
+# so. `_PROPER` and `_LOOSE` each contain a capturing group of their own, so
+# wrapping one in another pair of brackets shifts every later group by one -
+# which is exactly what happened here: the relation was read out of the group
+# holding the NAME, so "nezuko, who is my girlfriend" recorded a girlfriend
+# whose stated relation was the string "nezuko". That falls through every
+# profile in `_relationship_for` to the generic 45/45 companion band, so the
+# whole feature quietly did nothing for this phrasing. A named group cannot
+# drift when the pattern around it changes.
+_REL_BEFORE = (rf"\b(?:my|our|his|her|their)\s+(?P<rel>{_RELATION_WORDS})\b"
+               rf"\s*,?\s*(?P<name>[^,;.]{{2,80}})")
+# The name is whatever precedes the clause; `_trim_name(from_end=True)` finds
+# where it actually starts. The pattern itself must not try, because under
+# `re.I` the capitalisation in `_PROPER` means nothing and it ran backwards
+# through half the sentence.
+_REL_AFTER = (rf"(?P<name>[^,;.]{{2,80}}?)\s*,?\s+who\s+(?:is|are)\s+"
+              rf"(?:my|our|his|her|their)\s+(?P<rel>{_RELATION_WORDS})\b")
+# "me and sukuna are enemies but we have respect" - a relationship stated as a
+# fact about the pair rather than as a label on one of them. It was not a shape
+# the parser knew, so Sukuna was not carried in at all and the enmity never
+# reached the engine. The relation runs to the end of its clause on purpose:
+# "enemies but we have respect" is a different relationship from "enemies", and
+# `_relationship_for` reads the nuance out of the whole phrase.
+_REL_PAIR = (rf"\b(?:me|i|us|we)\s+and\s+(?P<name>[^,;.]{{2,60}}?)\s+"
+             rf"(?:are|is|were|was)\s+(?P<rel>(?:{_RELATION_WORDS})[^,;.]{{0,48}})")
+_REL_PAIR_REVERSED = (
+    rf"\b(?P<name>[^,;.]{{2,60}}?)\s+and\s+(?:me|i|us|we)\s+"
+    rf"(?:are|is|were|was)\s+(?P<rel>(?:{_RELATION_WORDS})[^,;.]{{0,48}})")
+# Capture the whole companion phrase, then parse it deliberately. Reusing
+# `_LOOSE` here made source words and relationship labels become names: "with
+# our friends Satoru Gojo ... from Jujutsu Kaisen" yielded a person literally
+# called "Our Friends Satoru Gojo".
+_WITH_LIST = (r"\bwith\s+(.+?)(?=(?:,\s*(?:while|but|whereas|and)\b)"
+              r"|\s+(?:while|whereas)\b|[.;]|$)")
+_GOAL = (r"(?:whose|who(?:'s)?)\s+(?:goal|aim|plan|mission|objective|dream"
+         r"|purpose|ambition)\s+is\s+to\s+([^.,;]+)")
+_WANTS = r"\bwho\s+wants?\s+to\s+([^.,;]+)"
+_SEEKS = r"\b(?:seeks?|tries?\s+to|plans?\s+to|intends?\s+to)\s+([^.,;]+)"
+
+
+def _person_name(raw: str, *, from_end: bool = False) -> str:
+    """Clean a person-shaped capture without swallowing source/relationship text.
+
+    `from_end` says which side of the fragment the name is anchored to - see
+    `_trim_name`. Whatever survives must still look like a name, so a capture
+    that trimmed down to a verb or a bare article yields "" rather than a seat.
+    """
+    # WHICH SIDE OF THE CLAUSE WORD THE NAME IS ON depends on which end we are
+    # reading from. Splitting on "who" and always keeping the HEAD is right for
+    # a left-anchored name and exactly wrong for a right-anchored one: asked
+    # who "and thanos whose goal is..." is about, the head of the split is
+    # "...with gojo satoru and geto", so the goal was handed to Geto. Read from
+    # the end, the relevant fragment is the one AFTER the last clause word.
+    # "from" and "who" cut in opposite directions and must not be treated as
+    # one list. "from" separates a person from their SOURCE, so the person is
+    # always on its left - read from either end. "who/whose" open a clause, and
+    # the person can sit on either side of one ("geto WHO are our friends";
+    # "...who are our friends, and THANOS whose goal is..."), so a right-
+    # anchored read takes what follows the last of them. Collapsing both into a
+    # single split seated the franchise "One Piece" as a character.
+    text = re.split(r"\bfrom\b", raw or "", 1, flags=re.I)[0]
+    parts = re.split(r"\b(?:who|whose|while|whereas)\b", text, flags=re.I)
+    text = parts[-1] if from_end else parts[0]
+    # Repeatedly, not once: "my my my girlfriend girlfriend" is what a stuck
+    # key produces, and stripping a single label left a character named
+    # "Girlfriend". A label is never a name, however many of them there are.
+    text = text.strip()
+    while True:
+        stripped = re.sub(rf"^(?:(?:my|our|his|her|their)\s+)?"
+                          rf"(?:{_RELATION_WORDS})\b\s*", "", text, flags=re.I)
+        if stripped == text:
+            break
+        text = stripped.strip()
+    name = _titleish(_clean_entity(_trim_name(text, from_end=from_end)))
+    # A relation label on its own is not somebody's name.
+    if re.fullmatch(rf"(?:{_RELATION_WORDS})", name, re.I):
+        return ""
+    return name if is_person_like(name) else ""
+
+
+def _split_people(raw: str) -> list:
+    """Split a shared-source character group into individual people.
+
+    `_IMPORT_PATTERN` quite reasonably sees the capitalised run "Satoru Gojo
+    and Suguru Geto" as one entity. In a character slot, however, a top-level
+    comma/and joins people, not one person's name. This split happens only in
+    that slot; titles such as "Dungeons and Dragons" remain untouched elsewhere.
+    """
+    parts = [_person_name(x) for x in re.split(r"\s*(?:,|\band\b)\s*", raw or "",
+                                               flags=re.I)]
+    parts = [x for x in parts if x]
+    return parts or ([_person_name(raw)] if _person_name(raw) else [])
+
+
+def _same_person(left: str, right: str) -> bool:
+    """Conservative alias match for duplicate parser captures.
+
+    It accepts an exact name, an unambiguous surname/mononym suffix, or a clean
+    name polluted only by a source suffix ("Suguru Geto from Jujutsu"). It does
+    not fuzzy-match spelling, because merging two distinct canon characters is
+    worse than retaining an uncertain duplicate.
+    """
+    a, b = _norm(left), _norm(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    aw, bw = a.split(), b.split()
+    if len(aw) == 1 and len(bw) > 1:
+        return aw[0] == bw[-1]
+    if len(bw) == 1 and len(aw) > 1:
+        return bw[0] == aw[-1]
+    return (a.startswith(b + " from ") or b.startswith(a + " from ")
+            or a.startswith("our friends " + b)
+            or b.startswith("our friends " + a))
+
+
+# Hard ceilings on what one premise may produce. A premise is free text from
+# the internet, and every one of these was reachable: "with person0, person1,
+# ... person59 who are my friends" seated sixty people; a 400-character run
+# after "whose goal is to" became a 400-character goal carried into every
+# prompt for the rest of the run. None of it crashed, which is exactly why it
+# needed a number rather than a hope.
+_MAX_IMPORTS = 12
+_MAX_RELATION_CHARS = 60
+_MAX_GOAL_CHARS = 160
+_MAX_HOST_CHARS = 80
+
+
+def _attach_import(out: dict, name: str, relation: str = "",
+                   with_player: bool | None = None) -> dict | None:
+    """Record a person the premise named exactly once, merging what we learn
+    about them from each phrase that mentions them.
+
+    THE PLAUSIBILITY GATE LIVES HERE, not in the callers. Every pattern that
+    finds a person used to decide for itself whether the capture was a name,
+    and the ones that forgot seated "NEZUKO in NARUTO", "One Piece" and "S
+    Brother's Girlfriend In" as characters. One door into the list, one test on
+    the door.
+    """
+    name = (name or "").strip()
+    if not is_person_like(name):
+        return None
+    relation = " ".join((relation or "").split())[:_MAX_RELATION_CHARS]
+    matches = [imp for imp in out["imports"]
+               if _same_person(imp.get("character", ""), name)]
+    if len(matches) == 1:
+        imp = matches[0]
+        if relation and not imp.get("relation"):
+            imp["relation"] = relation
+        if with_player:
+            imp["with_player"] = True
+        return imp
+    if len(out["imports"]) >= _MAX_IMPORTS:
+        return None
+    imp = {"character": name, "from": "", "with_player": bool(with_player)}
+    if relation:
+        imp["relation"] = relation
+    out["imports"].append(imp)
+    return imp
+
+
+def _relations_and_goals(raw: str, out: dict, remember) -> None:
+    """Relationships, companion groups and stated goals.
+
+    All of this was being dropped: the parser knew exactly one shape,
+    "Character from Source", and a relationship is not a source. So "my
+    girlfriend charlie morningstar", "with gojo and geto who are our friends"
+    and "thanos whose goal is to remove half the universe" produced nothing at
+    all - no seat, no persona, no drive.
+
+    A girlfriend is not a travelling companion and a rival is not a friend.
+    If the difference never reaches the build, the world cannot treat them
+    differently, which is the whole point of naming them.
+    """
+    for m in re.finditer(_REL_BEFORE, raw, re.I):
+        rel = (m.group("rel") or "").lower()
+        # The name follows the label, so it is read from the START of what
+        # comes after it and stops at the first word a name cannot contain.
+        name = _person_name(m.group("name"))
+        # "who are our friends, and Thanos ..." closes a preceding relation
+        # clause; it does not declare Thanos another friend.
+        prefix = raw[max(0, m.start() - 12):m.start()].lower()
+        if name and "who are" not in prefix and "who is" not in prefix:
+            _attach_import(out, remember(name), relation=rel, with_player=True)
+
+    for m in re.finditer(_REL_AFTER, raw, re.I):
+        # The name PRECEDES the clause, so it is read from the END backwards:
+        # in "...with gojo satoru and geto who are our friends" the person this
+        # clause is about is Geto, not the whole phrase leading up to him.
+        name = _person_name(m.group("name"), from_end=True)
+        if name:
+            _attach_import(out, remember(name),
+                           relation=(m.group("rel") or "").lower(),
+                           with_player=True)
+
+    # "me and sukuna are enemies but we have respect" - and the mirror image.
+    for pattern in (_REL_PAIR, _REL_PAIR_REVERSED):
+        for m in re.finditer(pattern, raw, re.I):
+            from_end = pattern is _REL_PAIR_REVERSED
+            name = _person_name(m.group("name"), from_end=from_end)
+            if name:
+                _attach_import(out, remember(name),
+                               relation=" ".join((m.group("rel") or "").lower().split()),
+                               with_player=True)
+
+    for m in re.finditer(_WITH_LIST, raw, re.I):
+        phrase = (m.group(1) or "").strip()
+        rel = ""
+        # Relation may lead the list ("with our friends Gojo and Geto") or
+        # trail it ("with Gojo and Geto who are our friends"). Remove the
+        # label before splitting so it cannot become part of a person's name.
+        lead = re.match(rf"(?:(?:my|our|his|her|their)\s+)?"
+                        rf"({_RELATION_WORDS})\s+", phrase, re.I)
+        if lead:
+            rel = (lead.group(1) or "").lower()
+            phrase = phrase[lead.end():]
+        tail = re.search(rf"\s+who\s+(?:is|are)\s+"
+                         rf"(?:my|our|his|her|their)\s+({_RELATION_WORDS})\b",
+                         phrase, re.I)
+        if tail:
+            rel = (tail.group(1) or "").lower()
+            phrase = phrase[:tail.start()]
+
+        for part in re.split(r"\s*(?:,|\band\b)\s*", phrase, flags=re.I):
+            name = _person_name(part)
+            if name:
+                _attach_import(out, remember(name), relation=rel, with_player=True)
+
+    # "thanos whose goal is to X" / "Thanos seeks X" - a drive the world has
+    # to actually run rather than a clause the builder quietly forgets.
+    #
+    # WHOSE goal it is, is decided by who stands NEXT TO the clause. The old
+    # loop walked every import already parsed and kept the last one whose name
+    # appeared anywhere earlier in the sentence, which is list order, not word
+    # order: "...with gojo satoru and geto who are our friends, and thanos
+    # whose goal is to erase half of tokyo" gave Thanos's goal to GOJO, and
+    # then the world ran a Gojo who wanted to erase half of Tokyo. The subject
+    # of "whose" is the name immediately before it. Nothing else is.
+    for pat in (_GOAL, _WANTS, _SEEKS):
+        for m in re.finditer(pat, raw, re.I):
+            goal = " ".join((m.group(1) or "").strip(" .").split())
+            if not goal:
+                continue
+            before = raw[:m.start()]
+            name = _person_name(before, from_end=True)
+            if not name:
+                continue
+            # A name the sentence has already introduced is that same person;
+            # `_attach_import` merges rather than seating them twice, and
+            # returns None when the capture was not a person after all.
+            target = _attach_import(out, remember(name))
+            if target is not None:
+                target["goal"] = goal[:_MAX_GOAL_CHARS]
+
+
 def parse_premise(text: str) -> dict:
     """Pull the named properties out of what the player actually wrote.
 
@@ -982,9 +1883,16 @@ def parse_premise(text: str) -> dict:
         return name
 
     for who, where in re.findall(_IMPORT_PATTERN, raw):
-        character, source = remember(who), remember(where)
-        if character and source:
-            out["imports"].append({"character": character, "from": source})
+        source = remember(where)
+        if not source:
+            continue
+        for person in _split_people(who):
+            character = remember(person)
+            if not character:
+                continue
+            target = _attach_import(out, character, with_player=False)
+            if target is not None:
+                target["from"] = source
 
     # The parenthesised shape, which is how a crossover is usually typed:
     # "charlie (from hazbin hotel)", "Charlie (Hazbin Hotel)". Checked BEFORE
@@ -997,25 +1905,34 @@ def parse_premise(text: str) -> dict:
             continue
         character = remember(character)
         source = remember(source)
-        if any(_norm(i["character"]) == _norm(character) for i in out["imports"]):
-            continue
-        out["imports"].append({"character": character, "from": source})
+        target = _attach_import(out, character, with_player=False)
+        if target is not None and not target.get("from"):
+            target["from"] = source
 
-    for pattern in _HOST_PATTERNS:
+    # Relationships, companion groups and goals - see _relations_and_goals.
+    # Runs after the "X from Y" shapes so a person is recorded once and then
+    # enriched, rather than being duplicated by every phrase naming them.
+    _relations_and_goals(raw, out, remember)
+
+    for pattern in (*_HOST_PATTERNS, *_LOOSE_HOST_PATTERNS):
         m = re.search(pattern, raw)
         if m:
             host = remember(m.group(1))
-            if host and host not in [i["from"] for i in out["imports"]]:
+            # Not the host if the premise brought that person WITH it.
+            # "Charlie Morningstar at the world of spongbob square pants" made
+            # Charlie the world she is standing in.
+            taken = {x for i in out["imports"]
+                     for x in ((i.get("from") or ""), (i.get("character") or ""))
+                     if x}
+            if host and host not in taken:
                 out["host"] = host
                 out["host_is_proper"] = True
                 break
 
-    # A source that ran straight through the word introducing the host. `in`
-    # is a connective inside a title ("Made in Abyss"), so "Charlie from
-    # Hazbin Hotel in Demon Slayer" captured the whole run as the source and
-    # the host ended up inside it. Trim it back only when the leftover half is
-    # itself a franchise the roster can name - otherwise "Made in Abyss" would
-    # be cut down to "Made", which is a worse answer than the bug.
+    # A source that ran straight through the explicit host boundary. This does
+    # not need a franchise table: when the parser independently extracted the
+    # exact trailing host, the preceding text is the source by construction.
+    # With no explicit host, "Made in Abyss" is untouched.
     host = (out.get("host") or "").strip()
     if host:
         for imp in out["imports"]:
@@ -1023,7 +1940,7 @@ def parse_premise(text: str) -> dict:
             m = re.match(
                 rf"^(.*?)\s+(?:in|inside|within|into)\s+{re.escape(host)}$", src, re.I)
             trimmed = (m.group(1).strip() if m else "")
-            if trimmed and canon_seed.known(trimmed) and not canon_seed.known(src):
+            if trimmed:
                 imp["from"] = trimmed
 
     # Everything else that reads as a proper name, so nothing the player typed
@@ -1031,14 +1948,20 @@ def parse_premise(text: str) -> dict:
     for m in re.finditer(_PROPER, raw):
         remember(m.group(1))
 
-    # Did the player bring them, or just ask for them? Recorded per import
-    # because the build needs to know: the first is a relationship that already
-    # exists, the second is a stranger. See _COMPANION_MARKERS.
-    came_with = bool(_COMPANION_MARKERS.search(raw))
+    # Did the player bring EACH person, or merely ask for them? A global marker
+    # is wrong for mixed premises: "my girlfriend Charlie ..., while Thanos
+    # seeks ..." made Thanos the player's companion merely because Charlie was.
+    # Relation and `with` parsing already mark their own people. This narrow
+    # fallback covers the direct "I and Charlie" shape only.
     for imp in out["imports"]:
-        imp["with_player"] = came_with
+        if imp.get("with_player"):
+            continue
+        name = re.escape(str(imp.get("character") or ""))
+        if name and re.search(rf"\b(?:i|me)\s+and\s+(?:my\s+)?{name}\b", raw, re.I):
+            imp["with_player"] = True
+        else:
+            imp["with_player"] = False
 
-    out["entities"] = seen
     if not out["host"] and seen:
         # No "world of X" phrasing. The last named property is the likeliest
         # host - "Charlie from Hazbin Hotel, The Last of Us" reads that way -
@@ -1046,10 +1969,196 @@ def parse_premise(text: str) -> dict:
         tail = [e for e in seen if e not in [i["character"] for i in out["imports"]]]
         out["host"] = tail[-1] if tail else seen[-1]
         out["host_is_proper"] = True
+
+    # A HOST IS A TITLE, NOT A PARAGRAPH. Every host pattern is anchored on a
+    # trigger word and then runs forward, so a premise that repeats the trigger
+    # ("THE WORLD OF THE WORLD OF THE WORLD OF DEMON SLAYER") hands back most of
+    # the sentence - which is then used as a wiki search term and as the name of
+    # the world in the UI. Trimmed to a title's worth of words.
+    host = " ".join(str(out.get("host") or "").split())
+    if len(host) > _MAX_HOST_CHARS:
+        cut = host[:_MAX_HOST_CHARS].rsplit(" ", 1)[0]
+        host = cut or host[:_MAX_HOST_CHARS]
+    out["host"] = host
+
+    # Only actual research targets survive. Broad proper-name scanning above is
+    # useful for host fallback, but its intermediate fragments are not entities.
+    entities = []
+    for name in [out.get("host", ""), *[
+            value for imp in out["imports"] for value in
+            (imp.get("character", ""), imp.get("from", ""))]]:
+        name = str(name or "").strip()
+        if name and _norm(name) not in {_norm(x) for x in entities}:
+            entities.append(name)
+    out["entities"] = entities
     return out
 
 
-def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") -> dict:
+PREMISE_SYSTEM = """You read ONE sentence a player typed describing the story they want. You return structured JSON and nothing else - no prose, no commentary, no markdown fences.
+
+Return exactly this shape:
+{
+  "host": "the world the story is SET IN",
+  "imports": [
+    {"character": "name, as the player wrote it",
+     "from": "that person's home world, or empty if the sentence never says",
+     "relation": "who they are to the player, in your own words",
+     "goal": "what that person wants, or empty",
+     "with_player": true}
+  ]
+}
+
+Rules that matter:
+- `host` is a PLACE, not a person, and never the home a guest came FROM. "Charlie Morningstar in the world of SpongeBob" has host "SpongeBob"; Charlie is an import.
+- `relation` is free text and the nuance is the entire point. "enemies but we have respect" is a DIFFERENT relation from "enemy" and must not be flattened. "my girlfriend" is not "a companion". Keep what the player actually meant.
+- One entry per person the sentence really names. Never invent anybody.
+- `with_player` is true only when that person arrives/travels with the player. A person merely active in the requested plot is false. In "my girlfriend Charlie comes with me, while Thanos seeks the formula", Charlie is true and Thanos is false.
+- If the sentence names a world AND a character's origin, the world they are GOING TO is the host.
+"""
+
+
+def _coerce_premise_json(data) -> dict | None:
+    """Shape-check what the model returned. A model is not a trusted source:
+    anything malformed is dropped rather than allowed to build a world."""
+    if not isinstance(data, dict):
+        return None
+    host = str(data.get("host") or "").strip()
+    imports = []
+    for item in (data.get("imports") or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("character") or "").strip()
+        # THE MODEL GOES THROUGH THE SAME DOOR. Its output is untrusted data
+        # like any other, and the same caps apply: a model handed a wall of
+        # gibberish can echo a sentence back as a character name, and nothing
+        # downstream would know the difference between that and a real one.
+        if not is_person_like(name) or len(imports) >= _MAX_IMPORTS:
+            continue
+        imports.append({
+            # The model echoes the player's own typing, so a premise written in
+            # lowercase seats "gojo satoru" and "nezuko kamado" and the cast
+            # list reads as though nobody proofread it. The deterministic parse
+            # already capitalises; this makes both paths agree.
+            "character": _titleish(name),
+            "from": str(item.get("from") or "").strip()[:_MAX_HOST_CHARS],
+            "relation": " ".join(str(item.get("relation") or "").split())[:_MAX_RELATION_CHARS],
+            "goal": " ".join(str(item.get("goal") or "").split())[:_MAX_GOAL_CHARS],
+            "with_player": bool(item.get("with_player", False)),
+        })
+    return {"host": host, "imports": imports} if (host or imports) else None
+
+
+def _merge_premise(det: dict, llm_out: dict | None) -> dict:
+    """The model reads the sentence; the deterministic parse is the floor.
+
+    Neither is trusted alone. The model can silently drop somebody; the regex
+    can mislabel them. So a person found by EITHER is kept, and the richer
+    record wins field by field - which is how "girlfriend" survives even when
+    the model only says "companion".
+    """
+    if not llm_out:
+        return det
+    out = dict(det)
+    # A HOST IS A TITLE, AND THE LONGER ANSWER IS NOT THE BETTER ONE. The
+    # model's host used to win outright, so a reply of "Tokyo in the Jujutsu
+    # Kaisen verse" replaced the deterministic parse's "jujutsu kaisen" - and
+    # that phrase is what then went to the wiki, found nothing, and left the
+    # entry contract unverified with not one fated event sourced. Everything
+    # downstream of canon hangs off this single string.
+    #
+    # So the model wins when it found something the parser did not, and loses
+    # when it merely wrapped the parser's answer in a sentence: a host that
+    # CONTAINS the deterministic host is that host, described.
+    llm_host = " ".join(str(llm_out.get("host") or "").split())
+    det_host = " ".join(str(det.get("host") or "").split())
+    if llm_host:
+        wraps = bool(det_host) and _norm(det_host) in _norm(llm_host) \
+            and _norm(det_host) != _norm(llm_host)
+        too_long = len(llm_host.split()) > 6
+        out["host"] = det_host if (wraps or (too_long and det_host)) else llm_host
+        out["host_is_proper"] = True
+
+    merged = [dict(i) for i in (llm_out.get("imports") or [])]
+    for d in (det.get("imports") or []):
+        matches = [imp for imp in merged
+                   if _same_person(imp.get("character", ""), d.get("character", ""))]
+        if len(matches) == 1:
+            imp = matches[0]
+            # Deterministic relation text was literally present in the player's
+            # sentence, so it outranks a model flattening "girlfriend" into
+            # "companion". The model still supplies nuance the parser missed.
+            if d.get("relation"):
+                imp["relation"] = d["relation"]
+            for key in ("from", "goal"):
+                if not imp.get(key) and d.get(key):
+                    imp[key] = d[key]
+            imp["with_player"] = bool(imp.get("with_player") or d.get("with_player"))
+            continue
+
+        # A malformed deterministic group can overlap several correctly split
+        # model entities ("Satoru Gojo and Suguru Geto"). Distribute shared
+        # source/relation metadata, then discard the group rather than seating a
+        # third fictional person with the combined name.
+        dnorm = _norm(d.get("character", ""))
+        contained = [imp for imp in merged
+                     if _norm(imp.get("character", ""))
+                     and _norm(imp.get("character", "")) in dnorm]
+        if len(contained) > 1:
+            for imp in contained:
+                for key in ("from", "relation", "goal"):
+                    if not imp.get(key) and d.get(key):
+                        imp[key] = d[key]
+                imp["with_player"] = bool(imp.get("with_player") or d.get("with_player"))
+            continue
+        merged.append(dict(d))
+
+    out["imports"] = merged
+
+    # `entities` is a research queue, not a bag of every capitalised phrase.
+    # Rebuild it from the resolved host and imports so discarded parser debris
+    # ("Our Friends Satoru Gojo") cannot still consume a lookup budget.
+    entities = []
+    for name in [out.get("host", ""), *[
+            value for imp in merged for value in
+            (imp.get("character", ""), imp.get("from", ""))]]:
+        name = str(name or "").strip()
+        if name and _norm(name) not in {_norm(x) for x in entities}:
+            entities.append(name)
+    out["entities"] = entities
+    return out
+
+
+def llm_parse_premise(text: str, *, user_id: str = "") -> dict | None:
+    """Ask the model to read the premise itself.
+
+    Regex cannot cover how people actually write these - "enemies but we have
+    respect", "my girlfriend charlie", "thanos whose goal is to erase half of
+    them" - and every missed shape built the wrong world. The model reads the
+    sentence ONCE, at world creation, and returns the same shape the
+    deterministic parser does.
+
+    Never raises and never blocks: offline, on a bad key, or on any error it
+    returns None and the caller keeps the deterministic parse. A premise must
+    not become unparseable because a lookup was unavailable.
+    """
+    from . import config, llm            # deferred: llm sits above this module
+
+    if not (getattr(config, "ANTHROPIC_API_KEY", "")
+            or getattr(config, "OPENAI_API_KEY", "")):
+        return None
+    try:
+        out = llm.complete(
+            "premise", PREMISE_SYSTEM,
+            f"The player wrote:\n{text}\n\nReturn the JSON.",
+            user_id=user_id or "worldforge", json_mode=True,
+            max_tokens=600, temperature=0.2, stub=lambda: None)
+    except Exception:
+        return None
+    return _coerce_premise_json(out)
+
+
+def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full",
+                    user_id: str = "") -> dict:
     """Research every property named in a premise, not just the whole string.
 
     The result always carries the parse, so the world builder knows what the
@@ -1057,6 +2166,10 @@ def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") ->
     research is an enhancement, and a failed lookup must never turn a canon
     crossover into "build something original"."""
     parsed = parse_premise(text)
+    # The model reads the sentence itself; the deterministic parse is the
+    # floor that can only improve on. Offline, or on any failure, `parsed`
+    # comes back untouched.
+    parsed = _merge_premise(parsed, llm_parse_premise(text, user_id=user_id))
     out = {**_empty(text, ""), "premise": parsed, "entities": {}}
 
     if not parsed["entities"]:
@@ -1079,6 +2192,15 @@ def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") ->
     host_d = None
     for name in lookups[:4]:
         d = dossier(name, refresh=refresh, depth=depth)
+        if depth == "full" and d.get("found") and d.get("wiki"):
+            evidence_budget = _Budget(18, seconds=75)
+            try:
+                from . import canon_evidence
+                d = canon_evidence.enrich(d, evidence_budget)
+            except Exception:
+                d = {**d, "coverage": "partial", "evidence": d.get("evidence") or []}
+            finally:
+                evidence_budget.close()
         out["entities"][name] = d
         if d.get("found"):
             out["sources"].extend(d.get("sources") or [])
@@ -1091,8 +2213,19 @@ def premise_dossier(text: str, *, refresh: bool = False, depth: str = "full") ->
         host_d = next((d for d in out["entities"].values() if d.get("found")), None)
     if host_d:
         for key in ("canonical_name", "summary", "wiki", "characters", "places",
-                    "factions", "powers", "arcs"):
-            out[key] = host_d.get(key) or out.get(key)
+                    "factions", "powers", "arcs", "unplaced_arcs", "evidence",
+                    "coverage"):
+            if key in host_d:
+                out[key] = host_d.get(key)
+        # Entry extraction sees host evidence only. Persona extraction may also
+        # read each imported character's own source, never the host's memory of
+        # them. Deduplicate by revision identity.
+        all_evidence = {}
+        for ent in out["entities"].values():
+            for rec in ent.get("evidence") or []:
+                if rec.get("id"):
+                    all_evidence[rec["id"]] = rec
+        out["persona_evidence"] = list(all_evidence.values())
     out["found"] = any(d.get("found") for d in out["entities"].values())
     out["note"] = "" if out["found"] else "nothing found for any of those names"
     return out
@@ -1124,14 +2257,15 @@ def premise_brief(d: dict) -> str:
     unfound = [name for name, ent in (d.get("entities") or {}).items()
                if not ent.get("found")]
     if unfound:
-        # The whole point of the rewrite. A name we could not look up is still
-        # a name the model very likely knows.
+        # A player-supplied name must survive a lookup miss, but a miss is not
+        # permission to turn model memory into asserted canon. Preserve identity
+        # and relationship wording; keep every other source fact unresolved.
         lines.append(
-            "NOT FOUND IN RESEARCH, BUT NAMED BY THE PLAYER: "
+            "NAMED BY THE PLAYER BUT NOT VERIFIED BY RESEARCH: "
             + ", ".join(unfound)
-            + ". Use everything you already know about them. If you genuinely do "
-              "not know one, build it faithfully from what the player wrote "
-              "rather than replacing it with something of your own.")
+            + ". Preserve these names, origins, relationships and goals exactly as the "
+              "player stated them. Do not add biography, abilities, quotes or source events "
+              "from memory; mark or narrate those details as unknown until evidence exists.")
     return "\n\n".join(lines)
 
 
@@ -1210,13 +2344,48 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
                 # and fetching them would return every character who appeared
                 # in it instead.
                 if bucket == "arcs" and found_cats:
-                    arc_names = [re.sub(r"\s*Arcs?$", "", c).strip() or c
-                                 for c in found_cats[:16]]
-                    # Alphabetical is not a running order. The arc articles say
-                    # which chapter each one starts at; that is the real one.
-                    arc_names = order_arcs(host, arc_names, budget)
-                    out[bucket] = [{"name": n, "note": ""} for n in arc_names[:12]]
-                    continue
+                    # A container category names the CONCEPT, not a story beat.
+                    # `Story Arcs` stripped to "Story" and became the whole
+                    # chapter book of the franchise; the real arcs were its
+                    # MEMBERS, so a container is descended into instead of
+                    # used. A named arc category ("Mugen Train Arc") is still
+                    # the arc itself and is taken as-is.
+                    specific = [c for c in found_cats if not _arc_is_container(c)]
+                    if specific:
+                        arc_names = [re.sub(r"\s*Arcs?$", "", c).strip() or c
+                                     for c in specific[:16]]
+                    else:
+                        # Try EVERY container, cheapest-looking first, and stop
+                        # as soon as one yields arcs. Taking only found_cats[:3]
+                        # was how the JJK wiki lost its whole chapter book: its
+                        # first three arc-shaped categories are the empty
+                        # shelves (`Battles by Story Arc`, `Chapters by Story
+                        # Arc`, `Episodes by Arc`, all 0 members), while the one
+                        # that actually holds the ten real arcs - `Story Arcs` -
+                        # sat fourth and was never opened.
+                        members = []
+                        for cat in _order_arc_containers(found_cats)[:6]:
+                            full = cat if cat.lower().startswith("category:") \
+                                else f"Category:{cat}"
+                            got = category_members(host, full, budget, limit=80)
+                            if got:
+                                members.extend(got)
+                                if len(members) >= 16:
+                                    break
+                        arc_names = _dedupe([m for m in members
+                                             if m and not _arc_is_container(m)])[:16]
+                    if not arc_names:
+                        # Nothing arc-shaped on this wiki. Fall through to the
+                        # guessed category names rather than shipping a book
+                        # with no chapters in it.
+                        found_cats = []
+                    else:
+                        # Alphabetical is not a running order. The arc articles
+                        # say which chapter each one starts at; that is the
+                        # real one.
+                        arc_names = order_arcs(host, arc_names, budget)
+                        out[bucket] = [{"name": n, "note": ""} for n in arc_names[:12]]
+                        continue
 
                 names = []
                 for cat in (found_cats or list(guesses)):
@@ -1226,7 +2395,12 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
                     if len(names) >= 30 or budget.left <= 4:
                         break
                 # Rank before truncating: the top 18 alphabetically is noise,
-                # the top 18 by article size is the cast.
+                # the top 18 by article size is the cast. The listing is
+                # filtered to plausible PEOPLE first - a shelf is not a
+                # character, and ranking made that worse, because a long
+                # "Character Encyclopedia" page outranks a short real one.
+                if bucket == "characters":
+                    names = _keep_character_names(names)
                 names = by_importance(host, _dedupe(names), budget,
                                       keep=BUCKET_KEEP.get(bucket, 12))
                 notes = describe(host, names, budget) if bucket == "characters" else {}
@@ -1264,6 +2438,19 @@ def dossier(setting: str, *, refresh: bool = False, depth: str = "full") -> dict
         # PIN: even a healthy cast can rank the real protagonist below a
         # shorter-article side character - a Tanjiro-less Demon Slayer build
         # is not Demon Slayer regardless of how the wiki ranked it.
+        #
+        # The curated table knows this for six franchises. For every other
+        # setting - which is most of them, and all of the ones nobody has
+        # hardcoded yet - ask the model, which knows the source. This is the
+        # general mechanism; the table is the offline floor under it.
+        leads = leads_for(setting, out["canonical_name"], out.get("characters") or [])
+        if leads:
+            have = {_norm(c["name"]) for c in out["characters"]}
+            missing = [{"name": n, "note": ""} for n in leads
+                       if _norm(n) not in have]
+            if missing:
+                out["characters"] = missing + out["characters"]
+                out["pinned_by"] = "model"
         out["characters"] = canon_seed.pin_protagonists(
             setting, out["canonical_name"], out["characters"])
 
@@ -1321,6 +2508,84 @@ def _dedupe(names):
     return out
 
 
+LEADS_SYSTEM = """You are a canon consultant. You are given the name of a published work.
+Answer with the small number of characters it is ABOUT - the protagonist and, at
+most, the two or three whose stories the work is actually told through.
+
+Not the most popular, not the strongest, not the fan favourites: the people a
+reader would name if asked "who is this story about?". The title character
+counts. A mentor who dies in the first act does not, however famous. A villain
+is only a lead if the work is genuinely told from their side.
+
+Answer with names exactly as the source spells them - the form a fan would
+recognise, not a translation or a title. Two to four names.
+
+If you do not know the work, return an empty list rather than guessing - a wrong
+name pinned as a lead is worse than no pin at all.
+
+JSON only:
+{"leads":["Name","Name"]}
+"""
+
+
+def leads_for(setting: str, canonical: str, characters: list) -> list:
+    """Who the source is ABOUT, asked rather than hardcoded.
+
+    `canon_seed.pin_protagonists` guarantees the lead of a franchise it has on
+    file - six of them. Every other setting got whatever the wiki ranking
+    produced, which for a long-running work is routinely its own protagonist
+    missing: a Vinland Saga build came back with Einar, Snake and Ketil and no
+    Thorfinn. The pin existed and could not fire, because the table had no row.
+
+    This asks the model instead, so it works for anything the model knows. One
+    call per BUILD, cached with the dossier, and it fails soft in every
+    direction: offline, no key, bad JSON, an unknown work, an implausible name
+    -> the cast is exactly what it would have been without it.
+    """
+    name = (canonical or setting or "").strip()
+    if not name:
+        return []
+    key = "leads:" + _norm(name)
+    cached = _cache_get(key)
+    if cached is not None:
+        return list(cached.get("leads") or [])
+
+    from . import config, llm
+    leads: list = []
+    try:
+        if config.live_llm():
+            out = llm.complete(
+                "premise", LEADS_SYSTEM,
+                f"WORK: {name}\n\nName the leads. JSON only.",
+                user_id="research", json_mode=True, max_tokens=200, temperature=0.2,
+                stub=lambda: {"leads": []})
+            raw = out.get("leads") if isinstance(out, dict) else None
+            if isinstance(raw, list):
+                # Plausibility only. A name can be one word or four (most are
+                # two or three), so what is rejected is not "has a space" but
+                # what a name cannot be: empty, a whole sentence, a list the
+                # model padded, or a name already in OUR OWN cast - which would
+                # pin nothing while reading as a success.
+                seen = {_norm(c.get("name", "")) for c in characters}
+                for item in raw[:6]:
+                    s = str(item).strip().strip('"').strip()
+                    words = s.split()
+                    if not (1 <= len(words) <= 4):
+                        continue
+                    if not (2 <= len(s) <= 48):
+                        continue
+                    if s.endswith((".", "!", "?", ":", ";")):
+                        continue          # a sentence, not a name
+                    if _norm(s) in seen:
+                        continue          # already in the roster: pins nothing
+                    leads.append(s)
+    except Exception:
+        leads = []
+
+    _cache_put(key, {"leads": leads})
+    return leads
+
+
 def _empty(setting, note):
     return {"setting": setting, "canonical_name": "", "found": False,
             "summary": "", "wiki": "", "characters": [], "places": [],
@@ -1336,14 +2601,50 @@ def _cache_get(key):
     row = db.row("SELECT payload, fetched_at FROM research_cache WHERE key=?", (key,))
     if not row:
         return None
+    payload = db.jload(row["payload"], None)
     try:
         age_days = (time.time() - float(row["fetched_at"])) / 86400.0
     except (TypeError, ValueError):
         age_days = 999
-    if age_days > CACHE_DAYS:
+    # How long THIS entry may stand depends on whether it was a real answer or
+    # a thin one - see _cache_ttl_days. Re-read on every hit, so an entry
+    # written before this rule existed is judged by the same test.
+    if age_days > _cache_ttl_days(payload):
         db.run("DELETE FROM research_cache WHERE key=?", (key,))
         return None
-    return db.jload(row["payload"], None)
+    return payload
+
+
+# A dossier that came back THIN is not canon, it is a bad draw. Caching it for
+# the full CACHE_DAYS is how one transient network wobble becomes a permanent
+# property of a setting: a JJK build was cached with `no arcs, no wiki,`
+# `note: 'en.wikipedia.org unreachable'` on a day Wikipedia blinked, and for
+# the next 30 days every JJK world was built from the thin curated table while
+# the wiki - which has ten arc categories and was answering fine - was never
+# consulted again. The player sees "only Demon Slayer is refined" and there is
+# no way to tell that the cause is a cached hiccup.
+#
+# So a MISS is cached briefly, to stop a genuinely unknown setting hammering
+# the sources on every keystroke, and a HIT is cached for the long term. The
+# test of a hit is whether it actually produced the canon this feature exists
+# to fetch: a wiki host AND the shape of a real roster.
+THIN_CACHE_HOURS = 6
+
+
+def _cache_ttl_days(payload) -> float:
+    """How long this dossier is allowed to stand. See THIN_CACHE_HOURS."""
+    if not isinstance(payload, dict):
+        return float(CACHE_DAYS)
+    if payload.get("note") or payload.get("thin"):
+        return THIN_CACHE_HOURS / 24.0
+    if not payload.get("found") or not payload.get("canonical_name"):
+        return THIN_CACHE_HOURS / 24.0
+    # No wiki host is not by itself a miss - plenty of real properties have no
+    # Fandom wiki - but no wiki AND a roster too small to be a cast is.
+    has_roster = len(payload.get("characters") or []) >= 5
+    if not payload.get("wiki") and not has_roster:
+        return THIN_CACHE_HOURS / 24.0
+    return float(CACHE_DAYS)
 
 
 def _cache_put(key, payload):

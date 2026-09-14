@@ -29,6 +29,12 @@ ALLOWED = {
     "ooc",                # token-thrifty World Master reply in the OOC channel
     "card",               # character-card autofill, cheapest model
     "room",               # one seat's reply in a P8 Room, hard-capped short
+    # Once per WORLD, never per turn: reads the sentence the player typed and
+    # returns who is in it and how they stand to each other. Regex cannot
+    # cover how people actually write these ("enemies but we have respect"),
+    # and every missed shape built the wrong world. Outside `budget.turn` this
+    # costs nothing against MAX_LLM_CALLS_PER_TURN - see record() below.
+    "premise",
 }
 
 # Hard ceiling on model calls inside one resolved turn.

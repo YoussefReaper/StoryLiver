@@ -276,7 +276,16 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             # hand-forged or imported world has no such distinction to make,
             # so it defaults to "canon" rather than mislabelling authored
             # content as filler.
-            "origin": str(loc.get("origin") or "canon"),
+            #
+            # IN A CANON WORLD the default is the other way round, and it
+            # matters: worldforge stamps every record explicitly before this
+            # runs, so a MISSING stamp here means something got past that pass
+            # - and calling an untraced name "canon" is the one error that
+            # cannot be caught by reading. An untraced name in a world built
+            # from a real source is the builder's own work until proven
+            # otherwise. `raw.get("mode")` is read below from the same dict.
+            "origin": str(loc.get("origin")
+                          or ("original" if raw.get("mode") == "canon" else "canon")),
         })
     if len(locations) < 2:
         raise WorldError("world needs at least 2 locations")
@@ -301,7 +310,98 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
 
     npcs = []
     seen_npc: set[str] = set()
+    # ONE PERSON IS ONE RECORD - but only when they really are one person.
+    # Every other guard in this file is about ids, and ids are unique by
+    # construction, so two entries both called "Canute" - one written by the
+    # builder and one seated by the canon pass - both survived and the narrator
+    # was handed the same character twice, breaking the engine's own R5 law.
+    #
+    # The fix has to key on IDENTITY, not on the name string alone. A plain
+    # name guard also deletes honest namesakes: every district of an 8-district
+    # world that names a local "Person 1" (offline stub) or two unrelated
+    # villages that each have a "Yuki" collapsed into one, and a world-scale
+    # build came back with 6 characters where 48 were generated. Two records
+    # are the SAME person only when they share a name AND plausibly share a
+    # life - same canon origin, or the same home location. Two strangers who
+    # happen to be called the same thing are two characters, and the id
+    # uniqueness above already keeps them apart on the wire.
+    seen_person: dict[str, list[dict]] = {}
+
+    def _same_person(a: dict, b: dict) -> bool:
+        # A CANON WORLD HAS ONE OF EACH. The origin/home test below exists to
+        # protect honest namesakes - two villages that each have a Yuki, eight
+        # districts that each name a local "Person 1" - and those are invented
+        # people. A canon character is not like that: there is exactly one
+        # Satoru Gojo in Jujutsu Kaisen, and if he turns up twice it is because
+        # two passes both seated him, not because the world has two. Applying
+        # the namesake rule to canon is what let a live build seat "Satoru
+        # Gojo" (the persona pass, source spelling) beside "gojo satoru" (the
+        # player's typing, carried in as an import) as two separate people.
+        # Requiring BOTH to be stamped canon was too narrow. The player's
+        # carried-in "gojo satoru" and the persona pass's "Satoru Gojo" are one
+        # man, and the two records reach here with different origin stamps
+        # because different passes made them - so the guard read them as a
+        # namesake pair and a live world shipped both. In a canon world, two
+        # records sharing a name are the same person unless BOTH are invented
+        # locals, which is the only place honest namesakes actually come from.
+        if raw.get("mode") == "canon" and not (
+                (a.get("origin") or "") == "original"
+                and (b.get("origin") or "") == "original"):
+            return True
+        if (a.get("origin") or "") != (b.get("origin") or ""):
+            return False
+        home_a, home_b = a.get("start_location"), b.get("start_location")
+        if home_a and home_b:
+            return home_a == home_b
+        return True
+
+    # A SHORTER NAME FOR THE SAME PERSON. "geto" and "Suguru Geto" do not share
+    # a word SET, so the key below cannot match them, and the same live build
+    # seated both. A premise names people the way a fan talks about them and the
+    # source spells them out in full; both are correct and they are one person.
+    #
+    # Folded only when the short name fits exactly ONE longer one. "Zenin" in a
+    # world holding both Naobito Zenin and Maki Zenin is ambiguous, and a wrong
+    # merge deletes a character - so ambiguity is left alone and two records
+    # survive, which is the recoverable direction.
+    # Only in a canon world, and over every record in it regardless of origin
+    # stamp - the short spelling usually arrives as the player's import while
+    # the long one comes from the source, so restricting this to records
+    # already stamped canon missed exactly the pair it exists to catch. In an
+    # ORIGINAL world "Bob" and "Bob Smith" may well be two invented people, so
+    # this never runs there.
+    _canon_names = [
+        (i, set(re.sub(r"[^a-z0-9]+", " ", str(n.get("name") or "").lower()).split()))
+        for i, n in enumerate(raw.get("npcs") or [])
+        if raw.get("mode") == "canon" and str(n.get("name") or "").strip()]
+    _absorbed: set[int] = set()
+    for idx, words in _canon_names:
+        if not words:
+            continue
+        bigger = [j for j, other in _canon_names
+                  if j != idx and words < other and other]
+        if len(bigger) == 1:
+            _absorbed.add(idx)
+
     for i, npc in enumerate(raw.get("npcs") or []):
+        if i in _absorbed:
+            continue
+        # THE SAME WORDS IN A DIFFERENT ORDER ARE THE SAME PERSON. Published
+        # material is inconsistent about this and so is a premise: a live build
+        # seated "Satoru Gojo" (the persona pass, from the source's own
+        # spelling) AND "gojo satoru" (the player's typing, carried in as an
+        # import) as two separate characters in one world. A plain fold keyed
+        # them differently and the one-person-one-record law never fired. The
+        # key is the SET of words, sorted - which `canon_lore.card` already had
+        # to learn for exactly the same reason.
+        name_key = " ".join(sorted(re.sub(
+            r"[^a-z0-9]+", " ", str(npc.get("name") or "").lower()).split()))
+        if name_key:
+            prior = seen_person.get(name_key) or []
+            if any(_same_person(npc, seen) for seen in prior):
+                continue
+            prior.append(npc)
+            seen_person[name_key] = prior
         nid = slug(npc.get("id") or npc.get("name") or f"npc_{i}", f"npc_{i}")
         while nid in seen_npc:
             nid = f"{nid}_{i}"
@@ -332,8 +432,27 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             # editor would appear to accept a portrait and the world would
             # come back without one.
             "portrait": _portrait(npc.get("portrait")),
-            # F3: see the matching note on locations above.
-            "origin": str(npc.get("origin") or "canon"),
+            # F3: see the matching note on locations above - including why the
+            # default flips in a canon world.
+            "origin": str(npc.get("origin")
+                          or ("original" if raw.get("mode") == "canon" else "canon")),
+            # WHICH STORY THIS PERSON IS FROM, when it is not this world's.
+            # A carried-in character - "Gojo from Jujutsu Kaisen" - is filed
+            # under the HOST setting everywhere downstream unless this is
+            # kept, and the cost is not cosmetic. The persona call asks for a
+            # character's card under the source they are listed under, so
+            # Gojo was asked "Demon Slayer: who is Satoru Gojo?" and answered
+            # plausibly as a Demon Slayer sorcerer. He then stood in a world
+            # whose entire history he has never heard of and agreed with a
+            # local about it. Whitelisted here or it is dropped on the first
+            # save - which is exactly what was happening.
+            "from_source": str(npc.get("from_source") or ""),
+            "persona_evidence": [
+                {k: str(p.get(k) or "")[:400] for k in
+                 ("text", "source_id", "quote", "url") if p.get(k)}
+                for p in (npc.get("persona_evidence") or [])[:20]
+                if isinstance(p, dict) and p.get("source_id") and p.get("quote")
+            ],
             # Somebody a stranger could not simply walk up to at the start:
             # the hidden antagonist, the sealed thing, the one who rules from
             # a distance. Whitelisted here or it would be dropped, and the
@@ -392,12 +511,28 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             "desc": str(ev.get("desc") or ev.get("title") or ""),
             "location": loc if loc in valid_locs else locations[0]["id"],
             "kills": slug(ev["kills"]) if ev.get("kills") and slug(ev["kills"]) in seen_npc else None,
+            # Source-backed canon events keep the exact evidence that admitted
+            # them. Original/hand-authored events simply carry empty fields.
+            "source_id": str(ev.get("source_id") or "")[:40],
+            "source_url": str(ev.get("source_url") or "")[:300],
+            "source_quote": str(ev.get("source_quote") or "")[:400],
         })
     # Fated turns must be strictly increasing or two fire at once.
     for i in range(1, len(fated)):
         if fated[i]["turn"] <= fated[i - 1]["turn"]:
             fated[i]["turn"] = fated[i - 1]["turn"] + 1
-    if strict and len(fated) < MIN_FATED:
+    # A SHORT SPINE IS ALLOWED WHEN IT IS REAL. The minimum exists to stop a
+    # thin build reaching the player, and a canon world that could only cite
+    # three events honestly is not a thin build - it is an accurate one. But
+    # "the entry contract exists" was standing in for "the spine is sourced",
+    # so a world with an empty future and ZERO fated events sailed through
+    # this check: no chapters, nothing that ever happens on its own. The test
+    # is whether the events themselves carry a source.
+    entry = raw.get("canon_entry") or {}
+    sourced = any(f.get("source_id") or f.get("source_url") for f in fated)
+    source_spine = raw.get("mode") == "canon" and fated and (
+        sourced or entry.get("asked") == "after")
+    if strict and len(fated) < MIN_FATED and not source_spine:
         raise WorldError(f"world needs at least {MIN_FATED} fated events (got {len(fated)})")
 
     start_location = slug(raw.get("start_location") or "")
@@ -463,6 +598,11 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
             npc["schedule"][PHASES[0]] = start_location
             here.append(npc)
 
+    # Evidence is untrusted imported data too. Re-compact it at every save/load
+    # boundary so article bodies or arbitrary nested fields cannot hitch a ride.
+    from . import canon_evidence
+    canon_entry = canon_evidence.persist(raw.get("canon_entry") or {})
+
     return {
         "id": world_id,
         "name": name,
@@ -525,6 +665,15 @@ def normalise(raw: dict, *, strict: bool = True) -> dict:
         "researched": bool(raw.get("researched")),
         # "canon" (continued from a real setting) or "original".
         "mode": "canon" if raw.get("mode") == "canon" else "original",
+        # WHERE IN THE SOURCE THIS STARTS - "start", an arc id, or "after".
+        # Whitelisted here or it is dropped on the first save and the narrator
+        # goes back to being told only who exists, never who has met whom:
+        # a build that opens at the very beginning greets the player by name
+        # in a scene where nobody has met anybody yet. See narrator.py.
+        "entry_point": str(raw.get("entry_point") or ""),
+        # Revision-linked, quote-backed state for the exact requested moment.
+        # The narrator receives only present/past facts; future stays engine-only.
+        "canon_entry": canon_entry,
     }
 
 

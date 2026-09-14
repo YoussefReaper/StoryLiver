@@ -409,7 +409,7 @@
 
     <!-- CENTRE: the table surface -->
     <section class="table" id="tableCol">
-      <nav class="table-tabs" id="tableTabs">
+      <nav class="table-tabs" id="tableTabs" aria-label="The table's views">
         <button class="on" data-view="story"><svg viewBox="0 0 16 16" class="ico"><path d="M2.5 3.5h5a2 2 0 0 1 2 2v7a1.6 1.6 0 0 0-1.6-1.6H2.5zM13.5 3.5h-5a2 2 0 0 0-2 2v7a1.6 1.6 0 0 1 1.6-1.6h5.4z"/></svg><span>Story</span></button>
         <button data-view="atlas"><svg viewBox="0 0 16 16" class="ico"><path d="M1.8 4 5.8 2.3 10.2 4l4-1.7v9.4L10.2 13 5.8 11.3 1.8 13z"/><path d="M5.8 2.3v9M10.2 4v9"/></svg><span>Atlas</span><em class="tab-badge" id="atlasBadge"></em></button>
         <button data-view="graph"><svg viewBox="0 0 16 16" class="ico"><circle cx="3" cy="8" r="1.7"/><circle cx="8" cy="4" r="1.7"/><circle cx="8" cy="12" r="1.7"/><circle cx="13" cy="8" r="1.7"/><path d="M4.4 7.2 6.6 4.9M4.4 8.8l2.2 2.3M9.4 4.8l2.3 2.4M9.4 11.2l2.3-2.4"/></svg><span>Threads</span></button>
@@ -610,14 +610,14 @@
 <!-- ============================== OVERLAYS ============================== -->
 <div class="scrim" id="scrim" hidden></div>
 <aside class="drawer" id="soulDrawer" hidden aria-label="Character"></aside>
-<div class="modal" id="modal" hidden><div class="modal-card" id="modalCard"></div></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" hidden><div class="modal-card" id="modalCard"></div></div>
 <div class="palette" id="palette" hidden>
   <div class="palette-card">
     <input id="paletteInput" placeholder="Type a command…" autocomplete="off" spellcheck="false">
     <div class="palette-list" id="paletteList"></div>
   </div>
 </div>
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <script src="/assets/app.js"></script>
 <!-- Rebuilt panels, as native ES modules. No build step: the backend serves
